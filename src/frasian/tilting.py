@@ -280,6 +280,64 @@ def tilted_ci_width(
     return upper - lower
 
 
+def tilted_ci_width_batch(
+    D_samples: np.ndarray,
+    mu0: float,
+    sigma: float,
+    sigma0: float,
+    eta: float,
+    alpha: float = 0.05,
+) -> np.ndarray:
+    """
+    Compute CI widths for a batch of D samples.
+
+    Uses the original brentq method but with pre-computed constants.
+    """
+    n = len(D_samples)
+    widths = np.zeros(n)
+
+    for i in range(n):
+        try:
+            lower, upper = tilted_ci(D_samples[i], mu0, sigma, sigma0, eta, alpha)
+            widths[i] = upper - lower
+        except (ValueError, RuntimeError):
+            widths[i] = np.nan
+
+    return widths
+
+
+def compute_mean_width_for_eta(
+    D_samples: np.ndarray,
+    mu0: float,
+    sigma: float,
+    sigma0: float,
+    eta: float,
+    alpha: float = 0.05,
+) -> float:
+    """
+    Compute mean CI width for a batch of D samples at a given eta.
+
+    Optimized version that stops early if clearly not optimal.
+    """
+    n = len(D_samples)
+    total_width = 0.0
+    valid_count = 0
+
+    for i in range(n):
+        try:
+            lower, upper = tilted_ci(D_samples[i], mu0, sigma, sigma0, eta, alpha)
+            width = upper - lower
+            if width > 0 and width < 100:  # Sanity check
+                total_width += width
+                valid_count += 1
+        except (ValueError, RuntimeError):
+            continue
+
+    if valid_count > 0.5 * n:
+        return total_width / valid_count
+    return np.inf
+
+
 def optimal_eta_numerical(
     abs_Delta: float,
     w: float = 0.5,

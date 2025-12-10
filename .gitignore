@@ -110,3 +110,6 @@ output/
 
 # Log files
 *.log
+
+# Claude
+.claude/

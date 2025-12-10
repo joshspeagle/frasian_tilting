@@ -311,6 +311,177 @@ def add_vertical_marker(
 
 
 # =============================================================================
+# Uncertainty Quantification Plotting
+# =============================================================================
+
+def plot_with_error_band(
+    ax: plt.Axes,
+    x: np.ndarray,
+    y: np.ndarray,
+    se: np.ndarray,
+    color: str,
+    label: str,
+    alpha: float = 0.3,
+    z_score: float = 1.96,
+    **kwargs
+) -> None:
+    """
+    Plot line with shaded error band (±z_score*SE).
+
+    Parameters
+    ----------
+    ax : Axes
+        Matplotlib axes
+    x : array
+        X values
+    y : array
+        Y values (point estimates)
+    se : array
+        Standard errors
+    color : str
+        Line and band color
+    label : str
+        Label for legend
+    alpha : float
+        Transparency of error band
+    z_score : float
+        Number of SEs for band (default 1.96 for 95% CI)
+    **kwargs
+        Additional arguments passed to ax.plot()
+    """
+    # Plot the line
+    ax.plot(x, y, color=color, label=label, **kwargs)
+
+    # Plot the error band
+    ax.fill_between(
+        x,
+        y - z_score * se,
+        y + z_score * se,
+        color=color,
+        alpha=alpha,
+        linewidth=0
+    )
+
+
+def add_error_bars_to_bars(
+    ax: plt.Axes,
+    bars,
+    errors: np.ndarray,
+    capsize: int = 3,
+    color: str = "black",
+    elinewidth: float = 1.0
+) -> None:
+    """
+    Add error bars to existing bar chart.
+
+    Parameters
+    ----------
+    ax : Axes
+        Matplotlib axes
+    bars : BarContainer
+        Bar container from ax.bar()
+    errors : array
+        Error values (half-width of error bar)
+    capsize : int
+        Size of error bar caps
+    color : str
+        Error bar color
+    elinewidth : float
+        Error bar line width
+    """
+    x_positions = [bar.get_x() + bar.get_width() / 2 for bar in bars]
+    y_positions = [bar.get_height() for bar in bars]
+
+    ax.errorbar(
+        x_positions, y_positions, yerr=errors,
+        fmt='none', capsize=capsize, color=color,
+        elinewidth=elinewidth, capthick=elinewidth
+    )
+
+
+def format_with_uncertainty(
+    value: float,
+    se: float,
+    decimals: int = 1,
+    percent: bool = False
+) -> str:
+    """
+    Format a value with its uncertainty.
+
+    Parameters
+    ----------
+    value : float
+        Point estimate
+    se : float
+        Standard error
+    decimals : int
+        Number of decimal places
+    percent : bool
+        If True, multiply by 100 and add % symbol
+
+    Returns
+    -------
+    str
+        Formatted string like "95.2 +/- 0.3" or "95.2% +/- 0.3%"
+
+    Examples
+    --------
+    >>> format_with_uncertainty(0.952, 0.003, decimals=1, percent=True)
+    '95.2% +/- 0.3%'
+    >>> format_with_uncertainty(3.92, 0.15, decimals=2)
+    '3.92 +/- 0.15'
+    """
+    if percent:
+        return f"{value*100:.{decimals}f}% +/- {se*100:.{decimals}f}%"
+    else:
+        return f"{value:.{decimals}f} +/- {se:.{decimals}f}"
+
+
+def annotate_with_uncertainty(
+    ax: plt.Axes,
+    x: float,
+    y: float,
+    value: float,
+    se: float,
+    decimals: int = 1,
+    percent: bool = False,
+    offset: Tuple[float, float] = (0, 5),
+    **kwargs
+) -> None:
+    """
+    Add annotation showing value with uncertainty.
+
+    Parameters
+    ----------
+    ax : Axes
+        Matplotlib axes
+    x, y : float
+        Position for annotation
+    value : float
+        Point estimate
+    se : float
+        Standard error
+    decimals : int
+        Number of decimal places
+    percent : bool
+        Format as percentage
+    offset : tuple
+        Text offset from (x, y)
+    **kwargs
+        Additional arguments for ax.annotate()
+    """
+    text = format_with_uncertainty(value, se, decimals, percent)
+    ax.annotate(
+        text, (x, y),
+        xytext=offset,
+        textcoords="offset points",
+        ha="center",
+        fontsize=8,
+        **kwargs
+    )
+
+
+# =============================================================================
 # Initialize style on import
 # =============================================================================
 

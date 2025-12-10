@@ -4,6 +4,7 @@ scipy>=1.10
 matplotlib>=3.7
 pandas>=2.0
 tqdm>=4.65
+h5py>=3.8
 
 # Development/testing
 pytest>=7.0
