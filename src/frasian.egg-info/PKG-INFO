@@ -1,0 +1,30 @@
+Metadata-Version: 2.4
+Name: frasian
+Version: 0.1.0
+Summary: Numerical experiments for Frasian inference: WALDO, tilted posteriors, and confidence distributions
+Author: Josh Snyder
+License: MIT
+Keywords: statistics,inference,confidence-distributions,waldo,bayesian
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Science/Research
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Topic :: Scientific/Engineering :: Mathematics
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: numpy>=1.24
+Requires-Dist: scipy>=1.10
+Requires-Dist: matplotlib>=3.7
+Requires-Dist: pandas>=2.0
+Requires-Dist: tqdm>=4.65
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0; extra == "dev"
+Requires-Dist: pytest-xdist>=3.0; extra == "dev"
+Requires-Dist: ipython; extra == "dev"
+Requires-Dist: jupyter; extra == "dev"
+Dynamic: license-file
