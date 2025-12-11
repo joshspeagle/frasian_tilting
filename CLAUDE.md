@@ -57,19 +57,25 @@ src/frasian/
     ├── processing.py    # Layer 1: Compute CIs, coverage, widths
     ├── cache.py         # Layer 1.5: Processed results caching
     ├── storage.py       # HDF5 I/O utilities
-    └── runner.py        # Orchestration
+    ├── runner.py        # Orchestration
+    ├── mlp_data.py      # MLP training data generation
+    ├── mlp_model.py     # Width ratio MLP (PyTorch)
+    ├── mlp_lookup.py    # Lookup table from MLP predictions
+    └── mlp_monotonic.py # Monotonic η* MLP (architecturally monotonic)
 
 scripts/
-├── run_simulations.py   # Generate raw D samples + optimal eta
-├── plot_coverage.py     # Figures 3.1-3.3 (coverage)
-├── plot_ci_widths.py    # Figures 4.1-4.3 (CI widths)
-├── plot_tilting.py      # Figures 5.1-5.5 (tilting framework)
-├── plot_theory.py       # Figures 1.1-1.3 (core theory)
-├── plot_estimators.py   # Figures 2.1-2.2 (estimators)
-├── plot_regimes.py      # Figures 6.1-6.2 (three regimes)
-├── plot_summary.py      # Figures 7.1-7.3 (summary)
-├── generate_tables.py   # Tables 1-4
-└── generate_all.py      # Master script
+├── run_simulations.py           # Generate raw D samples
+├── train_optimal_eta_mlp.py     # Train width ratio MLP + generate lookup
+├── train_monotonic_eta_mlp.py   # Train monotonic η* MLP (uses width MLP)
+├── plot_theory.py               # Figures 1.1-1.8 (core theory + tilting intro)
+├── plot_estimators.py           # Figures 2.1-2.2 (estimators)
+├── plot_coverage.py             # Figures 3.1-3.3 (coverage)
+├── plot_ci_widths.py            # Figures 4.1-4.3 (CI widths)
+├── plot_tilting.py              # Figures 5.1-5.2 (tilting details)
+├── plot_regimes.py              # Figures 6.1-6.2 (three regimes)
+├── plot_summary.py              # Figures 7.1-7.3 (summary)
+├── generate_tables.py           # Tables 1-4
+└── generate_all.py              # Master script
 
 tests/
 ├── conftest.py              # Fixtures: ModelParams, TestConfig
@@ -84,8 +90,12 @@ output/
 │   ├── raw/                 # Raw D samples (permanent)
 │   │   ├── coverage_raw.h5
 │   │   ├── distribution_raw.h5
-│   │   ├── width_raw.h5
-│   │   └── optimal_eta.h5   # Precomputed η* grid
+│   │   └── width_raw.h5
+│   ├── mlp/                 # MLP models and data
+│   │   ├── training_data.h5        # LHS samples + width ratios
+│   │   ├── mlp_model.pt            # Trained width ratio MLP
+│   │   ├── optimal_eta_lookup.h5   # Grid lookup (with cummax)
+│   │   └── monotonic_eta_mlp.pt    # Monotonic η* MLP
 │   └── processed/           # Cached results (regenerable)
 ├── figures/                 # Generated figures by category
 └── tables/                  # CSV + LaTeX tables
@@ -112,7 +122,11 @@ from frasian.simulations import (
     generate_optimal_eta_grid,      # Precompute η*(|Δ|) numerically
 )
 
-# Optimal eta (USE THIS for plots)
+# Optimal eta (USE THIS for production - monotonic MLP)
+from frasian.tilting import optimal_eta_mlp
+eta_star = optimal_eta_mlp(abs_delta=1.5, w=0.5, alpha=0.05)
+
+# Alternative: raw simulation-based interpolation (for ground truth validation)
 from frasian.simulations import optimal_eta_empirical
 eta_star = optimal_eta_empirical(abs_delta=1.5, fast=False)
 
@@ -145,13 +159,36 @@ python scripts/run_simulations.py --clear-cache  # Keep raw
 python scripts/run_simulations.py --clear-all    # Clear everything
 ```
 
-### Optimal Eta Computation
+### MLP-Based Optimal Eta System
 
-The optimal η* is computed numerically using Brent optimization:
-- Grid: 251 |Δ| points from 0 to 5 (0.02 spacing)
-- n_sims: 500 simulations per optimization step
-- Parallelized with joblib (n_jobs=-1)
-- ~11 minutes on 12-core machine
+Optimal η* is computed using a two-stage neural network approach:
+
+**Stage 1: Width Ratio MLP** (`train_optimal_eta_mlp.py`)
+- Predicts `log(E[W_η]/W_Wald)` for any (w, α, |Δ|, η) combination
+- Architecture: 3×64 fully connected layers with GELU activations
+- Training: 10k Latin Hypercube samples, 100 MC simulations each
+- Performance: R² ≈ 0.998, RMSE ≈ 0.05
+
+**Stage 2: Monotonic η* MLP** (`train_monotonic_eta_mlp.py`)
+- Predicts η* directly from (w, α, |Δ|)
+- Architecturally guarantees ∂η*/∂|Δ| ≥ 0 using positive weights
+- Uses width ratio MLP for training targets via grid search
+- Output: smooth, strictly monotonic η*(|Δ|) curves
+
+**Training workflow:**
+```bash
+# Step 1: Train width ratio MLP (3 min)
+python scripts/train_optimal_eta_mlp.py --train --generate-lookup --epochs 1000
+
+# Step 2: Train monotonic MLP (5-10 min)
+python scripts/train_monotonic_eta_mlp.py --n-samples 50000 --epochs 1000
+```
+
+**Usage in code:**
+```python
+from frasian.tilting import optimal_eta_mlp
+eta_star = optimal_eta_mlp(abs_delta=1.5, w=0.5, alpha=0.05)
+```
 
 **DO NOT use `optimal_eta_approximation()`** - this is the old power-law formula that assumes η ≥ 0.
 
@@ -237,6 +274,9 @@ python scripts/plot_coverage.py --fast --figure 3.1
 - `tilted_noncentrality(lambda0, eta)` → λ_η = (1-η)²λ₀
 - `tilted_ci(D, mu0, sigma, sigma0, eta, alpha)` → (lower, upper)
 - `tilted_ci_width(D, mu0, sigma, sigma0, eta, alpha)` → width
+- `optimal_eta_mlp(abs_delta, w, alpha)` → η* from monotonic MLP
+- `dynamic_tilted_pvalue(theta, D, mu0, sigma, sigma0)` → p-value with local η*(θ)
+- `dynamic_tilted_ci(D, mu0, sigma, sigma0, alpha)` → CI from dynamic tilting
 
 ### confidence.py
 - `pvalue_mode(D, mu0, sigma, sigma0)` → θ_mode = μₙ

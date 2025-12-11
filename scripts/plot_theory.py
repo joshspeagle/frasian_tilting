@@ -925,8 +925,11 @@ def figure_1_7_dynamic_tilting(
     """
     Generate Figure 1.7: Dynamic Tilting - Why theta, Not D.
 
-    Panel A: |Delta(theta)| varies as we scan theta (for fixed D)
-    Panel B: eta*(theta) varies with theta as a result
+    Uses simpler prior residual |delta(theta)| = |theta - mu0|/sigma0 framing.
+
+    Panel A: Prior residual varies as we scan theta
+    Panel B: eta*(theta) varies with theta - near prior mean use oversharpening,
+             far from prior mean use Wald
     """
     print("\n" + "="*60)
     print("Figure 1.7: Dynamic Tilting")
@@ -938,91 +941,266 @@ def figure_1_7_dynamic_tilting(
     mu0 = 0.0
     sigma0 = sigma * np.sqrt(w / (1 - w))
     D = 2.5  # Observed data
+    alpha = 0.05
 
     mu_n, _, _ = posterior_params(D, mu0, sigma, sigma0)
-    delta_D = scaled_conflict(D, mu0, w, sigma)
 
-    print(f"D = {D}, mu_n = {mu_n:.2f}, Delta(D) = {delta_D:.2f}")
+    print(f"Model: w={w}, mu0={mu0}, sigma={sigma}, sigma0={sigma0:.2f}")
+    print(f"Data: D={D}, mu_n={mu_n:.2f}")
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
     # Theta range to scan
-    thetas = np.linspace(-1, 5, 200)
+    thetas = np.linspace(-2, 5, 200)
 
-    # Panel A: |Delta(theta)| for each theta
+    # ===================
+    # Panel A: Prior residual |delta(theta)|
+    # ===================
     ax1 = axes[0]
 
-    # Compute Delta(theta) for each theta
-    # Delta(theta) = (1-w)(mu0 - theta) / sigma - (D - theta) / sigma
-    # But the proper definition is: conflict if theta were true
-    # |Delta(theta)| = |(1-w)(mu0 - theta)/sigma|
-    delta_theta = np.abs((1 - w) * (mu0 - thetas) / sigma)
+    # Compute prior residual: |delta(theta)| = |theta - mu0| / sigma0
+    delta_theta = np.abs(thetas - mu0) / sigma0
 
-    ax1.plot(thetas, delta_theta, color=COLORS['tilted'], linewidth=2.5,
-             label=r'$|\Delta(\theta)| = (1-w)|\mu_0 - \theta|/\sigma$')
+    ax1.plot(thetas, delta_theta, color=COLORS['tilted'], linewidth=2.5)
 
     # Mark key locations
+    ax1.axvline(x=mu0, color=COLORS['prior_mean'], linestyle='-', linewidth=2, alpha=0.8,
+                label=f'Prior mean $\\mu_0={mu0}$')
     ax1.axvline(x=D, color=COLORS['mle'], linestyle='--', linewidth=1.5, alpha=0.7,
-                label=f'MLE D={D}')
-    ax1.axvline(x=mu_n, color=COLORS['waldo'], linestyle='--', linewidth=1.5, alpha=0.7,
-                label=f'$\\mu_n$={mu_n:.2f}')
-    ax1.axvline(x=mu0, color=COLORS['prior_mean'], linestyle=':', linewidth=1.5, alpha=0.7,
-                label=f'$\\mu_0$={mu0}')
+                label=f'Observed $D={D}$')
 
-    # Mark Delta at D
-    ax1.scatter([D], [np.abs((1-w)*(mu0-D)/sigma)], color=COLORS['mle'], s=100, zorder=5)
+    # Mark delta at key points
+    delta_at_D = np.abs(D - mu0) / sigma0
+    delta_at_mu_n = np.abs(mu_n - mu0) / sigma0
+    ax1.scatter([D], [delta_at_D], color=COLORS['mle'], s=100, zorder=5)
+    ax1.scatter([mu_n], [delta_at_mu_n], color=COLORS['waldo'], s=80, zorder=5,
+                marker='s', label=f'Posterior mean $\\mu_n={mu_n:.1f}$')
+    ax1.scatter([mu0], [0], color=COLORS['prior_mean'], s=100, zorder=5)
 
-    ax1.set_xlabel(r'Hypothesized $\theta$', fontsize=12)
-    ax1.set_ylabel(r'Conflict $|\Delta(\theta)|$', fontsize=12)
-    ax1.set_title('(A) Conflict Varies with Hypothesized Parameter\n'
-                  r'$|\Delta(\theta)|$ is zero at $\theta=\mu_0$, grows as $|\theta - \mu_0|$ increases',
+    # Shade regions for intuition
+    ax1.axhspan(0, 1, alpha=0.1, color='green', label='Near prior: trust it')
+    ax1.axhspan(2, max(delta_theta), alpha=0.1, color='red', label='Far from prior: ignore it')
+
+    ax1.set_xlabel(r'Hypothesized parameter $\theta$', fontsize=12)
+    ax1.set_ylabel(r'Prior residual $|\delta(\theta)| = |\theta - \mu_0|/\sigma_0$', fontsize=12)
+    ax1.set_title('(A) Distance from Prior Mean\n'
+                  'How much does each hypothesis conflict with the prior?',
                   fontsize=12, fontweight='bold')
-    ax1.legend(loc='upper right', fontsize=9)
+    ax1.legend(loc='upper left', fontsize=9)
     ax1.grid(True, alpha=0.3)
-    ax1.set_xlim(-1, 5)
+    ax1.set_xlim(-2, 5)
+    ax1.set_ylim(0, max(delta_theta) * 1.05)
 
+    # ===================
     # Panel B: eta*(theta) for each theta
+    # ===================
     ax2 = axes[1]
 
-    # Compute optimal eta for each theta based on |Delta(theta)| using MLP
-    alpha = 0.05
-    eta_star_theta = np.array([optimal_eta_mlp(d, w=w, alpha=alpha) for d in delta_theta])
+    # Compute optimal eta for each theta
+    # We need to convert |delta(theta)| to the |Delta| scale that optimal_eta_mlp expects
+    # |Delta| = (1-w)|mu0 - theta|/sigma = (1-w) * sigma0/sigma * |delta(theta)|
+    # For w=0.5, sigma=sigma0=1: |Delta| = 0.5 * |delta(theta)|
+    delta_scaled = (1 - w) * np.abs(thetas - mu0) / sigma
+    eta_star_theta = np.array([optimal_eta_mlp(d, w=w, alpha=alpha) for d in delta_scaled])
 
     ax2.plot(thetas, eta_star_theta, color=COLORS['tilted'], linewidth=2.5,
-             label=r'$\eta^*(\theta) = \eta^*(|\Delta(\theta)|)$')
+             label=r'Optimal $\eta^*(\theta)$')
 
     # Reference lines
     ax2.axhline(y=0, color=COLORS['waldo'], linestyle='--', linewidth=1.5, alpha=0.5,
-                label=r'$\eta=0$ (WALDO)')
+                label=r'WALDO ($\eta=0$)')
     ax2.axhline(y=1, color=COLORS['wald'], linestyle='--', linewidth=1.5, alpha=0.5,
-                label=r'$\eta=1$ (Wald)')
+                label=r'Wald ($\eta=1$)')
 
     # Mark key locations
-    ax2.axvline(x=mu0, color=COLORS['prior_mean'], linestyle=':', linewidth=1.5, alpha=0.7)
+    ax2.axvline(x=mu0, color=COLORS['prior_mean'], linestyle='-', linewidth=2, alpha=0.8)
     ax2.axvline(x=D, color=COLORS['mle'], linestyle='--', linewidth=1.5, alpha=0.7)
 
     # Shade oversharpening region
-    ax2.fill_between(thetas, -1, eta_star_theta,
+    ax2.fill_between(thetas, -1.1, eta_star_theta,
                      where=eta_star_theta < 0,
-                     alpha=0.2, color='purple', label='Oversharpening')
+                     alpha=0.2, color='purple', label=r'Oversharpening ($\eta < 0$)')
 
-    ax2.set_xlabel(r'Hypothesized $\theta$', fontsize=12)
-    ax2.set_ylabel(r'Optimal Tilting $\eta^*(\theta)$', fontsize=12)
-    ax2.set_title(r'(B) Optimal Tilt Varies with $\theta$' + '\n'
-                  r'Near $\mu_0$: oversharpening; far from $\mu_0$: use Wald',
+    # Add annotation arrows connecting concepts
+    eta_at_mu0 = optimal_eta_mlp(0.0, w=w, alpha=alpha)
+    eta_at_D = optimal_eta_mlp(delta_scaled[np.argmin(np.abs(thetas - D))], w=w, alpha=alpha)
+
+    ax2.annotate('Near prior:\noversharpening',
+                 xy=(mu0, eta_at_mu0), xytext=(mu0 + 0.8, eta_at_mu0 - 0.4),
+                 fontsize=9, ha='left',
+                 arrowprops=dict(arrowstyle='->', color='gray', alpha=0.7),
+                 bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+
+    ax2.annotate('Far from prior:\napproach Wald',
+                 xy=(4, eta_star_theta[np.argmin(np.abs(thetas - 4))]),
+                 xytext=(3, 0.5),
+                 fontsize=9, ha='center',
+                 arrowprops=dict(arrowstyle='->', color='gray', alpha=0.7),
+                 bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+
+    ax2.set_xlabel(r'Hypothesized parameter $\theta$', fontsize=12)
+    ax2.set_ylabel(r'Optimal tilting $\eta^*(\theta)$', fontsize=12)
+    ax2.set_title(r'(B) Optimal Tilt Adapts to $\theta$' + '\n'
+                  r'$\eta^*$ is low near $\mu_0$, high far from $\mu_0$',
                   fontsize=12, fontweight='bold')
     ax2.legend(loc='lower right', fontsize=9)
     ax2.grid(True, alpha=0.3)
-    ax2.set_xlim(-1, 5)
+    ax2.set_xlim(-2, 5)
     ax2.set_ylim(-1.1, 1.1)
 
-    fig.suptitle('Dynamic Tilting: Why We Must Re-optimize at Each $\\theta$',
+    fig.suptitle('Dynamic Tilting: The Optimal Tilt Depends on the Hypothesis',
                  fontsize=14, fontweight='bold', y=1.02)
 
     plt.tight_layout()
 
     if save:
         save_figure(fig, "fig_1_7_dynamic_tilting", "theory")
+
+    if show:
+        plt.show()
+
+    return fig
+
+
+# =============================================================================
+# Figure 1.7b: The Envelope Construction
+# =============================================================================
+
+def figure_1_7b_envelope_construction(
+    save: bool = True,
+    show: bool = False,
+) -> plt.Figure:
+    """
+    Generate Figure 1.7b: The Envelope Construction for Dynamic Tilting.
+
+    Shows how the dynamic p-value function is constructed as an envelope
+    of tilted p-value curves, each evaluated at its locally optimal eta.
+    """
+    print("\n" + "="*60)
+    print("Figure 1.7b: The Envelope Construction")
+    print("="*60)
+
+    # Model parameters
+    w = 0.5
+    sigma = 1.0
+    mu0 = 0.0
+    sigma0 = sigma * np.sqrt(w / (1 - w))
+    D = 3.0  # Moderate conflict to show clear envelope
+    alpha = 0.05
+
+    mu_n, _, _ = posterior_params(D, mu0, sigma, sigma0)
+    delta_D = np.abs((1 - w) * (mu0 - D) / sigma)
+
+    print(f"  Model: w={w}, D={D}, |Delta|={delta_D:.2f}")
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+
+    # Theta range
+    thetas = np.linspace(-1, 6, 200)
+
+    # ===================
+    # Panel A: The envelope concept
+    # ===================
+
+    # Show p-value curves for several representative theta values
+    sample_thetas = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]
+    cmap = plt.cm.viridis
+
+    envelope_thetas = []
+    envelope_pvals = []
+    envelope_etas = []
+
+    for i, theta_sample in enumerate(sample_thetas):
+        # Compute |Delta| at this theta
+        delta_at_theta = np.abs((1 - w) * (mu0 - theta_sample) / sigma)
+        eta_star = optimal_eta_mlp(delta_at_theta, w=w, alpha=alpha)
+
+        # Plot p-value curve for this eta (faded)
+        pvals = [tilted_pvalue(theta, D, mu0, sigma, sigma0, eta_star) for theta in thetas]
+        color = cmap(i / len(sample_thetas))
+        ax1.plot(thetas, pvals, color=color, linewidth=1.2, alpha=0.4)
+
+        # Mark the evaluation point - THIS forms the envelope
+        p_at_sample = tilted_pvalue(theta_sample, D, mu0, sigma, sigma0, eta_star)
+        ax1.scatter([theta_sample], [p_at_sample], color=color, s=120, zorder=5,
+                   edgecolor='black', linewidth=2)
+
+        envelope_thetas.append(theta_sample)
+        envelope_pvals.append(p_at_sample)
+        envelope_etas.append(eta_star)
+
+    # Draw the envelope line connecting the points
+    ax1.plot(envelope_thetas, envelope_pvals, color='black', linewidth=3, linestyle='-',
+             marker='o', markersize=0, label='Dynamic p-value (envelope)', zorder=4)
+
+    # Reference line
+    ax1.axhline(y=alpha, color='red', linestyle='--', linewidth=2, alpha=0.7,
+                label=f'$\\alpha={alpha}$')
+
+    # Add annotation explaining the construction
+    ax1.annotate('At each $\\theta$:\nuse $\\eta^*(\\theta)$,\nevaluate $p_{\\eta^*}(\\theta)$',
+                 xy=(2.0, envelope_pvals[2]), xytext=(3.5, 0.7),
+                 fontsize=10, ha='left',
+                 arrowprops=dict(arrowstyle='->', color='gray', alpha=0.8),
+                 bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.9))
+
+    ax1.set_xlabel(r'Hypothesized parameter $\theta$', fontsize=12)
+    ax1.set_ylabel('p-value', fontsize=12)
+    ax1.set_title('(A) The Envelope Construction\n'
+                  'Each point uses locally optimal $\\eta^*(\\theta)$',
+                  fontsize=12, fontweight='bold')
+    ax1.legend(loc='upper right', fontsize=9)
+    ax1.grid(True, alpha=0.3)
+    ax1.set_xlim(-1, 6)
+    ax1.set_ylim(0, 1.05)
+
+    # ===================
+    # Panel B: eta* values used at each point
+    # ===================
+
+    # Show eta* as function of theta
+    theta_fine = np.linspace(-1, 6, 200)
+    delta_fine = np.abs((1 - w) * (mu0 - theta_fine) / sigma)
+    eta_fine = np.array([optimal_eta_mlp(d, w=w, alpha=alpha) for d in delta_fine])
+
+    ax2.plot(theta_fine, eta_fine, color=COLORS['tilted'], linewidth=2.5,
+             label=r'$\eta^*(\theta)$')
+
+    # Mark the sample points
+    for i, (th, eta) in enumerate(zip(envelope_thetas, envelope_etas)):
+        color = cmap(i / len(sample_thetas))
+        ax2.scatter([th], [eta], color=color, s=120, zorder=5,
+                   edgecolor='black', linewidth=2)
+
+    # Reference lines
+    ax2.axhline(y=0, color=COLORS['waldo'], linestyle='--', linewidth=1.5, alpha=0.5,
+                label=r'WALDO ($\eta=0$)')
+    ax2.axhline(y=1, color=COLORS['wald'], linestyle='--', linewidth=1.5, alpha=0.5,
+                label=r'Wald ($\eta=1$)')
+
+    # Shade regions
+    ax2.fill_between(theta_fine, 0, eta_fine, where=eta_fine < 0,
+                     alpha=0.2, color='blue', label='Oversharpening')
+    ax2.fill_between(theta_fine, 0, eta_fine, where=eta_fine > 0,
+                     alpha=0.2, color='red', label='Toward Wald')
+
+    ax2.set_xlabel(r'Hypothesized parameter $\theta$', fontsize=12)
+    ax2.set_ylabel(r'Optimal tilt $\eta^*(\theta)$', fontsize=12)
+    ax2.set_title('(B) The Optimal Tilt at Each Point\n'
+                  r'Colors match points in Panel A',
+                  fontsize=12, fontweight='bold')
+    ax2.legend(loc='lower right', fontsize=9)
+    ax2.grid(True, alpha=0.3)
+    ax2.set_xlim(-1, 6)
+    ax2.set_ylim(-0.5, 1.1)
+
+    fig.suptitle(f'Constructing the Dynamic P-value Function (D={D}, $|\\Delta|$={delta_D:.2f})',
+                 fontsize=14, fontweight='bold', y=1.02)
+
+    plt.tight_layout()
+
+    if save:
+        save_figure(fig, "fig_1_7b_envelope_construction", "theory")
 
     if show:
         plt.show()
@@ -1039,122 +1217,130 @@ def figure_1_8_dynamic_construction(
     show: bool = False,
 ) -> plt.Figure:
     """
-    Generate Figure 1.8: Constructing the Dynamic P-value and CI.
+    Generate Figure 1.8: Dynamic Tilting Across Conflict Levels.
 
-    Panel A: Multiple p-value curves with local eta*(theta), showing envelope
-    Panel B: The resulting dynamic p-value function and CI bounds
+    Three rows showing data-prior agreement, mild disagreement, and major disagreement.
     """
     print("\n" + "="*60)
-    print("Figure 1.8: Constructing Dynamic P-value and CI")
+    print("Figure 1.8: Dynamic Tilting Across Conflict Levels")
     print("="*60)
 
-    # Model parameters
+    # Model parameters (fixed)
     w = 0.5
     sigma = 1.0
     mu0 = 0.0
     sigma0 = sigma * np.sqrt(w / (1 - w))
-    D = 2.5
     alpha = 0.05
 
-    mu_n, _, _ = posterior_params(D, mu0, sigma, sigma0)
+    # Three conflict levels
+    scenarios = [
+        {"D": 0.5, "label": "Agreement", "xlim": (-3, 4)},
+        {"D": 2.5, "label": "Mild Disagreement", "xlim": (-2, 6)},
+        {"D": 5.0, "label": "Major Disagreement", "xlim": (-1, 9)},
+    ]
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    fig, axes = plt.subplots(3, 1, figsize=(12, 12))
 
-    # Theta range
-    thetas = np.linspace(-1, 5, 200)
+    for row, (ax, scenario) in enumerate(zip(axes, scenarios)):
+        D = scenario["D"]
+        label = scenario["label"]
+        xlim = scenario["xlim"]
 
-    # Panel A: Multiple p-value curves at sample theta values
-    ax1 = axes[0]
+        mu_n, _, _ = posterior_params(D, mu0, sigma, sigma0)
+        delta = np.abs((1 - w) * (mu0 - D) / sigma)
 
-    # Show p-value curves for several representative theta values
-    sample_thetas = [0.0, 1.0, 2.0, 3.0, 4.0]
-    cmap = plt.cm.viridis
+        print(f"  Row {row+1}: {label} - D={D}, |Delta|={delta:.2f}")
 
-    for i, theta_sample in enumerate(sample_thetas):
-        # Compute Delta at this theta
-        delta_at_theta = np.abs((1 - w) * (mu0 - theta_sample) / sigma)
-        eta_star = optimal_eta_mlp(delta_at_theta, w=w, alpha=alpha)
+        # Theta range for this scenario
+        thetas = np.linspace(xlim[0], xlim[1], 300)
 
-        # Plot p-value curve for this eta
-        pvals = [tilted_pvalue(theta, D, mu0, sigma, sigma0, eta_star) for theta in thetas]
-        color = cmap(i / len(sample_thetas))
-        ax1.plot(thetas, pvals, color=color, linewidth=1.5, alpha=0.7,
-                 label=f'$\\theta={theta_sample}$: $\\eta^*={eta_star:.2f}$')
+        # Compute p-values
+        waldo_pvals = [tilted_pvalue(theta, D, mu0, sigma, sigma0, 0.0) for theta in thetas]
+        wald_pvals = [tilted_pvalue(theta, D, mu0, sigma, sigma0, 1.0) for theta in thetas]
+        dynamic_pvals = [dynamic_tilted_pvalue(theta, D, mu0, sigma, sigma0, alpha) for theta in thetas]
 
-        # Mark the evaluation point
-        p_at_sample = tilted_pvalue(theta_sample, D, mu0, sigma, sigma0, eta_star)
-        ax1.scatter([theta_sample], [p_at_sample], color=color, s=100, zorder=5,
-                   edgecolor='black', linewidth=1.5)
+        # Plot p-value curves
+        ax.plot(thetas, wald_pvals, color=COLORS['wald'], linewidth=2, alpha=0.7,
+                linestyle='--', label=r'Wald ($\eta=1$)')
+        ax.plot(thetas, waldo_pvals, color=COLORS['waldo'], linewidth=2, alpha=0.7,
+                linestyle='--', label=r'WALDO ($\eta=0$)')
+        ax.plot(thetas, dynamic_pvals, color=COLORS['tilted'], linewidth=2.5,
+                label=r'Dynamic ($\eta^*(\theta)$)')
 
-    # Reference line
-    ax1.axhline(y=alpha, color='red', linestyle='--', linewidth=2, alpha=0.7,
-                label=f'$\\alpha={alpha}$')
+        # Reference line
+        ax.axhline(y=alpha, color='red', linestyle=':', linewidth=1.5, alpha=0.7)
 
-    ax1.set_xlabel(r'$\theta$', fontsize=12)
-    ax1.set_ylabel('p-value', fontsize=12)
-    ax1.set_title('(A) Local P-value Curves at Different $\\theta$ Values\n'
-                  'Each curve uses locally optimal $\\eta^*(\\theta)$',
-                  fontsize=12, fontweight='bold')
-    ax1.legend(loc='upper right', fontsize=8)
-    ax1.grid(True, alpha=0.3)
-    ax1.set_xlim(-1, 5)
-    ax1.set_ylim(0, 1.05)
-
-    # Panel B: The dynamic p-value function and CI
-    ax2 = axes[1]
-
-    # Compute dynamic p-value
-    dynamic_pvals = []
-    for theta in thetas:
-        try:
-            p = dynamic_tilted_pvalue(theta, D, mu0, sigma, sigma0)
-            dynamic_pvals.append(p)
-        except:
-            dynamic_pvals.append(np.nan)
-    dynamic_pvals = np.array(dynamic_pvals)
-
-    # Also compute WALDO and Wald for comparison
-    waldo_pvals = [tilted_pvalue(theta, D, mu0, sigma, sigma0, 0.0) for theta in thetas]
-    wald_pvals = [tilted_pvalue(theta, D, mu0, sigma, sigma0, 1.0) for theta in thetas]
-
-    ax2.plot(thetas, wald_pvals, color=COLORS['wald'], linewidth=2, alpha=0.7,
-             linestyle='--', label=r'Wald ($\eta=1$)')
-    ax2.plot(thetas, waldo_pvals, color=COLORS['waldo'], linewidth=2, alpha=0.7,
-             linestyle='--', label=r'WALDO ($\eta=0$)')
-    ax2.plot(thetas, dynamic_pvals, color=COLORS['tilted'], linewidth=2.5,
-             label=r'Dynamic ($\eta^*(\theta)$)')
-
-    # CI bounds
-    ax2.axhline(y=alpha, color='red', linestyle='--', linewidth=2, alpha=0.7)
-
-    # Compute CIs
-    try:
-        ci_dynamic = dynamic_tilted_ci(D, mu0, sigma, sigma0, alpha)
-        ax2.axvspan(ci_dynamic[0], ci_dynamic[1], alpha=0.15, color=COLORS['tilted'],
-                   label=f'Dynamic CI: [{ci_dynamic[0]:.2f}, {ci_dynamic[1]:.2f}]')
-    except:
-        ci_dynamic = None
-
-    try:
+        # Compute CIs
         ci_wald = (D - 1.96*sigma, D + 1.96*sigma)
-        # Mark Wald CI bounds
-        ax2.axvline(x=ci_wald[0], color=COLORS['wald'], linestyle=':', alpha=0.5)
-        ax2.axvline(x=ci_wald[1], color=COLORS['wald'], linestyle=':', alpha=0.5)
-    except:
-        pass
+        width_wald = ci_wald[1] - ci_wald[0]
 
-    ax2.set_xlabel(r'$\theta$', fontsize=12)
-    ax2.set_ylabel('p-value', fontsize=12)
-    ax2.set_title('(B) Dynamic P-value Function and Confidence Interval\n'
-                  'CI = {$\\theta$: $p_{dynamic}(\\theta) \\geq \\alpha$}',
-                  fontsize=12, fontweight='bold')
-    ax2.legend(loc='upper right', fontsize=9)
-    ax2.grid(True, alpha=0.3)
-    ax2.set_xlim(-1, 5)
-    ax2.set_ylim(0, 1.05)
+        from frasian.waldo import confidence_interval as waldo_ci
+        ci_waldo = waldo_ci(D, mu0, sigma, sigma0, alpha)
+        width_waldo = ci_waldo[1] - ci_waldo[0]
 
-    fig.suptitle('Constructing the Dynamic Tilted Confidence Interval',
-                 fontsize=14, fontweight='bold', y=1.02)
+        regions_dynamic, width_dynamic = dynamic_tilted_ci(D, mu0, sigma, sigma0, alpha)
+        n_regions = len(regions_dynamic)
+
+        # Shade dynamic CI regions
+        for region in regions_dynamic:
+            ax.axvspan(region[0], region[1], alpha=0.15, color=COLORS['tilted'])
+
+        # CI markers
+        ax.axvline(x=ci_wald[0], color=COLORS['wald'], linestyle=':', alpha=0.4, linewidth=1.5)
+        ax.axvline(x=ci_wald[1], color=COLORS['wald'], linestyle=':', alpha=0.4, linewidth=1.5)
+        ax.axvline(x=ci_waldo[0], color=COLORS['waldo'], linestyle=':', alpha=0.4, linewidth=1.5)
+        ax.axvline(x=ci_waldo[1], color=COLORS['waldo'], linestyle=':', alpha=0.4, linewidth=1.5)
+
+        # Width annotations with arrows
+        y_positions = [0.18, 0.30, 0.42]
+
+        # Dynamic CI width
+        y_dyn = y_positions[0]
+        all_bounds = [b for region in regions_dynamic for b in region]
+        ax.annotate('', xy=(min(all_bounds), y_dyn), xytext=(max(all_bounds), y_dyn),
+                    arrowprops=dict(arrowstyle='<->', color=COLORS['tilted'], lw=1.5))
+        region_note = f' ({n_regions} regions)' if n_regions > 1 else ''
+        ax.text((min(all_bounds) + max(all_bounds))/2, y_dyn + 0.03,
+                f'Dynamic: {width_dynamic:.2f}{region_note}', ha='center', fontsize=9,
+                color=COLORS['tilted'], fontweight='bold')
+
+        # Wald CI width
+        y_wald = y_positions[1]
+        ax.annotate('', xy=(ci_wald[0], y_wald), xytext=(ci_wald[1], y_wald),
+                    arrowprops=dict(arrowstyle='<->', color=COLORS['wald'], lw=1.5))
+        ax.text((ci_wald[0] + ci_wald[1])/2, y_wald + 0.03,
+                f'Wald: {width_wald:.2f}', ha='center', fontsize=9,
+                color=COLORS['wald'], fontweight='bold')
+
+        # WALDO CI width
+        y_waldo = y_positions[2]
+        ax.annotate('', xy=(ci_waldo[0], y_waldo), xytext=(ci_waldo[1], y_waldo),
+                    arrowprops=dict(arrowstyle='<->', color=COLORS['waldo'], lw=1.5))
+        ax.text((ci_waldo[0] + ci_waldo[1])/2, y_waldo + 0.03,
+                f'WALDO: {width_waldo:.2f}', ha='center', fontsize=9,
+                color=COLORS['waldo'], fontweight='bold')
+
+        # Info box
+        info_text = f'$|\\Delta| = {delta:.2f}$\n$D = {D}$'
+        ax.text(0.98, 0.98, info_text, transform=ax.transAxes,
+                fontsize=10, verticalalignment='top', ha='right',
+                bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.9))
+
+        # Row label
+        ax.text(0.02, 0.98, f'({chr(65+row)}) {label}', transform=ax.transAxes,
+                fontsize=12, fontweight='bold', verticalalignment='top')
+
+        ax.set_ylabel('p-value', fontsize=11)
+        ax.set_xlim(xlim)
+        ax.set_ylim(0, 1.05)
+        ax.grid(True, alpha=0.3)
+
+        if row == 2:
+            ax.set_xlabel(r'Hypothesized parameter $\theta$', fontsize=12)
+            ax.legend(loc='upper right', fontsize=9)
+
+    fig.suptitle('Dynamic Tilting Across Prior-Data Conflict Levels',
+                 fontsize=14, fontweight='bold', y=0.995)
 
     plt.tight_layout()
 
@@ -1166,10 +1352,6 @@ def figure_1_8_dynamic_construction(
 
     return fig
 
-
-# =============================================================================
-# Main Entry Point
-# =============================================================================
 
 def main():
     parser = argparse.ArgumentParser(description="Generate core theory figures")
@@ -1214,6 +1396,9 @@ def main():
 
     if '1.7' in figures_to_generate:
         figure_1_7_dynamic_tilting(save=save, show=show)
+
+    if '1.7b' in figures_to_generate:
+        figure_1_7b_envelope_construction(save=save, show=show)
 
     if '1.8' in figures_to_generate:
         figure_1_8_dynamic_construction(save=save, show=show)

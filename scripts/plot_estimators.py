@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-Estimator Properties Figures (Category 2)
+Estimator Properties Figures (Category 8)
 
-Generates figures 2.1-2.3:
-- Figure 2.1: Mode = Posterior Mean (Theorem 4)
-- Figure 2.2: Mean vs Mode Relationship (Theorem 5)
-- Figure 2.3: Dynamic Tilting Estimators (μ_n < μ_η* < E[θ] < D)
+Generates figures 8.1-8.3:
+- Figure 8.1: Mode = Posterior Mean (Theorem 4)
+- Figure 8.2: Mean vs Mode Relationship (Theorem 5)
+- Figure 8.3: Dynamic Tilting Estimators (μ_n < μ_η* < E[θ] < D)
 
 Usage:
     python scripts/plot_estimators.py [--no-save] [--show]
-    python scripts/plot_estimators.py --figure 2.3
+    python scripts/plot_estimators.py --figure 8.3
 """
 
 import sys
@@ -48,7 +48,7 @@ def data_for_conflict(delta: float, mu0: float, w: float, sigma: float) -> float
 
 
 # =============================================================================
-# Figure 2.1: Mode = Posterior Mean (Theorem 4)
+# Figure 8.1: Mode = Posterior Mean (Theorem 4)
 # =============================================================================
 
 def figure_2_1_mode_equals_posterior_mean(
@@ -56,12 +56,12 @@ def figure_2_1_mode_equals_posterior_mean(
     show: bool = False,
 ) -> plt.Figure:
     """
-    Generate Figure 2.1: Mode = Posterior Mean (Theorem 4).
+    Generate Figure 8.1: Mode = Posterior Mean (Theorem 4).
 
     Demonstrates that the mode of the confidence distribution equals mu_n.
     """
     print("\n" + "="*60)
-    print("Figure 2.1: Mode = Posterior Mean (Theorem 4)")
+    print("Figure 8.1: Mode = Posterior Mean (Theorem 4)")
     print("="*60)
 
     # Model parameters
@@ -115,7 +115,7 @@ def figure_2_1_mode_equals_posterior_mean(
     plt.tight_layout()
 
     if save:
-        save_figure(fig, "fig_2_1_mode_equals_posterior_mean", "estimators")
+        save_figure(fig, "fig_8_1_mode_equals_posterior_mean", "estimators")
 
     if show:
         plt.show()
@@ -124,7 +124,7 @@ def figure_2_1_mode_equals_posterior_mean(
 
 
 # =============================================================================
-# Figure 2.2: Mean vs Mode Relationship (Theorem 5)
+# Figure 8.2: Mean vs Mode Relationship (Theorem 5)
 # =============================================================================
 
 def figure_2_2_mean_vs_mode(
@@ -132,12 +132,12 @@ def figure_2_2_mean_vs_mode(
     show: bool = False,
 ) -> plt.Figure:
     """
-    Generate Figure 2.2: Mean vs Mode Relationship (Theorem 5).
+    Generate Figure 8.2: Mean vs Mode Relationship (Theorem 5).
 
     Shows E[theta] is between mode (mu_n) and MLE (D).
     """
     print("\n" + "="*60)
-    print("Figure 2.2: Mean vs Mode Relationship (Theorem 5)")
+    print("Figure 8.2: Mean vs Mode Relationship (Theorem 5)")
     print("="*60)
 
     # Model parameters
@@ -291,7 +291,7 @@ def figure_2_2_mean_vs_mode(
     plt.tight_layout()
 
     if save:
-        save_figure(fig, "fig_2_2_mean_vs_mode", "estimators")
+        save_figure(fig, "fig_8_2_mean_vs_mode", "estimators")
 
     if show:
         plt.show()
@@ -300,7 +300,7 @@ def figure_2_2_mean_vs_mode(
 
 
 # =============================================================================
-# Figure 2.3: Dynamic Tilting Estimators
+# Figure 8.3: Dynamic Tilting Estimators
 # =============================================================================
 
 def figure_2_3_dynamic_tilting_estimators(
@@ -308,14 +308,14 @@ def figure_2_3_dynamic_tilting_estimators(
     show: bool = False,
 ) -> plt.Figure:
     """
-    Generate Figure 2.3: Dynamic Tilting Estimators.
+    Generate Figure 8.3: Dynamic Tilting Estimators.
 
     Shows the hierarchy: μ_n < μ_η* < E[θ] < D as a function of |Δ|.
     The dynamically-tilted posterior mean μ_η* interpolates between
     the posterior mean and the MLE.
     """
     print("\n" + "="*60)
-    print("Figure 2.3: Dynamic Tilting Estimators")
+    print("Figure 8.3: Dynamic Tilting Estimators")
     print("="*60)
 
     # Model parameters
@@ -431,7 +431,7 @@ def figure_2_3_dynamic_tilting_estimators(
     plt.tight_layout()
 
     if save:
-        save_figure(fig, "fig_2_3_dynamic_tilting_estimators", "estimators")
+        save_figure(fig, "fig_8_3_dynamic_tilting_estimators", "estimators")
 
     if show:
         plt.show()
@@ -461,17 +461,17 @@ def main():
     print("ESTIMATOR PROPERTIES FIGURES")
     print("="*60)
 
-    figures_to_generate = ['2.1', '2.2', '2.3']
+    figures_to_generate = ['8.1', '8.2', '8.3']
     if args.figure:
         figures_to_generate = [args.figure]
 
-    if '2.1' in figures_to_generate:
+    if '8.1' in figures_to_generate:
         figure_2_1_mode_equals_posterior_mean(save=save, show=show)
 
-    if '2.2' in figures_to_generate:
+    if '8.2' in figures_to_generate:
         figure_2_2_mean_vs_mode(save=save, show=show)
 
-    if '2.3' in figures_to_generate:
+    if '8.3' in figures_to_generate:
         figure_2_3_dynamic_tilting_estimators(save=save, show=show)
 
     print("\n" + "="*60)

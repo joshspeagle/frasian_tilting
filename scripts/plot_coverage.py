@@ -1,19 +1,14 @@
 #!/usr/bin/env python3
 """
-Coverage Analysis Figures (Category 3)
+Coverage and Efficiency Figures (Category 2)
 
-Generates figures 3.1-3.3 with proper uncertainty quantification:
-- Figure 3.1: Coverage Table Heatmap with SE annotations
-- Figure 3.2: Coverage Curves vs theta with error bands
-- Figure 3.3: Conditional Coverage Given Prior Residual with error bands
-
-Uses the three-layer simulation architecture:
-- Layer 0: Load raw D samples
-- Layer 1: Compute coverage indicators from D samples
-- Layer 1.5: Cache processed results
+Generates figures 2.1-2.3:
+- Figure 2.1: Coverage Heatmaps (w vs |Δ|) for Wald, Posterior, WALDO, Dynamic
+- Figure 2.2: Coverage Curves vs θ for three w values (0.2, 0.5, 0.8)
+- Figure 2.3: CI Width Heatmaps (w vs |Δ|) - efficiency counterpart to 2.1
 
 Usage:
-    python scripts/plot_coverage.py [--no-save] [--show] [--fast]
+    python scripts/plot_coverage.py [--no-save] [--show] [--fast] [--figure 2.X]
 """
 
 import sys
@@ -66,125 +61,137 @@ def load_coverage_data(fast: bool = False):
 
 
 # =============================================================================
-# Figure 3.1: Coverage Table Heatmap
+# Figure 2.1: Coverage Heatmaps (w vs |Delta|)
 # =============================================================================
 
-def figure_3_1_coverage_heatmap(
+def figure_2_1_coverage_heatmap(
     save: bool = True,
     show: bool = False,
     fast: bool = False,
 ) -> plt.Figure:
     """
-    Generate Figure 3.1: Coverage Table Visualization with SE annotations.
+    Generate Figure 2.1: Coverage Heatmaps for Four Methods.
 
-    A heatmap showing coverage rates for Wald, Posterior, WALDO across theta values.
-    Color scale from red (severe undercoverage) to green (correct coverage).
-    Now includes standard error in annotations.
+    Four 2D heatmaps showing coverage as a function of w (prior weight) and |Delta|
+    (prior-truth conflict) for Wald, Posterior, WALDO, and Dynamic methods.
     """
     print("\n" + "="*60)
-    print("Figure 3.1: Coverage Table Heatmap")
+    print("Figure 2.1: Coverage Heatmaps (w vs |Delta|)")
     print("="*60)
 
-    # Model parameters (Section 7 setup: mu0=0, sigma=sigma0=1, w=0.5)
-    mu0, sigma, sigma0 = 0.0, 1.0, 1.0
-    w = 0.5
-    alpha = 0.05
+    # Model parameters
+    mu0, sigma = 0.0, 1.0
+    alpha = 0.2  # 80% coverage target
 
-    # Standard theta values from document
-    theta_values = np.array([-3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 5.0])
+    # Grid for w and |Delta| - more bins
+    n_w = 12 if fast else 25
+    n_delta = 15 if fast else 30
+    n_reps = 1000 if fast else 5000
+
+    w_values = np.linspace(0.1, 0.9, n_w)
+    delta_values = np.linspace(0, 4, n_delta)
+
     methods = ['Wald', 'Posterior', 'WALDO', 'Dynamic']
     method_keys = ['wald', 'posterior', 'waldo', 'dynamic']
 
-    # Load raw data
-    data, metadata = load_coverage_data(fast)
-    D_samples = data["D_samples"]  # [n_theta, n_w, n_reps]
-    theta_grid = data["theta_grid"]
-    w_values = data["w_values"]
+    print(f"Grid: {n_w} w values x {n_delta} |Delta| values")
+    print(f"Replicates per cell: {n_reps}")
+    print(f"Target coverage: {1-alpha:.0%}")
 
-    # Find w=0.5 index (or closest)
-    w_idx = np.argmin(np.abs(w_values - w))
-    actual_w = w_values[w_idx]
-    sigma0_actual = compute_sigma0_from_w(sigma, actual_w)
+    # Compute coverage for each method on (w, |Delta|) grid
+    # EFFICIENT: Check p(theta_true) >= alpha instead of computing full CIs
+    coverage_grids = {m: np.zeros((n_delta, n_w)) for m in method_keys}
 
-    print(f"Using w={actual_w:.2f} (sigma0={sigma0_actual:.3f})")
-    print(f"Number of replicates: {D_samples.shape[2]}")
+    from frasian.tilting import dynamic_tilted_pvalue
+    from frasian.waldo import pvalue as waldo_pvalue
+    from scipy.stats import norm
 
-    # Compute coverage for selected theta values
-    coverage_matrix = np.zeros((len(methods), len(theta_values)))
-    se_matrix = np.zeros((len(methods), len(theta_values)))
+    z = norm.ppf(1 - alpha / 2)
 
-    for j, theta in enumerate(tqdm(theta_values, desc="Computing coverage")):
-        # Find closest theta in grid
-        theta_idx = np.argmin(np.abs(theta_grid - theta))
-        D_row = D_samples[theta_idx, w_idx, :]
+    np.random.seed(42)
 
-        for i, method in enumerate(method_keys):
-            # Compute coverage indicators
-            indicators = compute_coverage_indicators(
-                D_row, theta, mu0, sigma, sigma0_actual, method, alpha
-            )
-            # Bootstrap for proper uncertainty
-            cov, se, ci_lo, ci_hi = bootstrap_proportion(
-                indicators, n_boot=1000, seed=42 + j
-            )
-            coverage_matrix[i, j] = cov
-            se_matrix[i, j] = se
+    total_cells = n_w * n_delta
+    pbar = tqdm(total=total_cells, desc="Computing coverage")
 
-    # Create figure
-    fig, ax = plt.subplots(figsize=(10, 5))
+    for i, delta in enumerate(delta_values):
+        for j, w in enumerate(w_values):
+            # Compute sigma0 from w
+            sigma0 = sigma * np.sqrt(w / (1 - w))
 
-    # Custom colormap centered around 95%
-    from matplotlib.colors import LinearSegmentedColormap
+            # Compute theta_true from |Delta|: |Delta| = (1-w)|mu0 - theta|/sigma
+            theta_true = mu0 + sigma * delta / (1 - w) if delta > 0 else mu0
 
-    colors_list = ['#DC3545', '#FFC107', '#28A745']  # red, yellow, green
-    cmap = LinearSegmentedColormap.from_list("coverage", colors_list, N=256)
+            # Generate D samples (vectorized)
+            D_samples = np.random.normal(theta_true, sigma, n_reps)
 
-    # Plot heatmap
-    im = ax.imshow(coverage_matrix, aspect='auto', cmap=cmap, vmin=0, vmax=1)
+            # Compute posterior means for all samples (vectorized)
+            mu_n_samples = w * D_samples + (1 - w) * mu0
+            sigma_n = np.sqrt(w) * sigma
 
-    # Add text annotations with SE
-    for i in range(len(methods)):
-        for j in range(len(theta_values)):
-            cov = coverage_matrix[i, j]
-            se = se_matrix[i, j]
-            # White text on dark backgrounds, black on light
-            text_color = 'white' if cov < 0.5 else 'black'
-            # Format with uncertainty
-            text = format_with_uncertainty(cov * 100, se * 100, decimals=1, percent=True)
-            ax.text(j, i, text, ha='center', va='center',
-                   fontsize=9, fontweight='bold', color=text_color)
+            # Wald: theta_true in CI iff |D - theta_true| <= z * sigma
+            wald_covered = np.abs(D_samples - theta_true) <= z * sigma
+            coverage_grids['wald'][i, j] = np.mean(wald_covered)
 
-    # Axis configuration
-    ax.set_xticks(range(len(theta_values)))
-    ax.set_xticklabels([f'{t:.0f}' for t in theta_values])
-    ax.set_yticks(range(len(methods)))
-    ax.set_yticklabels(methods)
+            # Posterior: theta_true in CI iff |mu_n - theta_true| <= z * sigma_n
+            post_covered = np.abs(mu_n_samples - theta_true) <= z * sigma_n
+            coverage_grids['posterior'][i, j] = np.mean(post_covered)
 
-    ax.set_xlabel(r'True parameter value $\theta$', fontsize=12)
-    ax.set_ylabel('Method', fontsize=12)
-    ax.set_title('Coverage Rates: WALDO Maintains 95% Coverage Everywhere\n'
-                 r'($\mu_0=0$, $\sigma=\sigma_0=1$, $\alpha=0.05$)',
-                 fontsize=13, fontweight='bold')
+            # WALDO: p(theta_true) >= alpha
+            # Correct call: pvalue(theta, mu_n, mu0, w, sigma)
+            waldo_pvals = np.array([waldo_pvalue(theta_true, mu_n, mu0, w, sigma)
+                                    for mu_n in mu_n_samples])
+            coverage_grids['waldo'][i, j] = np.mean(waldo_pvals >= alpha)
 
-    # Add colorbar
-    cbar = plt.colorbar(im, ax=ax, shrink=0.8)
-    cbar.set_label('Coverage Rate', fontsize=11)
-    cbar.set_ticks([0, 0.25, 0.5, 0.75, 0.95, 1.0])
-    cbar.set_ticklabels(['0%', '25%', '50%', '75%', '95%', '100%'])
-    cbar.ax.axhline(y=0.95, color='black', linestyle='--', linewidth=2)
+            # Dynamic: p_dynamic(theta_true) >= alpha
+            dynamic_pvals = np.array([dynamic_tilted_pvalue(theta_true, D, mu0, sigma, sigma0, alpha)
+                                      for D in D_samples])
+            coverage_grids['dynamic'][i, j] = np.mean(dynamic_pvals >= alpha)
 
-    # Add legend explaining colors
-    legend_elements = [
-        Patch(facecolor='#28A745', label='Correct (>93.5%)'),
-        Patch(facecolor='#FFC107', label='Marginal (70-93.5%)'),
-        Patch(facecolor='#DC3545', label='Severe undercoverage (<70%)'),
-    ]
-    ax.legend(handles=legend_elements, loc='upper right', bbox_to_anchor=(1.45, 1.0))
+            pbar.update(1)
 
-    plt.tight_layout()
+    pbar.close()
+
+    # Create figure with 4 subplots
+    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+    axes = axes.flatten()
+
+    # Diverging colormap centered at target coverage (0.8), spanning 0 to 1
+    # Red = undercoverage, White = target, Blue = overcoverage
+    from matplotlib.colors import TwoSlopeNorm
+    target_coverage = 1 - alpha  # 0.8
+    norm = TwoSlopeNorm(vmin=0.0, vcenter=target_coverage, vmax=1.0)
+    cmap = plt.cm.RdBu
+
+    for idx, (ax, method, method_key) in enumerate(zip(axes, methods, method_keys)):
+        coverage = coverage_grids[method_key]
+
+        # Plot heatmap - NO contour lines
+        im = ax.imshow(coverage, aspect='auto', cmap=cmap, norm=norm,
+                       origin='lower', extent=[w_values[0], w_values[-1],
+                                               delta_values[0], delta_values[-1]])
+
+        ax.set_xlabel(r'Prior weight $w$', fontsize=11)
+        ax.set_ylabel(r'Prior-truth conflict $|\Delta|$', fontsize=11)
+        ax.set_title(f'{method}', fontsize=12, fontweight='bold')
+
+        # Colorbar for each subplot
+        cbar = plt.colorbar(im, ax=ax, shrink=0.8)
+        cbar.set_label('Coverage', fontsize=9)
+
+    # Add definitions
+    fig.text(0.5, -0.02,
+             r'$w = \sigma_0^2/(\sigma^2 + \sigma_0^2)$ (prior weight),  '
+             r'$|\Delta| = (1-w)|\mu_0 - \theta_{\mathrm{true}}|/\sigma$ (prior-truth conflict)',
+             ha='center', fontsize=10, style='italic')
+
+    fig.suptitle(f'Coverage Rates Across $(w, |\\Delta|)$ Parameter Space\n'
+                 f'Target = {target_coverage:.0%} (white), Red = undercoverage, Blue = overcoverage',
+                 fontsize=14, fontweight='bold', y=1.02)
+
+    plt.tight_layout(rect=[0, 0.03, 1, 1])
 
     if save:
-        save_figure(fig, "fig_3_1_coverage_heatmap", "coverage")
+        save_figure(fig, "fig_2_1_coverage_heatmap", "coverage")
 
     if show:
         plt.show()
@@ -193,32 +200,36 @@ def figure_3_1_coverage_heatmap(
 
 
 # =============================================================================
-# Figure 3.2: Coverage Curves with Error Bands
+# Figure 2.2: Coverage Curves with Error Bands
 # =============================================================================
 
-def figure_3_2_coverage_curves(
+def figure_2_2_coverage_curves(
     save: bool = True,
     show: bool = False,
     fast: bool = False,
 ) -> plt.Figure:
     """
-    Generate Figure 3.2: Coverage Curves with error bands.
+    Generate Figure 2.2: Coverage Curves with error bands.
 
-    Shows coverage as continuous function of theta for three methods,
-    with shaded ±1.96*SE bands and multiple panels for different w values.
+    Shows coverage as continuous function of theta for four methods,
+    with shaded ±1.96*SE bands. Three rows for w=0.2, 0.5, 0.8.
     """
     print("\n" + "="*60)
-    print("Figure 3.2: Coverage Curves with Error Bands")
+    print("Figure 2.2: Coverage Curves with Error Bands")
     print("="*60)
 
-    # Load raw data
-    data, metadata = load_coverage_data(fast)
-    D_samples = data["D_samples"]  # [n_theta, n_w, n_reps]
-    theta_grid = data["theta_grid"]
-    w_values = data["w_values"]
-    mu0 = metadata["mu0"]
-    sigma = metadata["sigma"]
-    alpha = 0.05
+    # Model parameters
+    mu0, sigma = 0.0, 1.0
+    alpha = 0.2  # 80% coverage to match figure 2.1
+
+    # Fixed w values for 3-row layout
+    w_values = [0.2, 0.5, 0.8]
+    w_labels = ['Strong prior (w=0.2)', 'Balanced (w=0.5)', 'Weak prior (w=0.8)']
+
+    # Theta grid and replicates
+    n_theta = 15 if fast else 30
+    n_reps = 500 if fast else 2000
+    theta_grid = np.linspace(-4, 6, n_theta)
 
     methods = ['wald', 'posterior', 'waldo', 'dynamic']
     method_labels = {
@@ -228,39 +239,62 @@ def figure_3_2_coverage_curves(
         'dynamic': 'Dynamic',
     }
 
-    print(f"Theta grid: {len(theta_grid)} points")
+    print(f"Theta grid: {n_theta} points")
     print(f"W values: {w_values}")
-    print(f"Replicates: {D_samples.shape[2]}")
+    print(f"Replicates per point: {n_reps}")
+    print(f"Target coverage: {1-alpha:.0%}")
 
-    fig, axes = plt.subplots(1, len(w_values), figsize=FIGSIZE["panel_1x3"], sharey=True)
+    # Create 3-row figure
+    fig, axes = plt.subplots(3, 1, figsize=(10, 12), sharey=True)
 
-    # Handle single w value case
-    if len(w_values) == 1:
-        axes = [axes]
+    from frasian.waldo import pvalue as waldo_pvalue
+    from frasian.tilting import dynamic_tilted_pvalue
+    from scipy.stats import norm
 
-    for ax, (w_idx, w) in zip(axes, enumerate(w_values)):
-        sigma0 = compute_sigma0_from_w(sigma, w)
-        print(f"\nComputing coverage for w={w}...")
+    z = norm.ppf(1 - alpha / 2)
+    np.random.seed(42)
+
+    for row_idx, (ax, w, w_label) in enumerate(zip(axes, w_values, w_labels)):
+        sigma0 = sigma * np.sqrt(w / (1 - w))
+        sigma_n = np.sqrt(w) * sigma
+        print(f"\nComputing coverage for {w_label}...")
 
         # Compute coverage for each method
-        results = {}
+        results = {m: {'coverage': [], 'se': []} for m in methods}
+
+        for theta in tqdm(theta_grid, desc=f"  w={w}"):
+            # Generate D samples for this theta
+            D_samples = np.random.normal(theta, sigma, n_reps)
+            mu_n_samples = w * D_samples + (1 - w) * mu0
+
+            # Wald coverage
+            wald_covered = np.abs(D_samples - theta) <= z * sigma
+            results['wald']['coverage'].append(np.mean(wald_covered))
+            results['wald']['se'].append(np.std(wald_covered) / np.sqrt(n_reps))
+
+            # Posterior coverage
+            post_covered = np.abs(mu_n_samples - theta) <= z * sigma_n
+            results['posterior']['coverage'].append(np.mean(post_covered))
+            results['posterior']['se'].append(np.std(post_covered) / np.sqrt(n_reps))
+
+            # WALDO coverage: p(theta) >= alpha
+            waldo_pvals = np.array([waldo_pvalue(theta, mu_n, mu0, w, sigma)
+                                    for mu_n in mu_n_samples])
+            waldo_covered = waldo_pvals >= alpha
+            results['waldo']['coverage'].append(np.mean(waldo_covered))
+            results['waldo']['se'].append(np.std(waldo_covered) / np.sqrt(n_reps))
+
+            # Dynamic coverage: p_dynamic(theta) >= alpha
+            dynamic_pvals = np.array([dynamic_tilted_pvalue(theta, D, mu0, sigma, sigma0, alpha)
+                                      for D in D_samples])
+            dynamic_covered = dynamic_pvals >= alpha
+            results['dynamic']['coverage'].append(np.mean(dynamic_covered))
+            results['dynamic']['se'].append(np.std(dynamic_covered) / np.sqrt(n_reps))
+
+        # Convert to arrays
         for method in methods:
-            coverage_rates = []
-            coverage_se = []
-
-            for i, theta in enumerate(tqdm(theta_grid, desc=f"  {method}")):
-                D_row = D_samples[i, w_idx, :]
-                indicators = compute_coverage_indicators(
-                    D_row, theta, mu0, sigma, sigma0, method, alpha
-                )
-                cov, se, _, _ = bootstrap_proportion(indicators, n_boot=500, seed=42 + i)
-                coverage_rates.append(cov)
-                coverage_se.append(se)
-
-            results[method] = {
-                'coverage': np.array(coverage_rates),
-                'se': np.array(coverage_se),
-            }
+            results[method]['coverage'] = np.array(results[method]['coverage'])
+            results[method]['se'] = np.array(results[method]['se'])
 
         # Plot curves with error bands
         for method in methods:
@@ -274,29 +308,31 @@ def figure_3_2_coverage_curves(
             )
 
         # Reference lines
-        ax.axhline(y=0.95, color='black', linestyle='--', linewidth=1, alpha=0.7)
-        ax.axhspan(0.935, 0.965, alpha=0.1, color='gray')
-        ax.axvline(x=mu0, color='gray', linestyle=':', alpha=0.5)
+        target = 1 - alpha
+        ax.axhline(y=target, color='black', linestyle='--', linewidth=1, alpha=0.7,
+                   label=f'{target:.0%} target')
+        ax.axhspan(target - 0.02, target + 0.02, alpha=0.1, color='gray')
+        ax.axvline(x=mu0, color='gray', linestyle=':', alpha=0.5, label=r'$\mu_0$')
 
         # Formatting
-        ax.set_xlabel(r'$\theta$', fontsize=11)
-        prior_strength = "strong" if w < 0.4 else "weak" if w > 0.6 else "balanced"
-        ax.set_title(f'w = {w} ({prior_strength} prior)', fontsize=11)
+        ax.set_ylabel('Coverage', fontsize=11)
+        ax.set_title(w_label, fontsize=12, fontweight='bold')
         ax.set_ylim(0, 1.05)
         ax.grid(True, alpha=0.3)
 
-        if ax == axes[0]:
-            ax.set_ylabel('Coverage', fontsize=11)
-            ax.legend(loc='lower left', fontsize=9)
+        if row_idx == 0:
+            ax.legend(loc='lower right', fontsize=9, ncol=3)
+        if row_idx == 2:
+            ax.set_xlabel(r'True parameter $\theta$', fontsize=11)
 
-    fig.suptitle('Coverage vs True Parameter Value (with 95% CI bands)\n'
-                 'WALDO and Wald maintain 95% coverage; Posterior fails away from prior mean',
-                 fontsize=12, fontweight='bold', y=1.02)
+    fig.suptitle(f'Coverage vs True Parameter Value (target = {1-alpha:.0%})\n'
+                 'WALDO and Wald maintain nominal coverage; Posterior fails away from prior mean',
+                 fontsize=12, fontweight='bold', y=0.98)
 
     plt.tight_layout()
 
     if save:
-        save_figure(fig, "fig_3_2_coverage_curves", "coverage")
+        save_figure(fig, "fig_2_2_coverage_curves", "coverage")
 
     if show:
         plt.show()
@@ -305,123 +341,157 @@ def figure_3_2_coverage_curves(
 
 
 # =============================================================================
-# Figure 3.3: Conditional Coverage Given Prior Residual
+# Figure 2.3: CI Width Heatmaps (Efficiency)
 # =============================================================================
 
-def figure_3_3_conditional_coverage(
+def figure_2_3_width_heatmap(
     save: bool = True,
     show: bool = False,
     fast: bool = False,
 ) -> plt.Figure:
     """
-    Generate Figure 3.3: Conditional Coverage Given Prior Residual with error bands.
+    Generate Figure 2.3: CI Width Heatmaps for Four Methods.
 
-    Illustrates the "prior ancillary" concept from Section 8.3.
+    Same grid as 2.1 (w vs |Δ|) but showing expected CI width instead of coverage.
+    This shows efficiency - narrower CIs are better (given valid coverage).
     """
     print("\n" + "="*60)
-    print("Figure 3.3: Conditional Coverage Given Prior Residual")
+    print("Figure 2.3: CI Width Heatmaps (w vs |Delta|)")
     print("="*60)
 
-    # Load raw data
-    data, metadata = load_coverage_data(fast)
-    D_samples = data["D_samples"]
-    theta_grid = data["theta_grid"]
-    w_values = data["w_values"]
-    mu0 = metadata["mu0"]
-    sigma = metadata["sigma"]
-    alpha = 0.05
+    # Model parameters (same as 2.1)
+    mu0, sigma = 0.0, 1.0
+    alpha = 0.2  # 80% CI to match figure 2.1
 
-    # Use w=0.5 (or closest available)
-    w_idx = np.argmin(np.abs(w_values - 0.5))
-    w = w_values[w_idx]
-    sigma0 = compute_sigma0_from_w(sigma, w)
+    # Grid for w and |Delta| - same as 2.1
+    n_w = 12 if fast else 25
+    n_delta = 15 if fast else 30
+    n_reps = 500 if fast else 2000
 
-    # Compute delta values
-    delta_values = np.array([prior_residual(t, mu0, sigma0) for t in theta_grid])
+    w_values = np.linspace(0.1, 0.9, n_w)
+    delta_values = np.linspace(0, 4, n_delta)
 
-    print(f"Computing conditional coverage (w={w})...")
+    methods = ['Wald', 'Posterior', 'WALDO', 'Dynamic']
+    method_keys = ['wald', 'posterior', 'waldo', 'dynamic']
 
-    # Compute coverage at each theta for both methods
-    waldo_coverage = []
-    waldo_se = []
-    posterior_coverage = []
-    posterior_se = []
+    print(f"Grid: {n_w} w values x {n_delta} |Delta| values")
+    print(f"Replicates per cell: {n_reps}")
+    print(f"CI level: {1-alpha:.0%}")
 
-    for i, theta in enumerate(tqdm(theta_grid, desc="Computing")):
-        D_row = D_samples[i, w_idx, :]
+    # Compute expected CI width for each method on (w, |Delta|) grid
+    width_grids = {m: np.zeros((n_delta, n_w)) for m in method_keys}
 
-        # WALDO
-        ind_waldo = compute_coverage_indicators(
-            D_row, theta, mu0, sigma, sigma0, 'waldo', alpha
-        )
-        cov, se, _, _ = bootstrap_proportion(ind_waldo, n_boot=500, seed=42 + i)
-        waldo_coverage.append(cov)
-        waldo_se.append(se)
+    from frasian.waldo import pvalue as waldo_pvalue
+    from frasian.tilting import dynamic_tilted_pvalue_batch
+    from scipy.stats import norm
 
-        # Posterior
-        ind_post = compute_coverage_indicators(
-            D_row, theta, mu0, sigma, sigma0, 'posterior', alpha
-        )
-        cov, se, _, _ = bootstrap_proportion(ind_post, n_boot=500, seed=43 + i)
-        posterior_coverage.append(cov)
-        posterior_se.append(se)
+    z = norm.ppf(1 - alpha / 2)
+    np.random.seed(42)
 
-    waldo_coverage = np.array(waldo_coverage)
-    waldo_se = np.array(waldo_se)
-    posterior_coverage = np.array(posterior_coverage)
-    posterior_se = np.array(posterior_se)
+    # Fine theta grid for finding CI bounds via grid search
+    n_theta_grid = 200 if fast else 500
 
-    # Create figure
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    total_cells = n_w * n_delta
+    pbar = tqdm(total=total_cells, desc="Computing widths")
 
-    # Panel A: Coverage vs delta with error bands
-    ax1 = axes[0]
-    plot_with_error_band(ax1, delta_values, waldo_coverage, waldo_se,
-                         color=COLORS['waldo'], label='WALDO', alpha=0.25)
-    plot_with_error_band(ax1, delta_values, posterior_coverage, posterior_se,
-                         color=COLORS['posterior'], label='Posterior', alpha=0.25)
+    for i, delta in enumerate(delta_values):
+        for j, w in enumerate(w_values):
+            # Compute sigma0 from w
+            sigma0 = sigma * np.sqrt(w / (1 - w))
 
-    ax1.axhline(y=0.95, color='black', linestyle='--', linewidth=1)
-    ax1.axhspan(0.935, 0.965, alpha=0.1, color='gray')
-    ax1.axvline(x=0, color='gray', linestyle=':', alpha=0.5, label=r'$\delta=0$')
+            # Compute theta_true from |Delta| (for generating D samples)
+            theta_true = mu0 + sigma * delta / (1 - w) if delta > 0 else mu0
 
-    ax1.set_xlabel(r'Prior residual $\delta(\theta) = (\theta - \mu_0)/\sigma_0$', fontsize=11)
-    ax1.set_ylabel('Coverage', fontsize=11)
-    ax1.set_title('Coverage vs Prior Residual (with 95% CI)', fontsize=12)
-    ax1.set_ylim(0, 1.05)
-    ax1.legend(loc='lower left')
-    ax1.grid(True, alpha=0.3)
+            # Generate D samples (vectorized)
+            D_samples = np.random.normal(theta_true, sigma, n_reps)
 
-    # Panel B: Coverage difference with error bars
-    ax2 = axes[1]
-    coverage_diff = waldo_coverage - posterior_coverage
-    diff_se = np.sqrt(waldo_se**2 + posterior_se**2)  # Propagated SE
+            # Wald width: constant = 2 * z * sigma
+            width_grids['wald'][i, j] = 2 * z * sigma
 
-    ax2.bar(delta_values, coverage_diff, width=0.4,
-            color=[COLORS['waldo'] if d >= 0 else COLORS['posterior'] for d in coverage_diff],
-            alpha=0.7, edgecolor='black', linewidth=0.5,
-            yerr=1.96 * diff_se, capsize=2, error_kw={'elinewidth': 0.5})
+            # Posterior width: 2 * z * sigma_n = 2 * z * sqrt(w) * sigma
+            width_grids['posterior'][i, j] = 2 * z * np.sqrt(w) * sigma
 
-    ax2.axhline(y=0, color='black', linewidth=1)
-    ax2.axvline(x=0, color='gray', linestyle=':', alpha=0.5)
+            # For WALDO and Dynamic, use grid-based CI width estimation
+            # Create theta grid centered on typical posterior means
+            mu_n_samples = w * D_samples + (1 - w) * mu0
+            theta_min = np.min(mu_n_samples) - 5 * sigma
+            theta_max = np.max(mu_n_samples) + 5 * sigma
+            theta_grid = np.linspace(theta_min, theta_max, n_theta_grid)
+            d_theta = theta_grid[1] - theta_grid[0]
 
-    ax2.set_xlabel(r'Prior residual $\delta(\theta)$', fontsize=11)
-    ax2.set_ylabel('Coverage(WALDO) - Coverage(Posterior)', fontsize=11)
-    ax2.set_title('WALDO Advantage Over Posterior', fontsize=12)
-    ax2.grid(True, alpha=0.3, axis='y')
+            # WALDO: fully vectorized - pvalue() accepts arrays for theta
+            waldo_widths = np.zeros(n_reps)
+            for k, D in enumerate(D_samples):
+                mu_n = w * D + (1 - w) * mu0
+                # waldo_pvalue is vectorized over theta
+                pvals = waldo_pvalue(theta_grid, mu_n, mu0, w, sigma)
+                in_ci = pvals >= alpha
+                waldo_widths[k] = np.sum(in_ci) * d_theta
+            width_grids['waldo'][i, j] = np.mean(waldo_widths)
 
-    # Add annotation
-    ax2.annotate('WALDO\nbetter', xy=(np.max(delta_values)*0.6, 0.35), fontsize=10, ha='center',
-                color=COLORS['waldo'], fontweight='bold')
+            # Dynamic: use batched MLP for efficiency
+            n_dynamic = min(100, n_reps)  # Use subset of samples
+            dynamic_widths = np.zeros(n_dynamic)
+            for k in range(n_dynamic):
+                D = D_samples[k]
+                # Use batched p-value computation (MLP inference is batched)
+                pvals = dynamic_tilted_pvalue_batch(theta_grid, D, mu0, sigma, sigma0, alpha)
+                in_ci = pvals >= alpha
+                dynamic_widths[k] = np.sum(in_ci) * d_theta
+            width_grids['dynamic'][i, j] = np.mean(dynamic_widths)
 
-    fig.suptitle('Prior Ancillary Property: WALDO Coverage is Uniform in $\\delta(\\theta)$\n'
-                 'Posterior coverage degrades as $|\\delta|$ increases',
-                 fontsize=12, fontweight='bold', y=1.02)
+            pbar.update(1)
 
-    plt.tight_layout()
+    pbar.close()
+
+    # Create figure with 4 subplots
+    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+    axes = axes.flatten()
+
+    # Diverging colormap centered on Wald width
+    # Wald width is constant: 2 * z * sigma
+    wald_width = 2 * z * sigma
+
+    # Find global min/max for colormap range
+    all_widths = np.concatenate([width_grids[m].flatten() for m in method_keys])
+    vmin, vmax = np.min(all_widths), np.max(all_widths)
+
+    # Use TwoSlopeNorm to center colormap on Wald width (yellow)
+    # Green = narrower than Wald (better), Red = wider than Wald (worse)
+    from matplotlib.colors import TwoSlopeNorm
+    norm = TwoSlopeNorm(vmin=vmin, vcenter=wald_width, vmax=vmax)
+    cmap = plt.cm.RdYlGn_r  # Reversed: green = small (good), red = large (bad)
+
+    for idx, (ax, method, method_key) in enumerate(zip(axes, methods, method_keys)):
+        widths = width_grids[method_key]
+
+        # Plot heatmap
+        im = ax.imshow(widths, aspect='auto', cmap=cmap, norm=norm,
+                       origin='lower', extent=[w_values[0], w_values[-1],
+                                               delta_values[0], delta_values[-1]])
+
+        ax.set_xlabel(r'Prior weight $w$', fontsize=11)
+        ax.set_ylabel(r'Prior-truth conflict $|\Delta|$', fontsize=11)
+        ax.set_title(f'{method}', fontsize=12, fontweight='bold')
+
+        # Colorbar for each subplot
+        cbar = plt.colorbar(im, ax=ax, shrink=0.8)
+        cbar.set_label('CI Width', fontsize=9)
+
+    # Add definitions
+    fig.text(0.5, -0.02,
+             r'$w = \sigma_0^2/(\sigma^2 + \sigma_0^2)$ (prior weight),  '
+             r'$|\Delta| = (1-w)|\mu_0 - \theta_{\mathrm{true}}|/\sigma$ (prior-truth conflict)',
+             ha='center', fontsize=10, style='italic')
+
+    fig.suptitle(f'Expected CI Width Across $(w, |\\Delta|)$ Parameter Space\n'
+                 f'Yellow = Wald width ({wald_width:.2f}), Green = narrower (better), Red = wider',
+                 fontsize=14, fontweight='bold', y=1.02)
+
+    plt.tight_layout(rect=[0, 0.03, 1, 1])
 
     if save:
-        save_figure(fig, "fig_3_3_conditional_coverage", "coverage")
+        save_figure(fig, "fig_2_3_width_heatmap", "coverage")
 
     if show:
         plt.show()
@@ -452,18 +522,18 @@ def main():
     print("="*60)
     print(f"Configuration: {'FAST' if fast else 'PRODUCTION'}")
 
-    figures_to_generate = ['3.1', '3.2', '3.3']
+    figures_to_generate = ['2.1', '2.2', '2.3']
     if args.figure:
         figures_to_generate = [args.figure]
 
-    if '3.1' in figures_to_generate:
-        figure_3_1_coverage_heatmap(save=save, show=show, fast=fast)
+    if '2.1' in figures_to_generate:
+        figure_2_1_coverage_heatmap(save=save, show=show, fast=fast)
 
-    if '3.2' in figures_to_generate:
-        figure_3_2_coverage_curves(save=save, show=show, fast=fast)
+    if '2.2' in figures_to_generate:
+        figure_2_2_coverage_curves(save=save, show=show, fast=fast)
 
-    if '3.3' in figures_to_generate:
-        figure_3_3_conditional_coverage(save=save, show=show, fast=fast)
+    if '2.3' in figures_to_generate:
+        figure_2_3_width_heatmap(save=save, show=show, fast=fast)
 
     print("\n" + "="*60)
     print("DONE - Coverage figures generated")

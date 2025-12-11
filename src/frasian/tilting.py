@@ -16,7 +16,7 @@ Key results:
 import numpy as np
 from scipy import stats
 from scipy import optimize
-from typing import Tuple, Union, Optional
+from typing import Tuple, Union, Optional, List
 
 from .core import posterior_params, weight, scaled_conflict, bias
 from .waldo import pvalue, pvalue_components, noncentrality
@@ -454,6 +454,7 @@ def dynamic_tilted_pvalue(
     mu0: float,
     sigma: float,
     sigma0: float,
+    alpha: float = 0.05,
 ) -> ArrayLike:
     """
     Compute p-value with dynamic tilting based on |Delta(theta)|.
@@ -490,8 +491,8 @@ def dynamic_tilted_pvalue(
         # Compute |Delta| at this theta
         Delta_theta = np.abs((1 - w) * (mu0 - th) / sigma)
 
-        # Get optimal eta for this |Delta|
-        eta_star = optimal_eta_approximation(Delta_theta)
+        # Get optimal eta for this |Delta| using MLP
+        eta_star = optimal_eta_mlp(Delta_theta, w=w, alpha=alpha)
 
         # Compute tilted p-value
         p = tilted_pvalue(th, D, mu0, sigma, sigma0, eta_star)
@@ -510,14 +511,14 @@ def dynamic_tilted_ci(
     sigma: float,
     sigma0: float,
     alpha: float = 0.05,
-    bracket_mult: float = 10.0,
-) -> Tuple[float, float]:
+    n_grid: int = 1000,
+    search_range_mult: float = 10.0,
+) -> Tuple[List[Tuple[float, float]], float]:
     """
-    Compute confidence interval with dynamic tilting.
+    Compute confidence region with dynamic tilting.
 
     Uses eta*(|Delta(theta)|) which varies across the interval.
-    Note: The mode of the dynamic p-value function may differ from mu_n,
-    especially for extreme D values, so we first find the mode.
+    Returns potentially disconnected regions (HPD-like sets) where p(theta) >= alpha.
 
     Parameters
     ----------
@@ -531,72 +532,83 @@ def dynamic_tilted_ci(
         Prior standard deviation
     alpha : float
         Significance level
-    bracket_mult : float
-        Multiplier for search bracket
+    n_grid : int
+        Number of grid points for scanning
+    search_range_mult : float
+        Multiplier for search range around D
 
     Returns
     -------
-    lower : float
-        Lower CI bound
-    upper : float
-        Upper CI bound
+    regions : List[Tuple[float, float]]
+        List of (lower, upper) intervals comprising the confidence region
+    total_width : float
+        Sum of widths of all intervals
     """
     mu_n, sigma_n, w = posterior_params(D, mu0, sigma, sigma0)
 
     def pval(theta):
-        return dynamic_tilted_pvalue(theta, D, mu0, sigma, sigma0)
+        return dynamic_tilted_pvalue(theta, D, mu0, sigma, sigma0, alpha)
 
     def f(theta):
         return pval(theta) - alpha
 
-    # First find the mode of the dynamic p-value function
-    # Search in a wide range around mu_n and D
-    search_center = (mu_n + D) / 2  # Between posterior mean and data
-    search_range = max(abs(mu_n - D), 5 * sigma) + 3 * sigma
+    # Search range centered on D
+    search_range = search_range_mult * sigma
+    theta_min = D - search_range
+    theta_max = D + search_range
 
-    # Find mode by maximizing p-value
-    result = optimize.minimize_scalar(
-        lambda t: -pval(t),
-        bounds=(search_center - search_range, search_center + search_range),
-        method='bounded'
-    )
-    mode = result.x
-    p_mode = pval(mode)
+    # Scan grid to find all alpha-crossings
+    thetas = np.linspace(theta_min, theta_max, n_grid)
+    pvals = np.array([pval(th) for th in thetas])
 
-    # If p(mode) < alpha, the CI is very wide or doesn't exist normally
-    # Fall back to Wald-like bounds
-    if p_mode < alpha:
-        # Use Wald-style bounds
-        from scipy.stats import norm
-        z = norm.ppf(1 - alpha / 2)
-        return D - z * sigma, D + z * sigma
-
-    bracket = bracket_mult * sigma
-
-    # Helper to find root with expanding bracket around mode
-    def find_root_expanding(start, direction):
-        """Find root with progressively wider brackets."""
-        for mult in [1, 2, 3, 5, 10, 20]:
-            if direction == 'lower':
-                a = mode - mult * bracket
-                b = mode
-            else:
-                a = mode
-                b = mode + mult * bracket
+    # Find all crossings where p-value crosses alpha
+    crossings = []
+    for i in range(len(thetas) - 1):
+        if (pvals[i] - alpha) * (pvals[i+1] - alpha) < 0:
+            # Refine crossing with brentq
             try:
-                return optimize.brentq(f, a, b, xtol=1e-8)
+                crossing = optimize.brentq(f, thetas[i], thetas[i+1], xtol=1e-10)
+                crossings.append(crossing)
             except ValueError:
-                continue
-        # If all brackets fail, return the bracket bound
-        return mode - mult * bracket if direction == 'lower' else mode + mult * bracket
+                # Linear interpolation fallback
+                t = (alpha - pvals[i]) / (pvals[i+1] - pvals[i])
+                crossings.append(thetas[i] + t * (thetas[i+1] - thetas[i]))
 
-    # Find lower bound (below mode)
-    lower = find_root_expanding(mode, 'lower')
+    # Build intervals from crossings
+    # Crossings should alternate: entering region (p crosses up through alpha),
+    # then leaving region (p crosses down through alpha)
+    regions = []
+    
+    if len(crossings) == 0:
+        # No crossings - either all above or all below alpha
+        if pvals[len(pvals)//2] >= alpha:
+            # All above - return full range (shouldn't happen normally)
+            regions = [(theta_min, theta_max)]
+        else:
+            # All below - empty CI
+            regions = []
+    elif len(crossings) % 2 == 0:
+        # Even number of crossings - pair them up
+        for i in range(0, len(crossings), 2):
+            regions.append((crossings[i], crossings[i+1]))
+    else:
+        # Odd number - edge case, check endpoints
+        # If p(theta_min) > alpha, first region starts at theta_min
+        if pvals[0] >= alpha:
+            regions.append((theta_min, crossings[0]))
+            for i in range(1, len(crossings), 2):
+                if i+1 < len(crossings):
+                    regions.append((crossings[i], crossings[i+1]))
+        else:
+            for i in range(0, len(crossings)-1, 2):
+                regions.append((crossings[i], crossings[i+1]))
+            # Last region extends to theta_max
+            regions.append((crossings[-1], theta_max))
 
-    # Find upper bound (above mode)
-    upper = find_root_expanding(mode, 'upper')
+    # Compute total width
+    total_width = sum(upper - lower for lower, upper in regions)
 
-    return lower, upper
+    return regions, total_width
 
 
 def tilted_mode(
@@ -771,3 +783,112 @@ def optimal_eta_mlp(
     """
     predictor = _get_optimal_eta_predictor()
     return predictor.get_optimal_eta(w, alpha, abs_delta)
+
+
+def optimal_eta_mlp_batch(
+    abs_delta: np.ndarray,
+    w: float = 0.5,
+    alpha: float = 0.05,
+) -> np.ndarray:
+    """
+    Batch version of optimal_eta_mlp for vectorized computation.
+
+    Parameters
+    ----------
+    abs_delta : array
+        Array of |Δ| values
+    w : float
+        Prior weight (scalar, applied to all)
+    alpha : float
+        Significance level (scalar, applied to all)
+
+    Returns
+    -------
+    eta_star : array
+        Array of optimal η* values
+    """
+    predictor = _get_optimal_eta_predictor()
+    abs_delta = np.atleast_1d(abs_delta)
+    n = len(abs_delta)
+    w_arr = np.full(n, w)
+    alpha_arr = np.full(n, alpha)
+    return predictor.get_optimal_eta_batch(w_arr, alpha_arr, abs_delta)
+
+
+def dynamic_tilted_pvalue_batch(
+    theta: np.ndarray,
+    D: float,
+    mu0: float,
+    sigma: float,
+    sigma0: float,
+    alpha: float = 0.05,
+) -> np.ndarray:
+    """
+    Fully vectorized dynamic tilted p-value computation.
+
+    Computes p-values for an array of theta values with a single D.
+    Uses batched MLP inference and vectorized p-value formula.
+
+    Parameters
+    ----------
+    theta : array
+        Array of parameter values being tested
+    D : float
+        Single observed data value
+    mu0 : float
+        Prior mean
+    sigma : float
+        Likelihood standard deviation
+    sigma0 : float
+        Prior standard deviation
+    alpha : float
+        Significance level
+
+    Returns
+    -------
+    pvals : array
+        Array of dynamically-tilted p-values
+    """
+    w = weight(sigma, sigma0)
+    theta = np.atleast_1d(theta)
+
+    # Compute |Delta| for all theta values at once
+    Delta_theta = np.abs((1 - w) * (mu0 - theta) / sigma)
+
+    # Batch MLP inference for all eta* values
+    eta_stars = optimal_eta_mlp_batch(Delta_theta, w=w, alpha=alpha)
+
+    # Fully vectorized p-value computation
+    # denom = 1 - eta*(1-w) for each eta
+    denom = 1 - eta_stars * (1 - w)
+
+    # mu_eta = w*D + (1-w)*mu0 - eta*(1-w)*(D - mu0) / denom * (something)
+    # Actually simpler: mu_eta for each eta
+    # mu_eta = [eta*D + (1-eta)*mu_n] where mu_n = w*D + (1-w)*mu0
+    mu_n = w * D + (1 - w) * mu0
+    mu_eta = eta_stars * D + (1 - eta_stars) * mu_n
+
+    # sigma_eta^2 = w * sigma^2 / denom
+    sigma_eta_sq = w * sigma**2 / denom
+    sigma_eta = np.sqrt(sigma_eta_sq)
+
+    # w_eta = w / denom
+    w_eta = w / denom
+
+    # norm_factor = sqrt(w_eta) * sigma_eta = sqrt(w/denom) * sqrt(w*sigma^2/denom)
+    #             = sqrt(w^2 * sigma^2 / denom^2) = w * sigma / denom
+    norm_factor = w * sigma / denom
+
+    # a_eta = |mu_eta - theta| / norm_factor
+    a_eta = np.abs(mu_eta - theta) / norm_factor
+
+    # bias_eta = (1-eta)(1-w)(mu0 - theta) / denom
+    bias_eta = (1 - eta_stars) * (1 - w) * (mu0 - theta) / denom
+
+    # b_eta = bias_eta / norm_factor
+    b_eta = bias_eta / norm_factor
+
+    # p = Phi(b - a) + Phi(-a - b)
+    pvals = stats.norm.cdf(b_eta - a_eta) + stats.norm.cdf(-a_eta - b_eta)
+
+    return pvals
