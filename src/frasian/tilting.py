@@ -516,6 +516,8 @@ def dynamic_tilted_ci(
     Compute confidence interval with dynamic tilting.
 
     Uses eta*(|Delta(theta)|) which varies across the interval.
+    Note: The mode of the dynamic p-value function may differ from mu_n,
+    especially for extreme D values, so we first find the mode.
 
     Parameters
     ----------
@@ -541,22 +543,58 @@ def dynamic_tilted_ci(
     """
     mu_n, sigma_n, w = posterior_params(D, mu0, sigma, sigma0)
 
+    def pval(theta):
+        return dynamic_tilted_pvalue(theta, D, mu0, sigma, sigma0)
+
     def f(theta):
-        return dynamic_tilted_pvalue(theta, D, mu0, sigma, sigma0) - alpha
+        return pval(theta) - alpha
+
+    # First find the mode of the dynamic p-value function
+    # Search in a wide range around mu_n and D
+    search_center = (mu_n + D) / 2  # Between posterior mean and data
+    search_range = max(abs(mu_n - D), 5 * sigma) + 3 * sigma
+
+    # Find mode by maximizing p-value
+    result = optimize.minimize_scalar(
+        lambda t: -pval(t),
+        bounds=(search_center - search_range, search_center + search_range),
+        method='bounded'
+    )
+    mode = result.x
+    p_mode = pval(mode)
+
+    # If p(mode) < alpha, the CI is very wide or doesn't exist normally
+    # Fall back to Wald-like bounds
+    if p_mode < alpha:
+        # Use Wald-style bounds
+        from scipy.stats import norm
+        z = norm.ppf(1 - alpha / 2)
+        return D - z * sigma, D + z * sigma
 
     bracket = bracket_mult * sigma
 
-    # Find lower bound
-    try:
-        lower = optimize.brentq(f, mu_n - bracket, mu_n)
-    except ValueError:
-        lower = optimize.brentq(f, mu_n - 2 * bracket, mu_n)
+    # Helper to find root with expanding bracket around mode
+    def find_root_expanding(start, direction):
+        """Find root with progressively wider brackets."""
+        for mult in [1, 2, 3, 5, 10, 20]:
+            if direction == 'lower':
+                a = mode - mult * bracket
+                b = mode
+            else:
+                a = mode
+                b = mode + mult * bracket
+            try:
+                return optimize.brentq(f, a, b, xtol=1e-8)
+            except ValueError:
+                continue
+        # If all brackets fail, return the bracket bound
+        return mode - mult * bracket if direction == 'lower' else mode + mult * bracket
 
-    # Find upper bound
-    try:
-        upper = optimize.brentq(f, mu_n, mu_n + bracket)
-    except ValueError:
-        upper = optimize.brentq(f, mu_n, mu_n + 2 * bracket)
+    # Find lower bound (below mode)
+    lower = find_root_expanding(mode, 'lower')
+
+    # Find upper bound (above mode)
+    upper = find_root_expanding(mode, 'upper')
 
     return lower, upper
 
@@ -654,3 +692,82 @@ def dynamic_tilted_mode(
         theta = theta_new
 
     return theta  # Return last value if not converged
+
+
+# =============================================================================
+# MLP-Based Optimal Tilting
+# =============================================================================
+
+# Module-level cache for lazy loading
+_optimal_eta_predictor = None
+
+
+def _get_optimal_eta_predictor():
+    """Lazy-load optimal eta predictor (monotonic MLP).
+
+    Uses the monotonic neural network which guarantees smooth,
+    strictly monotonic predictions of eta*(|Delta|).
+    """
+    global _optimal_eta_predictor
+    if _optimal_eta_predictor is None:
+        from pathlib import Path
+        from .simulations.mlp_monotonic import OptimalEtaPredictor
+
+        model_path = (
+            Path(__file__).parent.parent.parent
+            / "output" / "simulations" / "mlp" / "monotonic_eta_mlp.pt"
+        )
+
+        if not model_path.exists():
+            raise FileNotFoundError(
+                f"Monotonic MLP not found: {model_path}\n"
+                f"Run 'python scripts/train_monotonic_eta_mlp.py' to generate it."
+            )
+
+        _optimal_eta_predictor = OptimalEtaPredictor.from_file(str(model_path))
+
+    return _optimal_eta_predictor
+
+
+def optimal_eta_mlp(
+    abs_delta: float,
+    w: float = 0.5,
+    alpha: float = 0.05,
+) -> float:
+    """
+    Get optimal η* using monotonic neural network.
+
+    This is the recommended method for production use. It uses a
+    monotonic neural network to predict the optimal tilting parameter
+    η* that minimizes expected CI width while maintaining correct coverage.
+
+    The monotonic architecture guarantees that η*(|Δ|) is strictly
+    increasing in |Δ|, providing smooth predictions without post-hoc
+    corrections.
+
+    Parameters
+    ----------
+    abs_delta : float
+        Absolute value of scaled prior-data conflict |Δ|
+    w : float
+        Prior weight in (0, 1)
+    alpha : float
+        Significance level in (0, 1)
+
+    Returns
+    -------
+    eta_star : float
+        Optimal tilting parameter in [η_min(w), 1]
+
+    Raises
+    ------
+    FileNotFoundError
+        If the monotonic MLP has not been trained yet.
+
+    Examples
+    --------
+    >>> eta_star = optimal_eta_mlp(abs_delta=1.0, w=0.5, alpha=0.05)
+    >>> eta_star  # Should be approximately 0.77
+    """
+    predictor = _get_optimal_eta_predictor()
+    return predictor.get_optimal_eta(w, alpha, abs_delta)

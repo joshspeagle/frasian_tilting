@@ -21,6 +21,7 @@ COLORS = {
     "posterior": "#28A745",   # Green - Posterior
     "wald": "#DC3545",        # Red - Wald
     "tilted": "#6F42C1",      # Purple - Tilted
+    "dynamic": "#FF6F00",     # Orange - Dynamic tilting (eta*(theta) varies)
 
     # Secondary colors
     "mle": "#FD7E14",         # Orange - MLE/Data

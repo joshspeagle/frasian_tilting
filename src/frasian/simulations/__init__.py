@@ -11,6 +11,9 @@ Modules:
 - processing: Compute derived quantities from D samples
 - cache: Processed results caching with auto-invalidation
 - storage: HDF5 I/O utilities
+- mlp_data: MLP training data generation
+- mlp_model: MLP training via sklearn
+- mlp_lookup: Optimal eta lookup tables
 """
 
 from .storage import (
@@ -68,6 +71,38 @@ from .cache import (
     get_cache_info,
 )
 
+# MLP-based optimal tilting (lazy imports to avoid circular dependencies)
+from .mlp_data import (
+    delta_transform,
+    delta_inverse,
+    eta_transform,
+    eta_inverse,
+    eta_min,
+    generate_latin_hypercube_samples,
+    compute_width_ratio_for_sample,
+    generate_training_data,
+    save_training_data,
+    load_training_data,
+    MLP_DATA_CONFIG,
+)
+
+from .mlp_model import (
+    train_sklearn_mlp,
+    evaluate_model,
+    save_model,
+    load_model,
+    create_predictor,
+)
+
+from .mlp_lookup import (
+    find_optimal_eta_prime,
+    generate_lookup_table,
+    save_lookup_table,
+    load_lookup_table,
+    OptimalEtaLookup,
+    LOOKUP_CONFIG,
+)
+
 __all__ = [
     # Storage
     "save_simulation",
@@ -115,4 +150,29 @@ __all__ = [
     "get_or_compute_widths",
     "list_cached_results",
     "get_cache_info",
+    # MLP Data
+    "delta_transform",
+    "delta_inverse",
+    "eta_transform",
+    "eta_inverse",
+    "eta_min",
+    "generate_latin_hypercube_samples",
+    "compute_width_ratio_for_sample",
+    "generate_training_data",
+    "save_training_data",
+    "load_training_data",
+    "MLP_DATA_CONFIG",
+    # MLP Model
+    "train_sklearn_mlp",
+    "evaluate_model",
+    "save_model",
+    "load_model",
+    "create_predictor",
+    # MLP Lookup
+    "find_optimal_eta_prime",
+    "generate_lookup_table",
+    "save_lookup_table",
+    "load_lookup_table",
+    "OptimalEtaLookup",
+    "LOOKUP_CONFIG",
 ]

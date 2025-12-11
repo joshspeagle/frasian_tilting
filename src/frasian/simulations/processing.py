@@ -18,14 +18,14 @@ from scipy import stats
 
 from ..core import posterior_params, scaled_conflict, weight
 from ..waldo import confidence_interval, wald_ci, posterior_ci
-from ..tilting import tilted_ci, optimal_eta_approximation
+from ..tilting import tilted_ci, optimal_eta_approximation, dynamic_tilted_ci
 
 
 # ==============================================================================
 # Core CI Computation
 # ==============================================================================
 
-MethodType = Literal["wald", "posterior", "waldo", "tilted", "tilted_optimal"]
+MethodType = Literal["wald", "posterior", "waldo", "tilted", "tilted_optimal", "dynamic"]
 
 
 def compute_ci(
@@ -49,7 +49,8 @@ def compute_ci(
             - "posterior": Posterior credible interval
             - "waldo": WALDO confidence interval
             - "tilted": Tilted CI with fixed eta
-            - "tilted_optimal": Tilted CI with optimal eta*(|Delta|)
+            - "tilted_optimal": Tilted CI with optimal eta*(|Delta|) from observed D (STATIC)
+            - "dynamic": True dynamic tilting where eta*(theta) varies with theta
         alpha: Significance level (default 0.05 for 95% CI)
         eta: Tilting parameter for "tilted" method (required if method="tilted")
 
@@ -74,11 +75,16 @@ def compute_ci(
         return tilted_ci(D, mu0, sigma, sigma0, eta, alpha)
 
     elif method == "tilted_optimal":
-        # Compute optimal eta from realized Delta
+        # Compute optimal eta from realized Delta (STATIC optimization)
         w = weight(sigma, sigma0)
         Delta = scaled_conflict(D, mu0, w, sigma)
         eta_star = optimal_eta_approximation(abs(Delta))
         return tilted_ci(D, mu0, sigma, sigma0, eta_star, alpha)
+
+    elif method == "dynamic":
+        # TRUE dynamic tilting: eta*(theta) varies as you scan across theta
+        # Uses dynamic_tilted_ci which evaluates each theta with its local optimal eta
+        return dynamic_tilted_ci(D, mu0, sigma, sigma0, alpha)
 
     else:
         raise ValueError(f"Unknown method: {method}")
