@@ -92,8 +92,8 @@ def figure_3_1_coverage_heatmap(
 
     # Standard theta values from document
     theta_values = np.array([-3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 5.0])
-    methods = ['Wald', 'Posterior', 'WALDO']
-    method_keys = ['wald', 'posterior', 'waldo']
+    methods = ['Wald', 'Posterior', 'WALDO', 'Dynamic']
+    method_keys = ['wald', 'posterior', 'waldo', 'dynamic']
 
     # Load raw data
     data, metadata = load_coverage_data(fast)
@@ -220,8 +220,13 @@ def figure_3_2_coverage_curves(
     sigma = metadata["sigma"]
     alpha = 0.05
 
-    methods = ['wald', 'posterior', 'waldo']
-    method_labels = {'wald': 'Wald', 'posterior': 'Posterior', 'waldo': 'WALDO'}
+    methods = ['wald', 'posterior', 'waldo', 'dynamic']
+    method_labels = {
+        'wald': 'Wald',
+        'posterior': 'Posterior',
+        'waldo': 'WALDO',
+        'dynamic': 'Dynamic',
+    }
 
     print(f"Theta grid: {len(theta_grid)} points")
     print(f"W values: {w_values}")

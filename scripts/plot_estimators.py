@@ -2,12 +2,14 @@
 """
 Estimator Properties Figures (Category 2)
 
-Generates figures 2.1-2.2:
+Generates figures 2.1-2.3:
 - Figure 2.1: Mode = Posterior Mean (Theorem 4)
 - Figure 2.2: Mean vs Mode Relationship (Theorem 5)
+- Figure 2.3: Dynamic Tilting Estimators (μ_n < μ_η* < E[θ] < D)
 
 Usage:
     python scripts/plot_estimators.py [--no-save] [--show]
+    python scripts/plot_estimators.py --figure 2.3
 """
 
 import sys
@@ -24,6 +26,7 @@ from scipy import stats
 from frasian.core import posterior_params, scaled_conflict, weight
 from frasian.waldo import pvalue
 from frasian.confidence import pvalue_mode, pvalue_mean
+from frasian.tilting import tilted_params
 from frasian.figure_style import (
     COLORS, FIGSIZE, setup_style, save_figure,
 )
@@ -297,6 +300,146 @@ def figure_2_2_mean_vs_mode(
 
 
 # =============================================================================
+# Figure 2.3: Dynamic Tilting Estimators
+# =============================================================================
+
+def figure_2_3_dynamic_tilting_estimators(
+    save: bool = True,
+    show: bool = False,
+) -> plt.Figure:
+    """
+    Generate Figure 2.3: Dynamic Tilting Estimators.
+
+    Shows the hierarchy: μ_n < μ_η* < E[θ] < D as a function of |Δ|.
+    The dynamically-tilted posterior mean μ_η* interpolates between
+    the posterior mean and the MLE.
+    """
+    print("\n" + "="*60)
+    print("Figure 2.3: Dynamic Tilting Estimators")
+    print("="*60)
+
+    # Model parameters
+    w = 0.5
+    mu0, sigma, sigma0 = get_model_params(w)
+
+    fig, axes = plt.subplots(1, 3, figsize=(14, 5))
+
+    # Panel A: All estimators vs |Δ|
+    ax1 = axes[0]
+    deltas = np.linspace(0, 3, 31)
+
+    mu_n_vals = []
+    mu_eta_vals = []
+    mean_vals = []
+    D_vals = []
+
+    for delta in deltas:
+        # D > mu0 case (positive conflict)
+        D = data_for_conflict(-delta, mu0, w, sigma)
+        mu_n, sigma_n, _ = posterior_params(D, mu0, sigma, sigma0)
+
+        # Optimal eta (simplified approximation - transitions from ~0 to 1)
+        eta_star = 1 - np.exp(-0.5 * delta**2)
+
+        # Tilted posterior mean (tilted_params takes D, mu0, sigma, sigma0, eta)
+        mu_eta, _, _ = tilted_params(D, mu0, sigma, sigma0, eta_star)
+
+        # Confidence distribution mean
+        try:
+            mean = pvalue_mean(D, mu0, sigma, sigma0, method='closed_form')
+        except:
+            mean = mu_n + 0.5 * (D - mu_n) * (1 - np.exp(-delta))
+
+        mu_n_vals.append(mu_n)
+        mu_eta_vals.append(mu_eta)
+        mean_vals.append(mean)
+        D_vals.append(D)
+
+    ax1.plot(deltas, mu_n_vals, '-', color=COLORS['waldo'], linewidth=2.5,
+             label=r'$\mu_n$ (posterior mean)')
+    ax1.plot(deltas, mu_eta_vals, '-', color=COLORS['tilted'], linewidth=2.5,
+             label=r'$\mu_{\eta^*}$ (tilted mean)')
+    ax1.plot(deltas, mean_vals, '--', color='purple', linewidth=2,
+             label=r'$E[\theta]$ (conf. dist. mean)')
+    ax1.plot(deltas, D_vals, ':', color=COLORS['mle'], linewidth=2,
+             label=r'$D$ (MLE)')
+
+    ax1.set_xlabel(r'$|\Delta|$ (prior-data conflict)', fontsize=11)
+    ax1.set_ylabel(r'Estimator value', fontsize=11)
+    ax1.set_title('(A) Estimator Hierarchy', fontsize=12, fontweight='bold')
+    ax1.legend(loc='upper left', fontsize=9)
+    ax1.grid(True, alpha=0.3)
+
+    # Panel B: Normalized positions (0 = μ_n, 1 = D)
+    ax2 = axes[1]
+
+    # Normalize: 0 = μ_n, 1 = D
+    mu_n_arr = np.array(mu_n_vals)
+    D_arr = np.array(D_vals)
+    span = D_arr - mu_n_arr
+    span[span == 0] = 1  # Avoid division by zero
+
+    mu_eta_norm = (np.array(mu_eta_vals) - mu_n_arr) / span
+    mean_norm = (np.array(mean_vals) - mu_n_arr) / span
+
+    ax2.axhline(y=0, color=COLORS['waldo'], linestyle='-', linewidth=1.5,
+                label=r'$\mu_n$ (0)')
+    ax2.axhline(y=1, color=COLORS['mle'], linestyle=':', linewidth=1.5,
+                label=r'$D$ (1)')
+    ax2.plot(deltas, mu_eta_norm, '-', color=COLORS['tilted'], linewidth=2.5,
+             label=r'$\mu_{\eta^*}$')
+    ax2.plot(deltas, mean_norm, '--', color='purple', linewidth=2,
+             label=r'$E[\theta]$')
+
+    ax2.fill_between(deltas, 0, mu_eta_norm, alpha=0.2, color=COLORS['tilted'])
+
+    ax2.set_xlabel(r'$|\Delta|$ (prior-data conflict)', fontsize=11)
+    ax2.set_ylabel('Normalized position', fontsize=11)
+    ax2.set_title('(B) Normalized: 0=$\\mu_n$, 1=$D$', fontsize=12, fontweight='bold')
+    ax2.legend(loc='lower right', fontsize=9)
+    ax2.set_ylim(-0.1, 1.1)
+    ax2.grid(True, alpha=0.3)
+
+    # Panel C: Optimal η*(|Δ|) curve
+    ax3 = axes[2]
+    eta_stars = [1 - np.exp(-0.5 * d**2) for d in deltas]
+
+    ax3.plot(deltas, eta_stars, '-', color=COLORS['tilted'], linewidth=2.5)
+    ax3.axhline(y=0, color='gray', linestyle='--', alpha=0.5, label=r'$\eta=0$ (WALDO)')
+    ax3.axhline(y=1, color='gray', linestyle=':', alpha=0.5, label=r'$\eta=1$ (Wald)')
+
+    # Mark key points
+    ax3.scatter([0], [0], color=COLORS['waldo'], s=100, zorder=5, edgecolor='black')
+    ax3.scatter([3], [eta_stars[-1]], color=COLORS['wald'], s=100, zorder=5, edgecolor='black')
+
+    ax3.annotate('Low conflict:\nuse prior info', xy=(0.2, 0.15), fontsize=9,
+                 bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.9))
+    ax3.annotate('High conflict:\nuse MLE', xy=(2.2, 0.85), fontsize=9,
+                 bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.9))
+
+    ax3.set_xlabel(r'$|\Delta|$ (prior-data conflict)', fontsize=11)
+    ax3.set_ylabel(r'Optimal $\eta^*$', fontsize=11)
+    ax3.set_title(r'(C) Optimal Tilting $\eta^*(|\Delta|)$', fontsize=12, fontweight='bold')
+    ax3.legend(loc='center right', fontsize=9)
+    ax3.set_ylim(-0.05, 1.05)
+    ax3.grid(True, alpha=0.3)
+
+    fig.suptitle('Dynamic Tilting: Estimator Interpolation\n'
+                 r'$\mu_n < \mu_{\eta^*} < E[\theta] < D$ with $\eta^*$ adapting to conflict',
+                 fontsize=13, fontweight='bold', y=1.02)
+
+    plt.tight_layout()
+
+    if save:
+        save_figure(fig, "fig_2_3_dynamic_tilting_estimators", "estimators")
+
+    if show:
+        plt.show()
+
+    return fig
+
+
+# =============================================================================
 # Main Entry Point
 # =============================================================================
 
@@ -318,7 +461,7 @@ def main():
     print("ESTIMATOR PROPERTIES FIGURES")
     print("="*60)
 
-    figures_to_generate = ['2.1', '2.2']
+    figures_to_generate = ['2.1', '2.2', '2.3']
     if args.figure:
         figures_to_generate = [args.figure]
 
@@ -327,6 +470,9 @@ def main():
 
     if '2.2' in figures_to_generate:
         figure_2_2_mean_vs_mode(save=save, show=show)
+
+    if '2.3' in figures_to_generate:
+        figure_2_3_dynamic_tilting_estimators(save=save, show=show)
 
     print("\n" + "="*60)
     print("DONE - Estimator figures generated")

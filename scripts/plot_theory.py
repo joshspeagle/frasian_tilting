@@ -2,14 +2,18 @@
 """
 Core Theory Figures (Category 1)
 
-Generates figures 1.1-1.3:
-- Figure 1.1: Posterior Mean Distribution (Theorem 1) - uses MC
-- Figure 1.2: WALDO Statistic Distribution (Theorem 2) - uses MC
-- Figure 1.3: The P-value Function (Theorem 3) - formula-based
+Generates figures 1.1-1.6:
+- Figure 1.1: Posterior Mean Bias (Theorem 1)
+- Figure 1.2: WALDO Statistic Non-centrality (Theorem 2)
+- Figure 1.3: P-value Function and CI Widths (Theorem 3)
+- Figure 1.4: Tilting Parameter Space (Theorem 6)
+- Figure 1.5: Tilted P-value Family (Theorem 8)
+- Figure 1.6: Non-centrality Reduction (Theorem 7)
 
 Usage:
     python scripts/plot_theory.py [--no-save] [--show]
     python scripts/plot_theory.py --fast  # Reduced MC samples
+    python scripts/plot_theory.py --figure 1.4  # Specific figure
 """
 
 import sys
@@ -29,9 +33,21 @@ from frasian.core import (
 )
 from frasian.waldo import (
     waldo_statistic, noncentrality, pvalue, pvalue_components,
+    confidence_interval, confidence_interval_width, wald_ci_width, posterior_ci_width,
+)
+from frasian.tilting import (
+    tilted_params,
+    tilted_pvalue,
+    tilted_ci_width,
+    tilted_ci,
+    dynamic_tilted_pvalue,
+    dynamic_tilted_ci,
+    optimal_eta_approximation,
+    optimal_eta_mlp,
 )
 from frasian.figure_style import (
     COLORS, FIGSIZE, setup_style, save_figure,
+    get_tilting_colors,
 )
 from frasian.simulations import (
     load_raw_simulation,
@@ -40,6 +56,8 @@ from frasian.simulations import (
     DEFAULT_CONFIG,
     FAST_CONFIG,
     compute_sigma0_from_w,
+    optimal_eta_empirical,
+    get_optimal_eta_interpolator,
 )
 
 
@@ -78,129 +96,101 @@ def figure_1_1_posterior_mean_dist(
     fast: bool = False,
 ) -> plt.Figure:
     """
-    Generate Figure 1.1: Posterior Mean Distribution (Theorem 1).
+    Generate Figure 1.1: Posterior Mean Bias in Canonical Coordinates.
 
-    Validates that mu_n - theta ~ N(b(theta), v) under true theta.
-    Uses raw D samples from simulation infrastructure.
+    Shows how bias b(θ) = (1-w)(μ₀ - θ) depends on:
+    - w (prior weight / strength)
+    - (μ₀ - θ) (deviation from prior mean)
+
+    Panel A: 2D heatmap of bias as function of (w, μ₀-θ)
+    Panel B: Shrinkage factor (1-w) vs w - the fraction pulled toward prior
     """
     print("\n" + "="*60)
-    print("Figure 1.1: Posterior Mean Distribution (Theorem 1)")
+    print("Figure 1.1: Posterior Mean Bias in Canonical Coordinates")
     print("="*60)
 
-    # Load raw simulation data
-    data, metadata = load_distribution_data(fast=fast)
-    D_samples = data["D_samples"]  # [n_theta, n_samples]
-    theta_values = data["theta_values"]
-    mu0 = metadata["mu0"]
-    sigma = metadata["sigma"]
-    w = metadata["w"]
-    sigma0 = compute_sigma0_from_w(w, sigma)
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 
-    n_theta, n_samples = D_samples.shape
-    print(f"Loaded {n_samples} D samples for {n_theta} theta values: {theta_values}")
+    # ==========================================================================
+    # Panel A: 2D Heatmap of bias b(θ) = (1-w)(μ₀ - θ)
+    # ==========================================================================
+    ax1 = axes[0]
 
-    fig, axes = plt.subplots(2, 2, figsize=FIGSIZE["panel_2x2"])
+    # Create grid
+    w_values = np.linspace(0.05, 0.95, 50)
+    deviation_values = np.linspace(-4, 4, 50)  # (μ₀ - θ)
+    W, Dev = np.meshgrid(w_values, deviation_values)
 
-    # Helper to compute posterior means from D samples
-    def compute_posterior_means(D_arr):
-        mu_n_arr = []
-        for D in D_arr:
-            mu_n, _, _ = posterior_params(D, mu0, sigma, sigma0)
-            mu_n_arr.append(mu_n)
-        return np.array(mu_n_arr)
+    # Compute bias: b(θ) = (1-w)(μ₀ - θ)
+    Bias = (1 - W) * Dev
 
-    # Panel A: QQ-plot at theta = mu0 (zero bias) - use theta closest to 0
-    ax1 = axes[0, 0]
-    idx_zero = np.argmin(np.abs(theta_values - mu0))
-    theta_true = theta_values[idx_zero]
-    D_row = D_samples[idx_zero, :]
-    mu_n_samples = compute_posterior_means(D_row)
-    deviations = mu_n_samples - theta_true
+    # Plot heatmap
+    im = ax1.contourf(W, Dev, Bias, levels=30, cmap='RdBu_r')
+    cbar = plt.colorbar(im, ax=ax1)
+    cbar.set_label(r'Bias $b(\theta) = (1-w)(\mu_0 - \theta)$', fontsize=11)
 
-    b_theta, v = posterior_mean_distribution_params(theta_true, mu0, sigma, sigma0)
-    theoretical_std = np.sqrt(v)
+    # Add contour lines
+    contours = ax1.contour(W, Dev, Bias, levels=[-2, -1, 0, 1, 2],
+                           colors='black', linewidths=0.5, linestyles='--')
+    ax1.clabel(contours, inline=True, fontsize=8, fmt='%.1f')
 
-    stats.probplot((deviations - b_theta) / theoretical_std, dist="norm", plot=ax1)
-    ax1.set_title(f'QQ-Plot at theta = {theta_true} (theta = mu_0)', fontsize=11)
-    ax1.get_lines()[0].set_color(COLORS['waldo'])
-    ax1.get_lines()[1].set_color('black')
+    # Mark key regions
+    ax1.axhline(y=0, color='black', linewidth=1.5, label=r'$\theta = \mu_0$ (no bias)')
+    ax1.axvline(x=0.5, color='gray', linestyle=':', alpha=0.7)
 
-    # Panel B: Histogram with theoretical overlay at theta != mu0
-    ax2 = axes[0, 1]
-    idx_away = np.argmin(np.abs(theta_values - 2.0))  # Try to get theta ~ 2
-    theta_true = theta_values[idx_away]
-    D_row = D_samples[idx_away, :]
-    mu_n_samples = compute_posterior_means(D_row)
-    deviations = mu_n_samples - theta_true
+    ax1.set_xlabel(r'Prior weight $w = \sigma_0^2/(\sigma^2 + \sigma_0^2)$', fontsize=11)
+    ax1.set_ylabel(r'Deviation from prior $(\mu_0 - \theta)$', fontsize=11)
+    ax1.set_title('(A) Bias Landscape: How Prior Strength and Deviation\n'
+                  'Combine to Determine Shrinkage', fontsize=11, fontweight='bold')
 
-    b_theta, v = posterior_mean_distribution_params(theta_true, mu0, sigma, sigma0)
-    theoretical_std = np.sqrt(v)
+    # Annotations for interpretation
+    ax1.annotate('Strong prior\n(large bias)', xy=(0.15, 2.5), fontsize=9,
+                ha='center', color='darkblue')
+    ax1.annotate('Weak prior\n(small bias)', xy=(0.85, 2.5), fontsize=9,
+                ha='center', color='darkred')
 
-    ax2.hist(deviations, bins=50, density=True, alpha=0.7, color=COLORS['waldo'],
-             edgecolor='black', linewidth=0.5, label='Simulated')
+    # ==========================================================================
+    # Panel B: Shrinkage Factor (1-w) vs w
+    # ==========================================================================
+    ax2 = axes[1]
 
-    x_range = np.linspace(deviations.min(), deviations.max(), 100)
-    theoretical_pdf = stats.norm.pdf(x_range, loc=b_theta, scale=theoretical_std)
-    ax2.plot(x_range, theoretical_pdf, 'r-', linewidth=2,
-             label=f'N({b_theta:.2f}, {v:.3f})')
+    w_fine = np.linspace(0, 1, 100)
+    shrinkage = 1 - w_fine
 
-    ax2.axvline(x=b_theta, color='red', linestyle='--', alpha=0.7, label=f'b(theta)={b_theta:.2f}')
-    ax2.axvline(x=0, color='black', linestyle=':', alpha=0.5, label='Zero')
+    ax2.plot(w_fine, shrinkage, color=COLORS['waldo'], linewidth=3)
+    ax2.fill_between(w_fine, 0, shrinkage, alpha=0.3, color=COLORS['waldo'])
 
-    ax2.set_xlabel(r'$\mu_n - \theta$', fontsize=11)
-    ax2.set_ylabel('Density', fontsize=11)
-    ax2.set_title(f'Distribution at theta = {theta_true}', fontsize=11)
-    ax2.legend(fontsize=8)
+    # Mark key points
+    key_w = [0.2, 0.5, 0.8]
+    for w in key_w:
+        s = 1 - w
+        ax2.scatter([w], [s], color='red', s=80, zorder=5)
+        ax2.annotate(f'w={w}\n{s:.0%} shrinkage',
+                    xy=(w, s), xytext=(w + 0.08, s + 0.05),
+                    fontsize=9, ha='left')
 
-    # Panel C: Bias function b(theta) = (1-w)(mu0 - theta) - formula-based
-    ax3 = axes[1, 0]
-    theta_range = np.linspace(-3, 5, 100)
-    biases = [bias(t, mu0, w) for t in theta_range]
+    ax2.set_xlabel(r'Prior weight $w$', fontsize=11)
+    ax2.set_ylabel(r'Shrinkage factor $(1-w) = b(\theta)/(\mu_0 - \theta)$', fontsize=11)
+    ax2.set_title('(B) Shrinkage Factor: Fraction of Deviation\n'
+                  'That Becomes Bias', fontsize=11, fontweight='bold')
+    ax2.set_xlim(0, 1)
+    ax2.set_ylim(0, 1.05)
+    ax2.grid(True, alpha=0.3)
 
-    ax3.plot(theta_range, biases, color=COLORS['waldo'], linewidth=2)
-    ax3.axhline(y=0, color='black', linestyle='-', linewidth=0.5)
-    ax3.axvline(x=mu0, color='gray', linestyle=':', alpha=0.5, label=f'mu_0 = {mu0}')
+    # Interpretation text
+    ax2.text(0.15, 0.3, 'Strong prior:\nMost deviation\nbecomes bias',
+             fontsize=9, ha='center', style='italic')
+    ax2.text(0.85, 0.7, 'Weak prior:\nLittle shrinkage',
+             fontsize=9, ha='center', style='italic')
 
-    ax3.fill_between(theta_range, 0, biases,
-                     where=np.array(biases) > 0, alpha=0.3, color='green',
-                     label='Positive bias (toward mu_0)')
-    ax3.fill_between(theta_range, 0, biases,
-                     where=np.array(biases) < 0, alpha=0.3, color='red',
-                     label='Negative bias (toward mu_0)')
-
-    ax3.set_xlabel(r'$\theta$', fontsize=11)
-    ax3.set_ylabel(r'Bias $b(\theta) = (1-w)(\mu_0 - \theta)$', fontsize=11)
-    ax3.set_title('Bias Function (Theorem 1)', fontsize=11)
-    ax3.legend(fontsize=8)
-    ax3.grid(True, alpha=0.3)
-
-    # Panel D: Distribution shift with different theta values
-    ax4 = axes[1, 1]
-    thetas = [0, 1, 2, 3]
-    colors_list = plt.cm.viridis(np.linspace(0.2, 0.8, len(thetas)))
-
-    for theta_true, color in zip(thetas, colors_list):
-        mu_n_samples = simulate_posterior_means(theta_true, mu0, sigma, sigma0, min(n_mc, 2000), rng)
-        deviations = mu_n_samples - theta_true
-        ax4.hist(deviations, bins=30, density=True, alpha=0.4, color=color,
-                 label=f'theta = {theta_true}')
-
-        b_theta, v = posterior_mean_distribution_params(theta_true, mu0, sigma, sigma0)
-        ax4.axvline(x=b_theta, color=color, linestyle='--', linewidth=1.5)
-
-    ax4.set_xlabel(r'$\mu_n - \theta$', fontsize=11)
-    ax4.set_ylabel('Density', fontsize=11)
-    ax4.set_title('Distribution Shifts with theta (dashed = b(theta))', fontsize=11)
-    ax4.legend(fontsize=8)
-
-    fig.suptitle('Theorem 1: Posterior Mean Distribution\n'
-                 r'$\mu_n - \theta \sim N(b(\theta), v)$ where $b(\theta) = (1-w)(\mu_0 - \theta)$',
+    fig.suptitle('Theorem 1: Posterior Mean is Biased Toward Prior\n'
+                 r'$\mu_n - \theta = (1-w)(\mu_0 - \theta)$ — bias from shrinkage toward prior',
                  fontsize=13, fontweight='bold', y=1.02)
 
     plt.tight_layout()
 
     if save:
-        save_figure(fig, "fig_1_1_posterior_mean_dist", "theory")
+        save_figure(fig, "fig_1_1_posterior_mean_bias", "theory")
 
     if show:
         plt.show()
@@ -216,146 +206,107 @@ def figure_1_2_waldo_statistic_dist(
     save: bool = True,
     show: bool = False,
     n_samples: int = None,
+    fast: bool = False,
 ) -> plt.Figure:
     """
-    Generate Figure 1.2: WALDO Statistic Distribution (Theorem 2).
+    Generate Figure 1.2: Non-centrality in Canonical Coordinates.
 
-    Validates that tau_WALDO ~ w * chi^2_1(lambda(theta)).
+    Shows how the WALDO statistic's non-centrality λ(θ) = δ²/w depends on:
+    - w (prior weight)
+    - δ = (θ - μ₀)/σ₀ (prior residual / standardized deviation from prior)
+
+    Panel A: λ surface as function of (w, δ)
+    Panel B: How λ controls the χ² distribution shape
     """
     print("\n" + "="*60)
-    print("Figure 1.2: WALDO Statistic Distribution (Theorem 2)")
+    print("Figure 1.2: Non-centrality in Canonical Coordinates")
     print("="*60)
 
-    # Model parameters
-    w = 0.5
-    mu0, sigma, sigma0 = get_model_params(w)
-    n_mc = n_samples or MC_CONFIG["n_samples"]
-    rng = np.random.default_rng(MC_CONFIG["seed"])
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 
-    fig, axes = plt.subplots(2, 2, figsize=FIGSIZE["panel_2x2"])
+    # ==========================================================================
+    # Panel A: Non-centrality Surface λ = δ²/w
+    # ==========================================================================
+    ax1 = axes[0]
 
-    # Panel A: Central case (theta = mu0, lambda = 0)
-    ax1 = axes[0, 0]
-    theta_true = mu0
-    lambda_true = noncentrality(theta_true, mu0, w, sigma, sigma0)
+    # Create grid
+    w_values = np.linspace(0.1, 0.9, 50)
+    delta_values = np.linspace(-3, 3, 50)  # δ = (θ - μ₀)/σ₀
+    W, Delta = np.meshgrid(w_values, delta_values)
 
-    D_samples = rng.normal(theta_true, sigma, n_mc)
-    tau_samples = []
-    for D in D_samples:
-        mu_n, sigma_n, _ = posterior_params(D, mu0, sigma, sigma0)
-        tau = waldo_statistic(mu_n, sigma_n, theta_true)
-        tau_samples.append(tau)
-    tau_samples = np.array(tau_samples)
+    # Compute non-centrality: λ = δ²/w
+    Lambda = Delta**2 / W
 
-    # Scale to chi-squared
-    scaled_tau = tau_samples / w
+    # Plot heatmap with log scale for better visualization
+    levels = [0, 0.5, 1, 2, 4, 8, 16, 32]
+    im = ax1.contourf(W, Delta, Lambda, levels=levels, cmap='YlOrRd', extend='max')
+    cbar = plt.colorbar(im, ax=ax1)
+    cbar.set_label(r'Non-centrality $\lambda = \delta^2/w$', fontsize=11)
 
-    ax1.hist(scaled_tau, bins=50, density=True, alpha=0.7, color=COLORS['waldo'],
-             edgecolor='black', linewidth=0.5, label='Simulated tau/w')
+    # Add contour lines
+    contours = ax1.contour(W, Delta, Lambda, levels=[1, 4, 9, 16],
+                           colors='black', linewidths=0.5, linestyles='--')
+    ax1.clabel(contours, inline=True, fontsize=8, fmt='%.0f')
 
-    x_range = np.linspace(0, np.percentile(scaled_tau, 99), 100)
-    theoretical_pdf = stats.chi2.pdf(x_range, df=1)
-    ax1.plot(x_range, theoretical_pdf, 'r-', linewidth=2, label=r'$\chi^2_1$ (central)')
+    # Mark key regions
+    ax1.axhline(y=0, color='black', linewidth=1.5, label=r'$\delta=0$ ($\theta=\mu_0$)')
 
-    ax1.set_xlabel(r'$\tau_{WALDO} / w$', fontsize=11)
-    ax1.set_ylabel('Density', fontsize=11)
-    ax1.set_title(f'Central Case: theta = mu_0 (lambda = {lambda_true:.2f})', fontsize=11)
-    ax1.legend(fontsize=8)
-    ax1.set_xlim(0, 10)
+    ax1.set_xlabel(r'Prior weight $w$', fontsize=11)
+    ax1.set_ylabel(r'Prior residual $\delta = (\theta - \mu_0)/\sigma_0$', fontsize=11)
+    ax1.set_title('(A) Non-centrality Landscape\n'
+                  r'$\lambda(\theta) = \delta(\theta)^2/w$ controls test statistic distribution',
+                  fontsize=11, fontweight='bold')
 
-    # Panel B: Non-central case (theta != mu0)
-    ax2 = axes[0, 1]
-    theta_true = 2.0
-    lambda_true = noncentrality(theta_true, mu0, w, sigma, sigma0)
+    # Annotations with white background for visibility
+    ax1.annotate('High λ:\nstrong signal', xy=(0.2, 2.5), fontsize=9,
+                ha='center', color='darkred',
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8, edgecolor='none'))
+    ax1.annotate('Low λ:\nweak signal', xy=(0.8, 0.5), fontsize=9,
+                ha='center', color='black',
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8, edgecolor='none'))
 
-    D_samples = rng.normal(theta_true, sigma, n_mc)
-    tau_samples = []
-    for D in D_samples:
-        mu_n, sigma_n, _ = posterior_params(D, mu0, sigma, sigma0)
-        tau = waldo_statistic(mu_n, sigma_n, theta_true)
-        tau_samples.append(tau)
-    tau_samples = np.array(tau_samples)
+    # ==========================================================================
+    # Panel B: χ² distributions for different λ values
+    # ==========================================================================
+    ax2 = axes[1]
 
-    scaled_tau = tau_samples / w
+    x = np.linspace(0, 15, 200)
+    lambda_values = [0, 1, 4, 9]
+    colors = plt.cm.YlOrRd(np.linspace(0.2, 0.9, len(lambda_values)))
 
-    ax2.hist(scaled_tau, bins=50, density=True, alpha=0.7, color=COLORS['waldo'],
-             edgecolor='black', linewidth=0.5, label='Simulated tau/w')
+    for lam, color in zip(lambda_values, colors):
+        if lam == 0:
+            pdf = stats.chi2.pdf(x, df=1)
+            label = r'$\lambda=0$ (central $\chi^2_1$)'
+        else:
+            pdf = stats.ncx2.pdf(x, df=1, nc=lam)
+            label = rf'$\lambda={lam}$'
+        ax2.plot(x, pdf, linewidth=2.5, color=color, label=label)
+        ax2.fill_between(x, 0, pdf, alpha=0.15, color=color)
 
-    x_range = np.linspace(0, np.percentile(scaled_tau, 99), 100)
-    theoretical_pdf = stats.ncx2.pdf(x_range, df=1, nc=lambda_true)
-    ax2.plot(x_range, theoretical_pdf, 'r-', linewidth=2,
-             label=f'$\\chi^2_1({lambda_true:.1f})$')
+    # Mark the critical value for α=0.05
+    crit = stats.chi2.ppf(0.95, df=1)
+    ax2.axvline(x=crit, color='gray', linestyle='--', linewidth=1.5,
+               label=f'Critical value (α=0.05): {crit:.2f}')
 
-    ax2.set_xlabel(r'$\tau_{WALDO} / w$', fontsize=11)
+    ax2.set_xlabel(r'$\tau/w$ (scaled WALDO statistic)', fontsize=11)
     ax2.set_ylabel('Density', fontsize=11)
-    ax2.set_title(f'Non-central: theta = {theta_true} (lambda = {lambda_true:.1f})', fontsize=11)
-    ax2.legend(fontsize=8)
+    ax2.set_title('(B) How Non-centrality Shifts the Distribution\n'
+                  'Higher λ → distribution shifts right → easier to reject',
+                  fontsize=11, fontweight='bold')
+    ax2.set_xlim(0, 15)
+    ax2.set_ylim(0, 1.0)
+    ax2.legend(fontsize=9, loc='upper right')
+    ax2.grid(True, alpha=0.3)
 
-    # Panel C: Non-centrality as function of theta
-    ax3 = axes[1, 0]
-    theta_range = np.linspace(-3, 5, 100)
-    lambdas = [noncentrality(t, mu0, w, sigma, sigma0) for t in theta_range]
-
-    ax3.plot(theta_range, lambdas, color=COLORS['waldo'], linewidth=2)
-    ax3.axvline(x=mu0, color='gray', linestyle=':', alpha=0.5, label=f'mu_0 = {mu0}')
-
-    # Mark key points
-    for theta in [0, 2, 3]:
-        lam = noncentrality(theta, mu0, w, sigma, sigma0)
-        ax3.scatter([theta], [lam], color='red', s=60, zorder=5)
-        ax3.annotate(f'({theta}, {lam:.1f})', xy=(theta, lam),
-                    xytext=(5, 5), textcoords='offset points', fontsize=9)
-
-    ax3.set_xlabel(r'$\theta$', fontsize=11)
-    ax3.set_ylabel(r'Non-centrality $\lambda(\theta) = \delta(\theta)^2 / w$', fontsize=11)
-    ax3.set_title('Non-centrality Parameter (Theorem 2)', fontsize=11)
-    ax3.legend(fontsize=8)
-    ax3.grid(True, alpha=0.3)
-
-    # Panel D: Mean/variance comparison
-    ax4 = axes[1, 1]
-    thetas = np.array([0, 0.5, 1, 1.5, 2, 2.5, 3])
-    sim_means = []
-    sim_vars = []
-    theo_means = []
-    theo_vars = []
-
-    for theta_true in thetas:
-        lambda_true = noncentrality(theta_true, mu0, w, sigma, sigma0)
-
-        D_samples = rng.normal(theta_true, sigma, min(n_mc, 2000))
-        tau_samples = []
-        for D in D_samples:
-            mu_n, sigma_n, _ = posterior_params(D, mu0, sigma, sigma0)
-            tau = waldo_statistic(mu_n, sigma_n, theta_true)
-            tau_samples.append(tau)
-
-        scaled_tau = np.array(tau_samples) / w
-
-        sim_means.append(np.mean(scaled_tau))
-        sim_vars.append(np.var(scaled_tau))
-
-        # Theoretical: E[chi2(1,lambda)] = 1 + lambda, Var = 2(1 + 2*lambda)
-        theo_means.append(1 + lambda_true)
-        theo_vars.append(2 * (1 + 2 * lambda_true))
-
-    ax4.scatter(thetas, sim_means, color=COLORS['waldo'], s=60, label='Simulated mean')
-    ax4.plot(thetas, theo_means, 'r--', linewidth=2, label='Theoretical mean')
-
-    ax4.set_xlabel(r'$\theta$', fontsize=11)
-    ax4.set_ylabel(r'E[$\tau/w$]', fontsize=11)
-    ax4.set_title('Mean Comparison: Simulated vs Theoretical', fontsize=11)
-    ax4.legend(fontsize=8)
-    ax4.grid(True, alpha=0.3)
-
-    fig.suptitle('Theorem 2: WALDO Statistic Distribution\n'
-                 r'$\tau_{WALDO} \sim w \cdot \chi^2_1(\lambda(\theta))$',
+    fig.suptitle('Theorem 2: WALDO Statistic Has Known Distribution\n'
+                 r'$\tau_{WALDO}/w \sim \chi^2_1(\lambda)$ where $\lambda = \delta^2/w$ measures "surprise"',
                  fontsize=13, fontweight='bold', y=1.02)
 
     plt.tight_layout()
 
     if save:
-        save_figure(fig, "fig_1_2_waldo_statistic_dist", "theory")
+        save_figure(fig, "fig_1_2_noncentrality", "theory")
 
     if show:
         plt.show()
@@ -370,76 +321,845 @@ def figure_1_2_waldo_statistic_dist(
 def figure_1_3_pvalue_function(
     save: bool = True,
     show: bool = False,
+    fast: bool = False,
 ) -> plt.Figure:
     """
-    Generate Figure 1.3: The P-value Function (Theorem 3).
+    Generate Figure 1.3: P-value Functions and CI Width Ratios.
 
-    Shows p(theta) = Phi(b-a) + Phi(-a-b) formula.
+    2x2 layout mirroring Figures 1.1 and 1.2:
+    - Left column: Example p-value curves (Wald top, WALDO bottom)
+    - Right column: CI width ratio heatmaps (w vs |Δ|)
     """
     print("\n" + "="*60)
-    print("Figure 1.3: The P-value Function (Theorem 3)")
+    print("Figure 1.3: P-value Functions and CI Width Ratios")
+    print("="*60)
+
+    alpha = 0.05
+    sigma = 1.0  # Fixed for simplicity
+
+    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+
+    # ==========================================================================
+    # Left column: P-value curve examples
+    # ==========================================================================
+
+    # Example scenarios: (w, D) pairs showing different regimes
+    scenarios = [
+        (0.2, 2.0, 'Strong prior, moderate conflict'),
+        (0.5, 3.0, 'Balanced, high conflict'),
+        (0.8, 1.0, 'Weak prior, low conflict'),
+    ]
+    colors = [plt.cm.viridis(x) for x in [0.2, 0.5, 0.8]]
+
+    # Top-left: Wald p-value curves
+    ax_wald = axes[0, 0]
+    theta_range = np.linspace(-3, 6, 200)
+
+    for (w, D, label), color in zip(scenarios, colors):
+        mu0, _, sigma0 = get_model_params(w)
+        delta = scaled_conflict(D, mu0, w, sigma)
+
+        # Wald p-value: 2*Φ(-|D-θ|/σ)
+        wald_pvals = 2 * stats.norm.cdf(-np.abs(D - theta_range) / sigma)
+        ax_wald.plot(theta_range, wald_pvals, linewidth=2, color=color,
+                    label=f'w={w}, D={D}')
+        ax_wald.axvline(x=D, color=color, linestyle=':', linewidth=1, alpha=0.5)
+
+    ax_wald.axhline(y=alpha, color='black', linestyle='--', linewidth=1)
+    ax_wald.set_xlabel(r'$\theta$', fontsize=11)
+    ax_wald.set_ylabel('p-value', fontsize=11)
+    ax_wald.set_title('(A) Wald P-value: Symmetric Around D\n'
+                      '(ignores prior entirely)', fontsize=11, fontweight='bold')
+    ax_wald.set_ylim(0, 1.05)
+    ax_wald.set_xlim(-3, 6)
+    ax_wald.legend(fontsize=8, loc='upper right')
+    ax_wald.grid(True, alpha=0.3)
+
+    # Bottom-left: WALDO p-value curves
+    ax_waldo = axes[1, 0]
+
+    for (w, D, label), color in zip(scenarios, colors):
+        mu0, _, sigma0 = get_model_params(w)
+        mu_n, sigma_n, _ = posterior_params(D, mu0, sigma, sigma0)
+        delta = scaled_conflict(D, mu0, w, sigma)
+
+        # WALDO p-value
+        waldo_pvals = np.array([pvalue(t, mu_n, mu0, w, sigma) for t in theta_range])
+        ax_waldo.plot(theta_range, waldo_pvals, linewidth=2, color=color,
+                     label=rf'w={w}, $|\Delta|$={abs(delta):.1f}')
+        ax_waldo.axvline(x=mu_n, color=color, linestyle=':', linewidth=1, alpha=0.5)
+
+    ax_waldo.axhline(y=alpha, color='black', linestyle='--', linewidth=1)
+    ax_waldo.set_xlabel(r'$\theta$', fontsize=11)
+    ax_waldo.set_ylabel('p-value', fontsize=11)
+    ax_waldo.set_title('(B) WALDO P-value: Asymmetric, Mode at Posterior Mean\n'
+                       '(incorporates prior)', fontsize=11, fontweight='bold')
+    ax_waldo.set_ylim(0, 1.05)
+    ax_waldo.set_xlim(-3, 6)
+    ax_waldo.legend(fontsize=8, loc='upper right')
+    ax_waldo.grid(True, alpha=0.3)
+
+    # ==========================================================================
+    # Right column: CI width ratio heatmaps
+    # ==========================================================================
+
+    # Grid for heatmaps
+    w_values = np.linspace(0.1, 0.9, 30)
+    delta_values = np.linspace(0, 4, 30)
+    W_grid, Delta_grid = np.meshgrid(w_values, delta_values)
+
+    # Compute width ratios
+    posterior_ratio = np.zeros_like(W_grid)
+    waldo_ratio = np.zeros_like(W_grid)
+
+    for i, abs_delta in enumerate(delta_values):
+        for j, w in enumerate(w_values):
+            mu0, _, sigma0 = get_model_params(w)
+
+            # Wald width (constant for fixed sigma)
+            wald_width = wald_ci_width(sigma, alpha)
+
+            # Posterior width
+            post_width = posterior_ci_width(sigma0, w, alpha)
+            posterior_ratio[i, j] = post_width / wald_width
+
+            # WALDO width at this conflict level
+            D_val = mu0 + abs_delta * sigma / (1 - w)
+            mu_n, _, _ = posterior_params(D_val, mu0, sigma, sigma0)
+            waldo_ci = confidence_interval(mu_n, mu0, w, sigma, alpha)
+            waldo_width = waldo_ci[1] - waldo_ci[0]
+            waldo_ratio[i, j] = waldo_width / wald_width
+
+    # Top-right: Posterior/Wald ratio (ranges 0.1 to 0.9)
+    ax_post = axes[0, 1]
+    im1 = ax_post.contourf(W_grid, Delta_grid, posterior_ratio,
+                           levels=np.linspace(0.1, 0.9, 17), cmap='RdYlGn_r',
+                           extend='both')
+    cbar1 = plt.colorbar(im1, ax=ax_post)
+    cbar1.set_label('Posterior / Wald Width Ratio', fontsize=10)
+
+    # Add contour lines
+    contours1 = ax_post.contour(W_grid, Delta_grid, posterior_ratio,
+                                levels=[0.2, 0.4, 0.6, 0.8],
+                                colors='black', linewidths=0.5)
+    ax_post.clabel(contours1, inline=True, fontsize=8, fmt='%.1f')
+
+    ax_post.set_xlabel(r'Prior weight $w$', fontsize=11)
+    ax_post.set_ylabel(r'Prior-data conflict $|\Delta| = (1-w)|\mu_0 - D|/\sigma$', fontsize=11)
+    ax_post.set_title('(C) Posterior CI: Always Narrow\n'
+                      r'Ratio $\approx \sqrt{w}$ (horizontal bands = no conflict dependence)',
+                      fontsize=11, fontweight='bold')
+
+    # Bottom-right: WALDO/Wald ratio (cap at 2.0 for visibility)
+    ax_waldo_ratio = axes[1, 1]
+    # Cap ratio at 2.0 for better visualization
+    waldo_ratio_capped = np.clip(waldo_ratio, 0, 2.0)
+    im2 = ax_waldo_ratio.contourf(W_grid, Delta_grid, waldo_ratio_capped,
+                                   levels=np.linspace(0.1, 2.0, 20), cmap='RdYlGn_r',
+                                   extend='max')
+    cbar2 = plt.colorbar(im2, ax=ax_waldo_ratio)
+    cbar2.set_label('WALDO / Wald Width Ratio', fontsize=10)
+
+    # Add contour lines including the critical ratio=1 line
+    contours2 = ax_waldo_ratio.contour(W_grid, Delta_grid, waldo_ratio,
+                                        levels=[0.5, 1.0, 1.5, 2.0],
+                                        colors='black', linewidths=[0.5, 1.5, 0.5, 0.5])
+    ax_waldo_ratio.clabel(contours2, inline=True, fontsize=8, fmt='%.1f')
+
+    ax_waldo_ratio.set_xlabel(r'Prior weight $w$', fontsize=11)
+    ax_waldo_ratio.set_ylabel(r'Prior-data conflict $|\Delta| = (1-w)|\mu_0 - D|/\sigma$', fontsize=11)
+    ax_waldo_ratio.set_title('(D) WALDO CI: Adapts to Conflict\n'
+                             'Green = narrower than Wald; Red = wider (conflicting prior hurts)',
+                             fontsize=11, fontweight='bold')
+
+    fig.suptitle('Theorem 3: P-value Function Determines Confidence Intervals\n'
+                 'WALDO adapts CI width to prior-data agreement',
+                 fontsize=13, fontweight='bold', y=0.98)
+
+    plt.tight_layout()
+
+    if save:
+        save_figure(fig, "fig_1_3_pvalue_ci_ratios", "theory")
+
+    if show:
+        plt.show()
+
+    return fig
+
+
+# =============================================================================
+# Figure 1.4: What is Tilting?
+# =============================================================================
+
+def get_model_params(w: float, sigma: float = 1.0, mu0: float = 0.0):
+    """Get model parameters for a given weight."""
+    sigma0 = sigma * np.sqrt(w / (1 - w))
+    return mu0, sigma, sigma0
+
+
+def figure_1_4_what_is_tilting(
+    save: bool = True,
+    show: bool = False,
+) -> plt.Figure:
+    """
+    Generate Figure 1.4: What is Tilting?
+
+    Panel A: Tilted posterior densities for several eta values
+    Panel B: Tilted mode as function of eta
+    """
+    print("\n" + "="*60)
+    print("Figure 1.4: What is Tilting?")
     print("="*60)
 
     # Model parameters
     w = 0.5
     mu0, sigma, sigma0 = get_model_params(w)
+    D = 3.0  # Example data point with conflict
 
-    fig, axes = plt.subplots(1, 3, figsize=(14, 5))
+    mu_n, sigma_n, _ = posterior_params(D, mu0, sigma, sigma0)
 
-    # Three scenarios: Delta = 0, 1.5, 3
-    scenarios = [
-        (0, 0, "No Conflict"),
-        (3, -1.5, "Mild Conflict"),
-        (5, -2.5, "Severe Conflict"),
-    ]
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
-    for ax, (D, delta_approx, title) in zip(axes, scenarios):
-        mu_n, sigma_n, _ = posterior_params(D, mu0, sigma, sigma0)
-        delta = scaled_conflict(D, mu0, w, sigma)
+    # Panel A: Tilted posterior densities
+    ax1 = axes[0]
 
-        theta_range = np.linspace(mu_n - 4*sigma, D + 2*sigma, 200)
-        pvals = [pvalue(t, mu_n, mu0, w, sigma) for t in theta_range]
+    theta_range = np.linspace(-2, 5, 300)
 
-        # Also get components
-        component1 = []
-        component2 = []
-        for theta in theta_range:
-            a, b = pvalue_components(theta, mu_n, mu0, w, sigma)
-            component1.append(stats.norm.cdf(b - a))
-            component2.append(stats.norm.cdf(-a - b))
+    # Key eta values to show
+    etas_to_show = [-0.5, 0.0, 0.5, 1.0]
+    colors_map = {
+        -0.5: 'purple',
+        0.0: COLORS['waldo'],
+        0.5: COLORS['tilted'],
+        1.0: COLORS['wald']
+    }
+    labels_map = {
+        -0.5: r'$\eta=-0.5$ (oversharpening)',
+        0.0: r'$\eta=0$ (WALDO/Posterior)',
+        0.5: r'$\eta=0.5$ (tilted)',
+        1.0: r'$\eta=1$ (Wald/Likelihood)'
+    }
 
-        # Main p-value curve
-        ax.plot(theta_range, pvals, color=COLORS['waldo'], linewidth=2.5,
-                label=r'$p(\theta) = \Phi(b-a) + \Phi(-a-b)$')
+    for eta in etas_to_show:
+        mu_eta, sigma_eta, _ = tilted_params(D, mu0, sigma, sigma0, eta)
+        density = stats.norm.pdf(theta_range, mu_eta, sigma_eta)
+        ax1.plot(theta_range, density, color=colors_map[eta], linewidth=2.5,
+                 label=labels_map[eta])
+        # Mark the mode
+        ax1.axvline(x=mu_eta, color=colors_map[eta], linestyle=':', alpha=0.5)
 
-        # Components (lighter)
-        ax.plot(theta_range, component1, '--', color='green', linewidth=1, alpha=0.7,
-                label=r'$\Phi(b-a)$')
-        ax.plot(theta_range, component2, '--', color='orange', linewidth=1, alpha=0.7,
-                label=r'$\Phi(-a-b)$')
+    # Reference lines for key locations
+    ax1.axvline(x=mu0, color=COLORS['prior_mean'], linestyle='--', linewidth=1.5,
+                alpha=0.7, label=f'Prior mean $\\mu_0$={mu0}')
+    ax1.axvline(x=D, color=COLORS['mle'], linestyle='--', linewidth=1.5,
+                alpha=0.7, label=f'MLE D={D}')
 
-        # Reference lines
-        ax.axhline(y=0.05, color='gray', linestyle='--', linewidth=1, alpha=0.7)
-        ax.axvline(x=mu_n, color='black', linestyle='-', linewidth=1.5,
-                   label=f'Mode $\\mu_n$={mu_n:.1f}')
-        ax.axvline(x=D, color=COLORS['mle'], linestyle=':', linewidth=1.5,
-                   label=f'MLE D={D:.1f}')
+    ax1.set_xlabel(r'$\theta$', fontsize=12)
+    ax1.set_ylabel('Density', fontsize=12)
+    ax1.set_title('(A) Tilted Posterior Densities\n'
+                  r'$\eta$ interpolates between posterior ($\eta=0$) and likelihood ($\eta=1$)',
+                  fontsize=12, fontweight='bold')
+    ax1.legend(loc='upper left', fontsize=9)
+    ax1.set_xlim(-2, 5)
+    ax1.grid(True, alpha=0.3)
 
-        ax.set_xlabel(r'$\theta$', fontsize=11)
-        ax.set_ylabel('p-value', fontsize=11)
-        ax.set_title(f'{title}\nD={D}, $\\Delta$={delta:.1f}', fontsize=11)
-        ax.set_ylim(0, 1.05)
-        ax.legend(fontsize=8, loc='upper right')
-        ax.grid(True, alpha=0.3)
+    # Add annotation showing the formula
+    ax1.text(0.98, 0.95, r'$\mu_\eta = (1-\eta)\mu_n + \eta D$' + '\n' +
+             r'$\sigma_\eta^2 = \frac{w\sigma^2}{1 - \eta(1-w)}$',
+             transform=ax1.transAxes, fontsize=10, ha='right', va='top',
+             bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
 
-    fig.suptitle('Theorem 3: P-value Function\n'
-                 r'$p(\theta) = \Phi(b-a) + \Phi(-a-b)$ where $a = |u|$, $b = (1-w)(\mu_0-\theta)/(w\sigma)$',
-                 fontsize=13, fontweight='bold', y=1.02)
+    # Panel B: Mode position vs eta
+    ax2 = axes[1]
+
+    etas = np.linspace(-1, 1, 100)
+
+    modes = []
+    for eta in etas:
+        mu_eta, _, _ = tilted_params(D, mu0, sigma, sigma0, eta)
+        modes.append(mu_eta)
+
+    ax2.plot(etas, modes, color=COLORS['tilted'], linewidth=2.5)
+
+    # Shade oversharpening region
+    ax2.axvspan(-1, 0, color='purple', alpha=0.1, label='Oversharpening')
+
+    # Reference lines
+    ax2.axhline(y=mu_n, color=COLORS['waldo'], linestyle='--', linewidth=1.5,
+                label=f'Posterior mean $\\mu_n$ = {mu_n:.2f}')
+    ax2.axhline(y=D, color=COLORS['mle'], linestyle='--', linewidth=1.5,
+                label=f'MLE D = {D:.2f}')
+    ax2.axhline(y=mu0, color=COLORS['prior_mean'], linestyle=':', linewidth=1.5,
+                label=f'Prior mean $\\mu_0$ = {mu0:.2f}')
+
+    # Mark key points
+    for eta in etas_to_show:
+        mu_eta, _, _ = tilted_params(D, mu0, sigma, sigma0, eta)
+        ax2.scatter([eta], [mu_eta], color=colors_map[eta], s=100, zorder=5, edgecolor='black')
+
+    ax2.set_xlabel(r'Tilting Parameter $\eta$', fontsize=12)
+    ax2.set_ylabel(r'Tilted Mode $\mu_\eta$', fontsize=12)
+    ax2.set_title('(B) Mode Position vs Tilting Parameter\n'
+                  r'$\eta < 0$: past posterior toward prior; $\eta > 0$: toward MLE',
+                  fontsize=12, fontweight='bold')
+    ax2.legend(loc='lower right', fontsize=9)
+    ax2.grid(True, alpha=0.3)
+    ax2.set_xlim(-1.1, 1.1)
+
+    fig.suptitle('What is Tilting? Reweighting Prior vs Likelihood Influence',
+                 fontsize=14, fontweight='bold', y=1.02)
 
     plt.tight_layout()
 
     if save:
-        save_figure(fig, "fig_1_3_pvalue_function", "theory")
+        save_figure(fig, "fig_1_4_what_is_tilting", "theory")
+
+    if show:
+        plt.show()
+
+    return fig
+
+
+# =============================================================================
+# Figure 1.5: Why Tilt? The Width Problem
+# =============================================================================
+
+def figure_1_5_why_tilt(
+    save: bool = True,
+    show: bool = False,
+    fast: bool = False,
+) -> plt.Figure:
+    """
+    Generate Figure 1.5: Why Tilt? The Width Problem.
+
+    Panel A: CI width vs |Delta| for Wald, WALDO, Posterior
+    Panel B: E[W]/W_Wald vs eta for several |Delta| values (U-shaped curves)
+    """
+    print("\n" + "="*60)
+    print("Figure 1.5: Why Tilt? The Width Problem")
+    print("="*60)
+
+    # Model parameters
+    w = 0.5
+    sigma = 1.0
+    mu0 = 0.0
+    sigma0 = sigma * np.sqrt(w / (1 - w))
+    alpha = 0.05
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    # Panel A: CI width vs |Delta| for different methods
+    ax1 = axes[0]
+
+    deltas = np.linspace(0, 4, 50)
+
+    # Wald width (constant)
+    wald_width = wald_ci_width(sigma, alpha)
+    wald_widths = np.full_like(deltas, wald_width)
+
+    # Posterior width (constant)
+    post_width = posterior_ci_width(sigma, sigma0, alpha)
+    post_widths = np.full_like(deltas, post_width)
+
+    # WALDO width (varies with |Delta|)
+    waldo_widths = []
+    for delta in deltas:
+        D = mu0 - sigma * delta / (1 - w)  # Compute D for this |Delta|
+        w_width = confidence_interval_width(D, mu0, sigma, sigma0, alpha)
+        waldo_widths.append(w_width)
+    waldo_widths = np.array(waldo_widths)
+
+    ax1.plot(deltas, wald_widths, color=COLORS['wald'], linewidth=2.5,
+             label=f'Wald (constant = {wald_width:.2f})')
+    ax1.plot(deltas, post_widths, color=COLORS['posterior'], linewidth=2.5,
+             label=f'Posterior (constant = {post_width:.2f})')
+    ax1.plot(deltas, waldo_widths, color=COLORS['waldo'], linewidth=2.5,
+             label='WALDO (varies with conflict)')
+
+    # Shade the problem region
+    ax1.fill_between(deltas, wald_widths, waldo_widths,
+                     where=waldo_widths > wald_widths,
+                     alpha=0.2, color='red', label='WALDO wider than Wald')
+
+    ax1.set_xlabel(r'Prior-Data Conflict $|\Delta|$', fontsize=12)
+    ax1.set_ylabel('CI Width', fontsize=12)
+    ax1.set_title('(A) The Problem: WALDO Width Explodes at High Conflict\n'
+                  'No single method is optimal everywhere',
+                  fontsize=12, fontweight='bold')
+    ax1.legend(loc='upper left', fontsize=9)
+    ax1.grid(True, alpha=0.3)
+    ax1.set_xlim(0, 4)
+    ax1.set_ylim(0, max(waldo_widths) * 1.1)
+
+    # Panel B: Heatmap of W_eta / W_Wald as function of (|Delta|, eta)
+    ax2 = axes[1]
+
+    # Create grid for heatmap
+    n_delta = 40
+    n_eta = 40
+    delta_grid = np.linspace(0, 3, n_delta)
+    eta_grid = np.linspace(-0.9, 1.0, n_eta)
+
+    # Compute width ratio for each (delta, eta) pair
+    ratio_matrix = np.zeros((n_delta, n_eta))
+    optimal_eta_curve = []
+
+    for i, delta in enumerate(delta_grid):
+        D = mu0 - sigma * delta / (1 - w)
+        row_ratios = []
+        for j, eta in enumerate(eta_grid):
+            try:
+                tilted_width = tilted_ci_width(D, mu0, sigma, sigma0, eta, alpha)
+                ratio = tilted_width / wald_width
+                ratio_matrix[i, j] = ratio
+                row_ratios.append(ratio)
+            except:
+                ratio_matrix[i, j] = np.nan
+                row_ratios.append(np.nan)
+
+        # Find optimal eta for this delta
+        row_ratios = np.array(row_ratios)
+        if not np.all(np.isnan(row_ratios)):
+            min_idx = np.nanargmin(row_ratios)
+            optimal_eta_curve.append((delta, eta_grid[min_idx]))
+
+    optimal_eta_curve = np.array(optimal_eta_curve)
+
+    # Plot heatmap with yellow centered at 1.0
+    from matplotlib.colors import TwoSlopeNorm
+    norm = TwoSlopeNorm(vmin=0.8, vcenter=1.0, vmax=1.5)
+    im = ax2.imshow(ratio_matrix.T, extent=[0, 3, -0.9, 1.0],
+                    origin='lower', aspect='auto', cmap='RdYlBu_r',
+                    norm=norm)
+
+    # Add colorbar
+    cbar = plt.colorbar(im, ax=ax2, label=r'$W_\eta / W_{Wald}$')
+
+    # Overlay optimal eta* curve
+    if len(optimal_eta_curve) > 0:
+        ax2.plot(optimal_eta_curve[:, 0], optimal_eta_curve[:, 1],
+                 color='black', linewidth=2.5, linestyle='-',
+                 label=r'Optimal $\eta^*(|\Delta|)$')
+
+    # Reference lines
+    ax2.axhline(y=0, color='white', linestyle='--', linewidth=1.5, alpha=0.8)
+    ax2.axhline(y=1, color='white', linestyle=':', linewidth=1.5, alpha=0.8)
+
+    ax2.set_xlabel(r'Prior-Data Conflict $|\Delta|$', fontsize=12)
+    ax2.set_ylabel(r'Tilting Parameter $\eta$', fontsize=12)
+    ax2.set_title(r'(B) Width Ratio Landscape with Optimal $\eta^*$ Path' + '\n'
+                  'Blue = narrower than Wald; Red = wider',
+                  fontsize=12, fontweight='bold')
+    ax2.legend(loc='lower right', fontsize=9)
+
+    fig.suptitle('Why Tilt? Adapting to Prior-Data Agreement/Disagreement',
+                 fontsize=14, fontweight='bold', y=1.02)
+
+    # Add definitions box
+    defn_text = (r'$w = \sigma_0^2/(\sigma^2 + \sigma_0^2)$ (prior weight)' + '\n'
+                 r'$|\Delta| = (1-w)|\mu_0 - D|/\sigma$ (prior-data conflict)')
+    fig.text(0.5, -0.02, defn_text, ha='center', va='top', fontsize=10,
+             bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.9))
+
+    plt.tight_layout()
+
+    if save:
+        save_figure(fig, "fig_1_5_why_tilt", "theory")
+
+    if show:
+        plt.show()
+
+    return fig
+
+
+# =============================================================================
+# Figure 1.6: The Optimal Tilt eta*(|Delta|)
+# =============================================================================
+
+def figure_1_6_optimal_tilt(
+    save: bool = True,
+    show: bool = False,
+    fast: bool = False,
+) -> plt.Figure:
+    """
+    Generate Figure 1.6: The Optimal Tilt eta*(|Delta|).
+
+    Panel A: eta*(|Delta|) curve showing transition from oversharpening to Wald
+    Panel B: Resulting efficiency gain E[W_eta*]/W_Wald
+    """
+    print("\n" + "="*60)
+    print("Figure 1.6: The Optimal Tilt")
+    print("="*60)
+
+    # Model parameters for MLP lookup
+    w = 0.5
+    alpha = 0.05
+
+    # Generate delta grid and compute optimal eta using MLP
+    delta_grid = np.linspace(0, 5, 100)
+    optimal_eta = np.array([optimal_eta_mlp(d, w=w, alpha=alpha) for d in delta_grid])
+    print(f"Computed optimal eta using MLP for {len(delta_grid)} points")
+    print(f"  w={w}, alpha={alpha}")
+    print(f"  eta* range: [{optimal_eta.min():.3f}, {optimal_eta.max():.3f}]")
+
+    # Compute width ratios for Panel B
+    sigma = 1.0
+    sigma0 = sigma * np.sqrt(w / (1 - w))
+    mu0 = 0.0
+    wald_width = wald_ci_width(sigma, alpha)
+
+    width_ratios = []
+    for delta, eta_star in zip(delta_grid, optimal_eta):
+        D = mu0 - sigma * delta / (1 - w)
+        try:
+            tilted_width = tilted_ci_width(D, mu0, sigma, sigma0, eta_star, alpha)
+            width_ratios.append(tilted_width / wald_width)
+        except:
+            width_ratios.append(np.nan)
+    width_ratios = np.array(width_ratios)
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    # Panel A: eta*(|Delta|) curve
+    ax1 = axes[0]
+
+    ax1.plot(delta_grid, optimal_eta, color=COLORS['tilted'], linewidth=2.5,
+             label=r'Optimal $\eta^*(|\Delta|)$')
+
+    # Reference lines
+    ax1.axhline(y=0, color=COLORS['waldo'], linestyle='--', linewidth=1.5, alpha=0.7,
+                label=r'$\eta=0$ (WALDO)')
+    ax1.axhline(y=1, color=COLORS['wald'], linestyle='--', linewidth=1.5, alpha=0.7,
+                label=r'$\eta=1$ (Wald)')
+
+    # Shade regions
+    ax1.axvspan(0, 0.5, alpha=0.1, color='purple', label='Oversharpening regime')
+    ax1.axvspan(2, max(delta_grid), alpha=0.1, color=COLORS['wald'], label='Near-Wald regime')
+
+    # Annotate key behavior
+    ax1.annotate('Low conflict:\noversharpening\n' + r'$\eta^* < 0$',
+                 xy=(0.2, optimal_eta[np.argmin(np.abs(delta_grid - 0.2))]),
+                 xytext=(0.8, -0.6), fontsize=10,
+                 arrowprops=dict(arrowstyle='->', color='gray'),
+                 bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.9))
+
+    ax1.annotate('High conflict:\nuse Wald\n' + r'$\eta^* \to 1$',
+                 xy=(4, optimal_eta[np.argmin(np.abs(delta_grid - 4))]),
+                 xytext=(3, 0.5), fontsize=10,
+                 arrowprops=dict(arrowstyle='->', color='gray'),
+                 bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.9))
+
+    ax1.set_xlabel(r'Prior-Data Conflict $|\Delta|$', fontsize=12)
+    ax1.set_ylabel(r'Optimal Tilting $\eta^*$', fontsize=12)
+    ax1.set_title(r'(A) Optimal Tilting Parameter $\eta^*(|\Delta|)$' + '\n'
+                  'Adapts from oversharpening to Wald as conflict increases',
+                  fontsize=12, fontweight='bold')
+    ax1.legend(loc='lower right', fontsize=9)
+    ax1.grid(True, alpha=0.3)
+    ax1.set_xlim(0, max(delta_grid))
+    ax1.set_ylim(-1.1, 1.1)
+
+    # Panel B: Width ratio / efficiency gain
+    ax2 = axes[1]
+
+    ax2.plot(delta_grid, width_ratios, color=COLORS['tilted'], linewidth=2.5,
+             label=r'$W_{\eta^*} / W_{Wald}$')
+
+    # Reference line at 1.0
+    ax2.axhline(y=1.0, color=COLORS['wald'], linestyle='--', linewidth=1.5, alpha=0.7,
+                label='Wald baseline')
+
+    # Shade efficiency region
+    ax2.fill_between(delta_grid, width_ratios, 1.0,
+                     where=width_ratios < 1.0,
+                     alpha=0.2, color=COLORS['tilted'],
+                     label='Efficiency gain over Wald')
+
+    # Annotate max gain
+    min_ratio = np.nanmin(width_ratios)
+    min_idx = np.nanargmin(width_ratios)
+    ax2.annotate(f'Max efficiency:\n{(1-min_ratio)*100:.0f}% narrower',
+                 xy=(delta_grid[min_idx], min_ratio),
+                 xytext=(delta_grid[min_idx] + 1, min_ratio + 0.1),
+                 fontsize=10, arrowprops=dict(arrowstyle='->', color='gray'),
+                 bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.9))
+
+    ax2.set_xlabel(r'Prior-Data Conflict $|\Delta|$', fontsize=12)
+    ax2.set_ylabel(r'Width Ratio', fontsize=12)
+    ax2.set_title('(B) Efficiency of Optimal Tilting\n'
+                  r'$\eta^*$ always achieves $\leq$ Wald width',
+                  fontsize=12, fontweight='bold')
+    ax2.legend(loc='lower right', fontsize=9)
+    ax2.grid(True, alpha=0.3)
+    ax2.set_xlim(0, max(delta_grid))
+    ax2.set_ylim(0.7, 1.1)
+
+    fig.suptitle(r'The Optimal Tilt: $\eta^*$ Adapts to Prior-Data Conflict',
+                 fontsize=14, fontweight='bold', y=1.02)
+
+    # Add definitions box
+    defn_text = (r'$w = \sigma_0^2/(\sigma^2 + \sigma_0^2)$ (prior weight)' + '\n'
+                 r'$|\Delta| = (1-w)|\mu_0 - D|/\sigma$ (prior-data conflict)')
+    fig.text(0.5, -0.02, defn_text, ha='center', va='top', fontsize=10,
+             bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.9))
+
+    plt.tight_layout()
+
+    if save:
+        save_figure(fig, "fig_1_6_optimal_tilt", "theory")
+
+    if show:
+        plt.show()
+
+    return fig
+
+
+# =============================================================================
+# Figure 1.7: Dynamic Tilting - Why theta, Not D
+# =============================================================================
+
+def figure_1_7_dynamic_tilting(
+    save: bool = True,
+    show: bool = False,
+) -> plt.Figure:
+    """
+    Generate Figure 1.7: Dynamic Tilting - Why theta, Not D.
+
+    Panel A: |Delta(theta)| varies as we scan theta (for fixed D)
+    Panel B: eta*(theta) varies with theta as a result
+    """
+    print("\n" + "="*60)
+    print("Figure 1.7: Dynamic Tilting")
+    print("="*60)
+
+    # Model parameters
+    w = 0.5
+    sigma = 1.0
+    mu0 = 0.0
+    sigma0 = sigma * np.sqrt(w / (1 - w))
+    D = 2.5  # Observed data
+
+    mu_n, _, _ = posterior_params(D, mu0, sigma, sigma0)
+    delta_D = scaled_conflict(D, mu0, w, sigma)
+
+    print(f"D = {D}, mu_n = {mu_n:.2f}, Delta(D) = {delta_D:.2f}")
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    # Theta range to scan
+    thetas = np.linspace(-1, 5, 200)
+
+    # Panel A: |Delta(theta)| for each theta
+    ax1 = axes[0]
+
+    # Compute Delta(theta) for each theta
+    # Delta(theta) = (1-w)(mu0 - theta) / sigma - (D - theta) / sigma
+    # But the proper definition is: conflict if theta were true
+    # |Delta(theta)| = |(1-w)(mu0 - theta)/sigma|
+    delta_theta = np.abs((1 - w) * (mu0 - thetas) / sigma)
+
+    ax1.plot(thetas, delta_theta, color=COLORS['tilted'], linewidth=2.5,
+             label=r'$|\Delta(\theta)| = (1-w)|\mu_0 - \theta|/\sigma$')
+
+    # Mark key locations
+    ax1.axvline(x=D, color=COLORS['mle'], linestyle='--', linewidth=1.5, alpha=0.7,
+                label=f'MLE D={D}')
+    ax1.axvline(x=mu_n, color=COLORS['waldo'], linestyle='--', linewidth=1.5, alpha=0.7,
+                label=f'$\\mu_n$={mu_n:.2f}')
+    ax1.axvline(x=mu0, color=COLORS['prior_mean'], linestyle=':', linewidth=1.5, alpha=0.7,
+                label=f'$\\mu_0$={mu0}')
+
+    # Mark Delta at D
+    ax1.scatter([D], [np.abs((1-w)*(mu0-D)/sigma)], color=COLORS['mle'], s=100, zorder=5)
+
+    ax1.set_xlabel(r'Hypothesized $\theta$', fontsize=12)
+    ax1.set_ylabel(r'Conflict $|\Delta(\theta)|$', fontsize=12)
+    ax1.set_title('(A) Conflict Varies with Hypothesized Parameter\n'
+                  r'$|\Delta(\theta)|$ is zero at $\theta=\mu_0$, grows as $|\theta - \mu_0|$ increases',
+                  fontsize=12, fontweight='bold')
+    ax1.legend(loc='upper right', fontsize=9)
+    ax1.grid(True, alpha=0.3)
+    ax1.set_xlim(-1, 5)
+
+    # Panel B: eta*(theta) for each theta
+    ax2 = axes[1]
+
+    # Compute optimal eta for each theta based on |Delta(theta)| using MLP
+    alpha = 0.05
+    eta_star_theta = np.array([optimal_eta_mlp(d, w=w, alpha=alpha) for d in delta_theta])
+
+    ax2.plot(thetas, eta_star_theta, color=COLORS['tilted'], linewidth=2.5,
+             label=r'$\eta^*(\theta) = \eta^*(|\Delta(\theta)|)$')
+
+    # Reference lines
+    ax2.axhline(y=0, color=COLORS['waldo'], linestyle='--', linewidth=1.5, alpha=0.5,
+                label=r'$\eta=0$ (WALDO)')
+    ax2.axhline(y=1, color=COLORS['wald'], linestyle='--', linewidth=1.5, alpha=0.5,
+                label=r'$\eta=1$ (Wald)')
+
+    # Mark key locations
+    ax2.axvline(x=mu0, color=COLORS['prior_mean'], linestyle=':', linewidth=1.5, alpha=0.7)
+    ax2.axvline(x=D, color=COLORS['mle'], linestyle='--', linewidth=1.5, alpha=0.7)
+
+    # Shade oversharpening region
+    ax2.fill_between(thetas, -1, eta_star_theta,
+                     where=eta_star_theta < 0,
+                     alpha=0.2, color='purple', label='Oversharpening')
+
+    ax2.set_xlabel(r'Hypothesized $\theta$', fontsize=12)
+    ax2.set_ylabel(r'Optimal Tilting $\eta^*(\theta)$', fontsize=12)
+    ax2.set_title(r'(B) Optimal Tilt Varies with $\theta$' + '\n'
+                  r'Near $\mu_0$: oversharpening; far from $\mu_0$: use Wald',
+                  fontsize=12, fontweight='bold')
+    ax2.legend(loc='lower right', fontsize=9)
+    ax2.grid(True, alpha=0.3)
+    ax2.set_xlim(-1, 5)
+    ax2.set_ylim(-1.1, 1.1)
+
+    fig.suptitle('Dynamic Tilting: Why We Must Re-optimize at Each $\\theta$',
+                 fontsize=14, fontweight='bold', y=1.02)
+
+    plt.tight_layout()
+
+    if save:
+        save_figure(fig, "fig_1_7_dynamic_tilting", "theory")
+
+    if show:
+        plt.show()
+
+    return fig
+
+
+# =============================================================================
+# Figure 1.8: Constructing the Dynamic P-value and CI
+# =============================================================================
+
+def figure_1_8_dynamic_construction(
+    save: bool = True,
+    show: bool = False,
+) -> plt.Figure:
+    """
+    Generate Figure 1.8: Constructing the Dynamic P-value and CI.
+
+    Panel A: Multiple p-value curves with local eta*(theta), showing envelope
+    Panel B: The resulting dynamic p-value function and CI bounds
+    """
+    print("\n" + "="*60)
+    print("Figure 1.8: Constructing Dynamic P-value and CI")
+    print("="*60)
+
+    # Model parameters
+    w = 0.5
+    sigma = 1.0
+    mu0 = 0.0
+    sigma0 = sigma * np.sqrt(w / (1 - w))
+    D = 2.5
+    alpha = 0.05
+
+    mu_n, _, _ = posterior_params(D, mu0, sigma, sigma0)
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    # Theta range
+    thetas = np.linspace(-1, 5, 200)
+
+    # Panel A: Multiple p-value curves at sample theta values
+    ax1 = axes[0]
+
+    # Show p-value curves for several representative theta values
+    sample_thetas = [0.0, 1.0, 2.0, 3.0, 4.0]
+    cmap = plt.cm.viridis
+
+    for i, theta_sample in enumerate(sample_thetas):
+        # Compute Delta at this theta
+        delta_at_theta = np.abs((1 - w) * (mu0 - theta_sample) / sigma)
+        eta_star = optimal_eta_mlp(delta_at_theta, w=w, alpha=alpha)
+
+        # Plot p-value curve for this eta
+        pvals = [tilted_pvalue(theta, D, mu0, sigma, sigma0, eta_star) for theta in thetas]
+        color = cmap(i / len(sample_thetas))
+        ax1.plot(thetas, pvals, color=color, linewidth=1.5, alpha=0.7,
+                 label=f'$\\theta={theta_sample}$: $\\eta^*={eta_star:.2f}$')
+
+        # Mark the evaluation point
+        p_at_sample = tilted_pvalue(theta_sample, D, mu0, sigma, sigma0, eta_star)
+        ax1.scatter([theta_sample], [p_at_sample], color=color, s=100, zorder=5,
+                   edgecolor='black', linewidth=1.5)
+
+    # Reference line
+    ax1.axhline(y=alpha, color='red', linestyle='--', linewidth=2, alpha=0.7,
+                label=f'$\\alpha={alpha}$')
+
+    ax1.set_xlabel(r'$\theta$', fontsize=12)
+    ax1.set_ylabel('p-value', fontsize=12)
+    ax1.set_title('(A) Local P-value Curves at Different $\\theta$ Values\n'
+                  'Each curve uses locally optimal $\\eta^*(\\theta)$',
+                  fontsize=12, fontweight='bold')
+    ax1.legend(loc='upper right', fontsize=8)
+    ax1.grid(True, alpha=0.3)
+    ax1.set_xlim(-1, 5)
+    ax1.set_ylim(0, 1.05)
+
+    # Panel B: The dynamic p-value function and CI
+    ax2 = axes[1]
+
+    # Compute dynamic p-value
+    dynamic_pvals = []
+    for theta in thetas:
+        try:
+            p = dynamic_tilted_pvalue(theta, D, mu0, sigma, sigma0)
+            dynamic_pvals.append(p)
+        except:
+            dynamic_pvals.append(np.nan)
+    dynamic_pvals = np.array(dynamic_pvals)
+
+    # Also compute WALDO and Wald for comparison
+    waldo_pvals = [tilted_pvalue(theta, D, mu0, sigma, sigma0, 0.0) for theta in thetas]
+    wald_pvals = [tilted_pvalue(theta, D, mu0, sigma, sigma0, 1.0) for theta in thetas]
+
+    ax2.plot(thetas, wald_pvals, color=COLORS['wald'], linewidth=2, alpha=0.7,
+             linestyle='--', label=r'Wald ($\eta=1$)')
+    ax2.plot(thetas, waldo_pvals, color=COLORS['waldo'], linewidth=2, alpha=0.7,
+             linestyle='--', label=r'WALDO ($\eta=0$)')
+    ax2.plot(thetas, dynamic_pvals, color=COLORS['tilted'], linewidth=2.5,
+             label=r'Dynamic ($\eta^*(\theta)$)')
+
+    # CI bounds
+    ax2.axhline(y=alpha, color='red', linestyle='--', linewidth=2, alpha=0.7)
+
+    # Compute CIs
+    try:
+        ci_dynamic = dynamic_tilted_ci(D, mu0, sigma, sigma0, alpha)
+        ax2.axvspan(ci_dynamic[0], ci_dynamic[1], alpha=0.15, color=COLORS['tilted'],
+                   label=f'Dynamic CI: [{ci_dynamic[0]:.2f}, {ci_dynamic[1]:.2f}]')
+    except:
+        ci_dynamic = None
+
+    try:
+        ci_wald = (D - 1.96*sigma, D + 1.96*sigma)
+        # Mark Wald CI bounds
+        ax2.axvline(x=ci_wald[0], color=COLORS['wald'], linestyle=':', alpha=0.5)
+        ax2.axvline(x=ci_wald[1], color=COLORS['wald'], linestyle=':', alpha=0.5)
+    except:
+        pass
+
+    ax2.set_xlabel(r'$\theta$', fontsize=12)
+    ax2.set_ylabel('p-value', fontsize=12)
+    ax2.set_title('(B) Dynamic P-value Function and Confidence Interval\n'
+                  'CI = {$\\theta$: $p_{dynamic}(\\theta) \\geq \\alpha$}',
+                  fontsize=12, fontweight='bold')
+    ax2.legend(loc='upper right', fontsize=9)
+    ax2.grid(True, alpha=0.3)
+    ax2.set_xlim(-1, 5)
+    ax2.set_ylim(0, 1.05)
+
+    fig.suptitle('Constructing the Dynamic Tilted Confidence Interval',
+                 fontsize=14, fontweight='bold', y=1.02)
+
+    plt.tight_layout()
+
+    if save:
+        save_figure(fig, "fig_1_8_dynamic_construction", "theory")
 
     if show:
         plt.show()
@@ -456,31 +1176,47 @@ def main():
     parser.add_argument("--no-save", action="store_true", help="Don't save figures")
     parser.add_argument("--show", action="store_true", help="Display figures")
     parser.add_argument("--fast", action="store_true", help="Use fewer MC samples")
-    parser.add_argument("--figure", type=str, help="Generate only specific figure (1.1, 1.2, 1.3)")
+    parser.add_argument("--figure", type=str, help="Generate only specific figure (1.1-1.8)")
     args = parser.parse_args()
 
     setup_style()
 
     save = not args.no_save
     show = args.show
-    n_samples = 2000 if args.fast else None
+    fast = args.fast
 
     print("="*60)
     print("CORE THEORY FIGURES")
     print("="*60)
 
-    figures_to_generate = ['1.1', '1.2', '1.3']
+    figures_to_generate = ['1.1', '1.2', '1.3', '1.4', '1.5', '1.6', '1.7', '1.8']
     if args.figure:
         figures_to_generate = [args.figure]
 
     if '1.1' in figures_to_generate:
-        figure_1_1_posterior_mean_dist(save=save, show=show, n_samples=n_samples)
+        figure_1_1_posterior_mean_dist(save=save, show=show, fast=fast)
 
     if '1.2' in figures_to_generate:
-        figure_1_2_waldo_statistic_dist(save=save, show=show, n_samples=n_samples)
+        n_samples_fig = 2000 if fast else None
+        figure_1_2_waldo_statistic_dist(save=save, show=show, n_samples=n_samples_fig)
 
     if '1.3' in figures_to_generate:
         figure_1_3_pvalue_function(save=save, show=show)
+
+    if '1.4' in figures_to_generate:
+        figure_1_4_what_is_tilting(save=save, show=show)
+
+    if '1.5' in figures_to_generate:
+        figure_1_5_why_tilt(save=save, show=show, fast=fast)
+
+    if '1.6' in figures_to_generate:
+        figure_1_6_optimal_tilt(save=save, show=show, fast=fast)
+
+    if '1.7' in figures_to_generate:
+        figure_1_7_dynamic_tilting(save=save, show=show)
+
+    if '1.8' in figures_to_generate:
+        figure_1_8_dynamic_construction(save=save, show=show)
 
     print("\n" + "="*60)
     print("DONE - Core theory figures generated")

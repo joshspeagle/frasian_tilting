@@ -6,15 +6,16 @@ Usage:
     python scripts/generate_all.py [--fast] [--category CATEGORY]
 
 Categories:
-    coverage   - Figures 3.1-3.3 (Coverage analysis)
-    widths     - Figures 4.1-4.3 (CI width analysis)
-    tilting    - Figures 5.1-5.5 (Tilting framework)
-    theory     - Figures 1.1-1.3 (Core theory)
-    estimators - Figures 2.1-2.2 (Estimator properties)
-    regimes    - Figures 6.1-6.2 (Three regimes)
-    summary    - Figures 7.1-7.3 (Method comparison)
-    tables     - Tables 1-4 (CSV + LaTeX)
-    all        - All figures and tables (default)
+    coverage        - Figures 3.1-3.3 (Coverage analysis)
+    widths          - Figures 4.1-4.3 (CI width analysis)
+    tilting         - Figures 5.1-5.5 (Tilting framework)
+    dynamic_tilting - Figures 5.6-5.12 (Dynamic tilting & MLP methodology)
+    theory          - Figures 1.1-1.3 (Core theory)
+    estimators      - Figures 2.1-2.3 (Estimator properties)
+    regimes         - Figures 6.1-6.2 (Three regimes)
+    summary         - Figures 7.1-7.3 (Method comparison)
+    tables          - Tables 1-4 (CSV + LaTeX)
+    all             - All figures and tables (default)
 """
 
 import sys
@@ -28,6 +29,7 @@ SCRIPTS = {
     'coverage': 'plot_coverage.py',
     'widths': 'plot_ci_widths.py',
     'tilting': 'plot_tilting.py',
+    'dynamic_tilting': 'plot_dynamic_tilting.py',
     'theory': 'plot_theory.py',
     'estimators': 'plot_estimators.py',
     'regimes': 'plot_regimes.py',
@@ -36,7 +38,7 @@ SCRIPTS = {
 }
 
 # Priority order for generation (following plan)
-PRIORITY_ORDER = ['coverage', 'widths', 'tilting', 'theory', 'estimators', 'regimes', 'summary', 'tables']
+PRIORITY_ORDER = ['coverage', 'widths', 'tilting', 'dynamic_tilting', 'theory', 'estimators', 'regimes', 'summary', 'tables']
 
 
 def run_script(script_name: str, fast: bool = False):
