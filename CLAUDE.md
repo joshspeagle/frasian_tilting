@@ -7,7 +7,7 @@ This project implements numerical experiments and publication-quality visualizat
 **Key components:**
 - Test framework: 182 tests across 5 tiers validating Theorems 1-10
 - Simulation infrastructure: Three-layer architecture for MC simulations
-- Visualization suite: 21 publication figures + 4 tables
+- Visualization suite: 24 publication figures + 4 tables
 
 ## The Conjugate Normal Model
 
@@ -40,6 +40,38 @@ The tilting parameter η interpolates between methods:
 
 For η < 0: λ_η > λ₀ (oversharpening increases non-centrality but narrows CIs)
 
+## Confidence Distributions (Schweder-Hjort Methodology)
+
+Confidence distributions (CDs) are derived from p-value functions via:
+- **Confidence density**: c(θ) = (1/2)|dp/dθ|
+- **Confidence CDF**: C(θ) = p(θ)/2 for θ ≤ mode, else 1 - p(θ)/2
+
+### Wald CD
+- **Distribution**: N(D, σ²)
+- **Mean**: D (the MLE)
+- **Mode**: D (the MLE)
+
+### WALDO CD (Key Discovery)
+The WALDO CD is a **50-50 Gaussian mixture**:
+```
+c(θ) = 0.5 × N(θ | D, σ²) + 0.5 × N(θ | μ*, σ*²)
+```
+where:
+- μ* = (wD + 2(1-w)μ₀) / (2-w)
+- σ* = wσ / (2-w)
+
+**Closed-form estimators**:
+- **Mean**: E[θ] = (μ_n + (1-w)D) / (2-w)
+- **Mode**: θ_mode = μ_n (posterior mean)
+
+Note: Mean ≠ mode for WALDO CD (unlike Wald where mean = mode = D)
+
+### Dynamic WALDO CD
+Uses locally optimal η*(θ) at each evaluation point:
+- No closed form - computed numerically via Schweder-Hjort differentiation
+- Apply Savitzky-Golay smoothing to reduce noise
+- Mode typically near μ_n, mean pulled toward D
+
 ## Project Structure
 
 ```
@@ -48,7 +80,7 @@ src/frasian/
 ├── core.py              # Posterior params, coordinates (10 functions)
 ├── waldo.py             # WALDO statistic, p-value, CIs (15 functions)
 ├── tilting.py           # Tilted posterior framework (14 functions)
-├── confidence.py        # Confidence distribution (12 functions)
+├── confidence.py        # Confidence distribution (18 functions)
 ├── figure_style.py      # Publication styling, colors, utilities
 ├── plotting.py          # Basic visualization utilities
 └── simulations/         # Three-layer simulation infrastructure
@@ -67,13 +99,12 @@ scripts/
 ├── run_simulations.py           # Generate raw D samples
 ├── train_optimal_eta_mlp.py     # Train width ratio MLP + generate lookup
 ├── train_monotonic_eta_mlp.py   # Train monotonic η* MLP (uses width MLP)
-├── plot_theory.py               # Figures 1.1-1.8 (core theory + tilting intro)
-├── plot_estimators.py           # Figures 2.1-2.2 (estimators)
-├── plot_coverage.py             # Figures 3.1-3.3 (coverage)
-├── plot_ci_widths.py            # Figures 4.1-4.3 (CI widths)
-├── plot_tilting.py              # Figures 5.1-5.2 (tilting details)
-├── plot_regimes.py              # Figures 6.1-6.2 (three regimes)
-├── plot_summary.py              # Figures 7.1-7.3 (summary)
+├── plot_theory.py               # Figures 1.1-1.10 (core theory + CDs)
+├── plot_estimators.py           # Figures 4.1-4.3 (CD estimators: mean, mode)
+├── plot_coverage.py             # Figures 2.1-2.3 (coverage & efficiency)
+├── plot_tilting.py              # Figures 3.1-3.4 (tilting validation & methodology)
+├── plot_regimes.py              # Figures 5.1-5.2 (three regimes)
+├── plot_summary.py              # Figures 6.1-6.3 (summary)
 ├── generate_tables.py           # Tables 1-4
 └── generate_all.py              # Master script
 
@@ -279,8 +310,31 @@ python scripts/plot_coverage.py --fast --figure 3.1
 - `dynamic_tilted_ci(D, mu0, sigma, sigma0, alpha)` → CI from dynamic tilting
 
 ### confidence.py
+**Wald CD (simple normal)**:
+- `wald_cd_density(theta, D, sigma)` → N(D, σ²) density
+- `wald_cd_mean(D)` → D
+- `wald_cd_mode(D)` → D
+
+**WALDO CD (50-50 Gaussian mixture)**:
+- `waldo_cd_params(D, mu0, sigma, sigma0)` → dict with μ*, σ*, etc.
+- `waldo_cd_density(theta, D, mu0, sigma, sigma0)` → mixture density
+- `waldo_cd_mean(D, mu0, sigma, sigma0)` → (μ_n + (1-w)D)/(2-w)
+- `waldo_cd_mode(D, mu0, sigma, sigma0)` → μ_n
+
+**Numerical CD from p-values**:
+- `cd_from_pvalue(theta_grid, p_values)` → (density, cdf) arrays
+- `cd_mean_numerical(theta_grid, cd_density)` → E[θ]
+- `cd_mode_numerical(theta_grid, cd_density)` → θ_mode
+- `cd_quantile(theta_grid, cd_cdf, q)` → θ at quantile q
+- `cd_variance_numerical(theta_grid, cd_density)` → Var[θ]
+
+**Dynamic WALDO CD**:
+- `dynamic_cd_density(theta_grid, D, mu0, sigma, sigma0)` → density with smoothing
+- `dynamic_cd_mean(D, mu0, sigma, sigma0)` → numerical mean
+- `dynamic_cd_mode(D, mu0, sigma, sigma0)` → numerical mode
+
+**Legacy (kept for compatibility)**:
 - `pvalue_mode(D, mu0, sigma, sigma0)` → θ_mode = μₙ
-- `pvalue_mean(D, mu0, sigma, sigma0, method)` → E[θ]
 
 ## Figure Style
 

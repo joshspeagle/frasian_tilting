@@ -1,21 +1,579 @@
 """
 Confidence distribution functions for the WALDO framework.
 
-This module provides functions for computing point estimators and properties
-of the WALDO confidence distribution, including mode, mean, and sampling.
+This module provides functions for computing confidence distributions (CDs)
+and their estimators (mean, mode) using the Schweder-Hjort methodology.
+
+Key result: The confidence density is derived from the p-value derivative:
+    c(θ) = (1/2) |dp/dθ|
+
+For WALDO, this yields a 50-50 Gaussian mixture:
+    c_WALDO(θ) = 0.5 × N(D, σ²) + 0.5 × N(μ*, σ*²)
+where:
+    μ* = (wD + 2(1-w)μ₀) / (2-w)
+    σ* = wσ / (2-w)
 """
 
 import numpy as np
 from scipy import stats
-from scipy import integrate
 from scipy import optimize
-from typing import Union, Tuple, Optional
+from typing import Union, Tuple, Dict, Optional, Callable
 
 from .core import posterior_params, weight, scaled_conflict
 from .waldo import pvalue, pvalue_components
 
 ArrayLike = Union[float, np.ndarray]
 
+
+# =============================================================================
+# Wald Confidence Distribution (Simple Normal)
+# =============================================================================
+
+def wald_cd_density(
+    theta: ArrayLike,
+    D: float,
+    sigma: float,
+) -> ArrayLike:
+    """
+    Compute the Wald confidence distribution density.
+
+    The Wald CD is simply N(D, σ²), centered at the MLE.
+
+    Parameters
+    ----------
+    theta : float or array
+        Parameter value(s)
+    D : float
+        Observed data (MLE)
+    sigma : float
+        Likelihood standard deviation
+
+    Returns
+    -------
+    density : float or array
+        CD density at theta
+    """
+    return stats.norm.pdf(theta, loc=D, scale=sigma)
+
+
+def wald_cd_mean(D: float) -> float:
+    """
+    Compute the mean of the Wald CD.
+
+    The Wald CD mean equals D (the MLE).
+
+    Parameters
+    ----------
+    D : float
+        Observed data (MLE)
+
+    Returns
+    -------
+    mean : float
+        CD mean (= D)
+    """
+    return D
+
+
+def wald_cd_mode(D: float) -> float:
+    """
+    Compute the mode of the Wald CD.
+
+    The Wald CD mode equals D (the MLE).
+
+    Parameters
+    ----------
+    D : float
+        Observed data (MLE)
+
+    Returns
+    -------
+    mode : float
+        CD mode (= D)
+    """
+    return D
+
+
+# =============================================================================
+# WALDO Confidence Distribution (Gaussian Mixture)
+# =============================================================================
+
+def waldo_cd_params(
+    D: float,
+    mu0: float,
+    sigma: float,
+    sigma0: float,
+) -> Dict[str, float]:
+    """
+    Compute the parameters of the WALDO confidence distribution.
+
+    The WALDO CD is a 50-50 mixture of two Gaussians:
+        0.5 × N(D, σ²) + 0.5 × N(μ*, σ*²)
+
+    Parameters
+    ----------
+    D : float
+        Observed data (MLE)
+    mu0 : float
+        Prior mean
+    sigma : float
+        Likelihood standard deviation
+    sigma0 : float
+        Prior standard deviation
+
+    Returns
+    -------
+    params : dict
+        Dictionary containing:
+        - mu_n: posterior mean
+        - w: weight on data
+        - mu_star: second component mean
+        - sigma_star: second component std
+        - component1_mean: D (first component)
+        - component1_std: sigma
+        - component2_mean: mu_star
+        - component2_std: sigma_star
+    """
+    mu_n, sigma_n, w = posterior_params(D, mu0, sigma, sigma0)
+
+    # Second component parameters
+    mu_star = (w * D + 2 * (1 - w) * mu0) / (2 - w)
+    sigma_star = w * sigma / (2 - w)
+
+    return {
+        'mu_n': mu_n,
+        'w': w,
+        'mu_star': mu_star,
+        'sigma_star': sigma_star,
+        'component1_mean': D,
+        'component1_std': sigma,
+        'component2_mean': mu_star,
+        'component2_std': sigma_star,
+    }
+
+
+def waldo_cd_density(
+    theta: ArrayLike,
+    D: float,
+    mu0: float,
+    sigma: float,
+    sigma0: float,
+) -> ArrayLike:
+    """
+    Compute the WALDO confidence distribution density.
+
+    The WALDO CD is a 50-50 Gaussian mixture:
+        c(θ) = 0.5 × N(θ | D, σ²) + 0.5 × N(θ | μ*, σ*²)
+
+    Parameters
+    ----------
+    theta : float or array
+        Parameter value(s)
+    D : float
+        Observed data (MLE)
+    mu0 : float
+        Prior mean
+    sigma : float
+        Likelihood standard deviation
+    sigma0 : float
+        Prior standard deviation
+
+    Returns
+    -------
+    density : float or array
+        CD density at theta
+    """
+    params = waldo_cd_params(D, mu0, sigma, sigma0)
+
+    # 50-50 mixture
+    component1 = stats.norm.pdf(theta, loc=params['component1_mean'],
+                                scale=params['component1_std'])
+    component2 = stats.norm.pdf(theta, loc=params['component2_mean'],
+                                scale=params['component2_std'])
+
+    return 0.5 * component1 + 0.5 * component2
+
+
+def waldo_cd_mean(
+    D: float,
+    mu0: float,
+    sigma: float,
+    sigma0: float,
+) -> float:
+    """
+    Compute the mean of the WALDO confidence distribution.
+
+    Closed form: E[θ] = (μ_n + (1-w)D) / (2-w)
+
+    Equivalently: E[θ] = 0.5 × D + 0.5 × μ*
+
+    Parameters
+    ----------
+    D : float
+        Observed data (MLE)
+    mu0 : float
+        Prior mean
+    sigma : float
+        Likelihood standard deviation
+    sigma0 : float
+        Prior standard deviation
+
+    Returns
+    -------
+    mean : float
+        CD mean
+    """
+    mu_n, _, w = posterior_params(D, mu0, sigma, sigma0)
+    return (mu_n + (1 - w) * D) / (2 - w)
+
+
+def waldo_cd_mode(
+    D: float,
+    mu0: float,
+    sigma: float,
+    sigma0: float,
+) -> float:
+    """
+    Compute the mode of the WALDO confidence distribution.
+
+    The WALDO CD mode equals μ_n (the posterior mean).
+
+    Note: This is also where the p-value is maximized (Theorem 4).
+
+    Parameters
+    ----------
+    D : float
+        Observed data (MLE)
+    mu0 : float
+        Prior mean
+    sigma : float
+        Likelihood standard deviation
+    sigma0 : float
+        Prior standard deviation
+
+    Returns
+    -------
+    mode : float
+        CD mode (= μ_n)
+    """
+    mu_n, _, _ = posterior_params(D, mu0, sigma, sigma0)
+    return mu_n
+
+
+# =============================================================================
+# Numerical CD from P-value (Schweder-Hjort Method)
+# =============================================================================
+
+def cd_from_pvalue(
+    theta_grid: np.ndarray,
+    p_values: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Compute confidence distribution from a p-value function.
+
+    Uses the Schweder-Hjort methodology:
+        c(θ) = (1/2) |dp/dθ|
+        C(θ) = p(θ)/2 for θ ≤ mode, else 1 - p(θ)/2
+
+    Parameters
+    ----------
+    theta_grid : ndarray
+        Grid of θ values
+    p_values : ndarray
+        P-values at each grid point
+
+    Returns
+    -------
+    cd_density : ndarray
+        Confidence density at each grid point
+    cd_cdf : ndarray
+        Confidence CDF at each grid point
+    """
+    # Numerical derivative
+    dtheta = theta_grid[1] - theta_grid[0]
+    dp_dtheta = np.gradient(p_values, dtheta)
+
+    # Confidence density
+    cd_density = 0.5 * np.abs(dp_dtheta)
+
+    # Find mode (where p = 1)
+    mode_idx = np.argmax(p_values)
+
+    # Confidence CDF
+    cd_cdf = np.where(
+        np.arange(len(theta_grid)) <= mode_idx,
+        p_values / 2,
+        1 - p_values / 2
+    )
+
+    return cd_density, cd_cdf
+
+
+def cd_mean_numerical(
+    theta_grid: np.ndarray,
+    cd_density: np.ndarray,
+) -> float:
+    """
+    Compute the mean of a confidence distribution numerically.
+
+    Parameters
+    ----------
+    theta_grid : ndarray
+        Grid of θ values
+    cd_density : ndarray
+        CD density at each grid point
+
+    Returns
+    -------
+    mean : float
+        CD mean
+    """
+    return np.trapezoid(theta_grid * cd_density, theta_grid)
+
+
+def cd_mode_numerical(
+    theta_grid: np.ndarray,
+    cd_density: np.ndarray,
+) -> float:
+    """
+    Compute the mode of a confidence distribution numerically.
+
+    Parameters
+    ----------
+    theta_grid : ndarray
+        Grid of θ values
+    cd_density : ndarray
+        CD density at each grid point
+
+    Returns
+    -------
+    mode : float
+        CD mode
+    """
+    return theta_grid[np.argmax(cd_density)]
+
+
+def cd_quantile(
+    theta_grid: np.ndarray,
+    cd_cdf: np.ndarray,
+    q: float,
+) -> float:
+    """
+    Compute a quantile of the confidence distribution.
+
+    Parameters
+    ----------
+    theta_grid : ndarray
+        Grid of θ values
+    cd_cdf : ndarray
+        CD CDF at each grid point
+    q : float
+        Quantile (0 to 1)
+
+    Returns
+    -------
+    theta_q : float
+        θ value at the q-th quantile
+    """
+    idx = np.searchsorted(cd_cdf, q)
+    if idx >= len(theta_grid):
+        return theta_grid[-1]
+    if idx == 0:
+        return theta_grid[0]
+    return theta_grid[idx]
+
+
+def cd_variance_numerical(
+    theta_grid: np.ndarray,
+    cd_density: np.ndarray,
+) -> float:
+    """
+    Compute the variance of a confidence distribution numerically.
+
+    Parameters
+    ----------
+    theta_grid : ndarray
+        Grid of θ values
+    cd_density : ndarray
+        CD density at each grid point
+
+    Returns
+    -------
+    variance : float
+        CD variance
+    """
+    mean = cd_mean_numerical(theta_grid, cd_density)
+    return np.trapezoid((theta_grid - mean)**2 * cd_density, theta_grid)
+
+
+# =============================================================================
+# Dynamic WALDO Confidence Distribution
+# =============================================================================
+
+def dynamic_cd_density(
+    theta_grid: np.ndarray,
+    D: float,
+    mu0: float,
+    sigma: float,
+    sigma0: float,
+    smooth: bool = True,
+    smooth_window: int = 15,
+    normalize: bool = True,
+) -> np.ndarray:
+    """
+    Compute the Dynamic WALDO confidence distribution density.
+
+    This uses the dynamic tilted p-value function (which adapts η locally)
+    and applies the Schweder-Hjort differentiation method.
+
+    Parameters
+    ----------
+    theta_grid : ndarray
+        Grid of θ values
+    D : float
+        Observed data (MLE)
+    mu0 : float
+        Prior mean
+    sigma : float
+        Likelihood standard deviation
+    sigma0 : float
+        Prior standard deviation
+    smooth : bool
+        Whether to apply Savitzky-Golay smoothing to reduce noise
+    smooth_window : int
+        Window size for smoothing (must be odd)
+    normalize : bool
+        Whether to normalize the density to integrate to 1
+
+    Returns
+    -------
+    density : ndarray
+        CD density at each grid point
+    """
+    from .tilting import dynamic_tilted_pvalue
+    from scipy.signal import savgol_filter
+
+    # Compute dynamic p-values
+    p_values = np.array([
+        dynamic_tilted_pvalue(theta, D, mu0, sigma, sigma0)
+        for theta in theta_grid
+    ])
+
+    # Apply Schweder-Hjort method
+    cd_density, _ = cd_from_pvalue(theta_grid, p_values)
+
+    # Smooth the density if requested
+    if smooth and len(cd_density) > smooth_window:
+        # Ensure window is odd and smaller than data
+        window = min(smooth_window, len(cd_density) - 1)
+        if window % 2 == 0:
+            window -= 1
+        if window >= 3:
+            cd_density = savgol_filter(cd_density, window, polyorder=2)
+            # Ensure non-negative
+            cd_density = np.maximum(cd_density, 0)
+
+    # Normalize if requested
+    if normalize:
+        integral = np.trapezoid(cd_density, theta_grid)
+        if integral > 1e-10:
+            cd_density = cd_density / integral
+
+    return cd_density
+
+
+def dynamic_cd_mean(
+    D: float,
+    mu0: float,
+    sigma: float,
+    sigma0: float,
+    n_grid: int = 500,
+    n_sigma: float = 5.0,
+) -> float:
+    """
+    Compute the mean of the Dynamic WALDO CD numerically.
+
+    Parameters
+    ----------
+    D : float
+        Observed data (MLE)
+    mu0 : float
+        Prior mean
+    sigma : float
+        Likelihood standard deviation
+    sigma0 : float
+        Prior standard deviation
+    n_grid : int
+        Number of grid points
+    n_sigma : float
+        Number of standard deviations for grid extent
+
+    Returns
+    -------
+    mean : float
+        CD mean
+    """
+    mu_n, _, _ = posterior_params(D, mu0, sigma, sigma0)
+
+    # Create grid covering both mu_n and D
+    center = (mu_n + D) / 2
+    extent = max(abs(D - mu_n), sigma) * n_sigma
+    theta_grid = np.linspace(center - extent, center + extent, n_grid)
+
+    # Compute normalized density
+    cd_density = dynamic_cd_density(theta_grid, D, mu0, sigma, sigma0, normalize=True)
+
+    return cd_mean_numerical(theta_grid, cd_density)
+
+
+def dynamic_cd_mode(
+    D: float,
+    mu0: float,
+    sigma: float,
+    sigma0: float,
+    n_grid: int = 500,
+    n_sigma: float = 5.0,
+) -> float:
+    """
+    Compute the mode of the Dynamic WALDO CD numerically.
+
+    Parameters
+    ----------
+    D : float
+        Observed data (MLE)
+    mu0 : float
+        Prior mean
+    sigma : float
+        Likelihood standard deviation
+    sigma0 : float
+        Prior standard deviation
+    n_grid : int
+        Number of grid points
+    n_sigma : float
+        Number of standard deviations for grid extent
+
+    Returns
+    -------
+    mode : float
+        CD mode
+    """
+    mu_n, _, _ = posterior_params(D, mu0, sigma, sigma0)
+
+    # Create grid
+    center = (mu_n + D) / 2
+    extent = max(abs(D - mu_n), sigma) * n_sigma
+    theta_grid = np.linspace(center - extent, center + extent, n_grid)
+
+    # Compute density with extra smoothing for mode finding
+    cd_density = dynamic_cd_density(theta_grid, D, mu0, sigma, sigma0,
+                                     smooth=True, smooth_window=21, normalize=True)
+
+    return cd_mode_numerical(theta_grid, cd_density)
+
+
+# =============================================================================
+# Legacy Functions (Kept for Compatibility)
+# =============================================================================
 
 def pvalue_mode(
     D: float,
@@ -27,6 +585,8 @@ def pvalue_mode(
     Compute the mode of the WALDO confidence distribution.
 
     From Theorem 4: The mode equals the posterior mean mu_n.
+
+    This is equivalent to waldo_cd_mode() and is kept for compatibility.
 
     Parameters
     ----------
@@ -44,8 +604,36 @@ def pvalue_mode(
     mode : float
         Mode of the confidence distribution (= posterior mean)
     """
-    mu_n, _, _ = posterior_params(D, mu0, sigma, sigma0)
-    return mu_n
+    return waldo_cd_mode(D, mu0, sigma, sigma0)
+
+
+def pvalue_at_mode(
+    D: float,
+    mu0: float,
+    sigma: float,
+    sigma0: float,
+) -> float:
+    """
+    Compute p-value at the mode (should be 1).
+
+    Parameters
+    ----------
+    D : float
+        Observed data
+    mu0 : float
+        Prior mean
+    sigma : float
+        Likelihood standard deviation
+    sigma0 : float
+        Prior standard deviation
+
+    Returns
+    -------
+    p : float
+        P-value at the mode (should be 1.0)
+    """
+    mu_n, _, w = posterior_params(D, mu0, sigma, sigma0)
+    return pvalue(mu_n, mu_n, mu0, w, sigma)
 
 
 def verify_mode_is_max(
@@ -91,413 +679,3 @@ def verify_mode_is_max(
     max_p_found = np.max(p_values)
 
     return np.isclose(p_at_mode, max_p_found, atol=1e-6), p_at_mode, max_p_found
-
-
-def numerical_mode(
-    D: float,
-    mu0: float,
-    sigma: float,
-    sigma0: float,
-    bracket_mult: float = 5.0,
-) -> float:
-    """
-    Find the mode numerically by maximizing the p-value function.
-
-    Parameters
-    ----------
-    D : float
-        Observed data
-    mu0 : float
-        Prior mean
-    sigma : float
-        Likelihood standard deviation
-    sigma0 : float
-        Prior standard deviation
-    bracket_mult : float
-        Multiplier for search bracket
-
-    Returns
-    -------
-    mode : float
-        Numerically determined mode
-    """
-    mu_n, sigma_n, w = posterior_params(D, mu0, sigma, sigma0)
-
-    # Negative p-value for minimization
-    def neg_pvalue(theta):
-        return -pvalue(theta, mu_n, mu0, w, sigma)
-
-    # Search around mu_n
-    result = optimize.minimize_scalar(
-        neg_pvalue,
-        bounds=(mu_n - bracket_mult * sigma, mu_n + bracket_mult * sigma),
-        method='bounded'
-    )
-
-    return result.x
-
-
-def pvalue_normalizing_constant(
-    D: float,
-    mu0: float,
-    sigma: float,
-    sigma0: float,
-    limit: float = 10.0,
-) -> float:
-    """
-    Compute the normalizing constant for the p-value function.
-
-    Z = integral of p(theta) over theta
-
-    Parameters
-    ----------
-    D : float
-        Observed data
-    mu0 : float
-        Prior mean
-    sigma : float
-        Likelihood standard deviation
-    sigma0 : float
-        Prior standard deviation
-    limit : float
-        Integration limit in standard deviations
-
-    Returns
-    -------
-    Z : float
-        Normalizing constant
-    """
-    mu_n, sigma_n, w = posterior_params(D, mu0, sigma, sigma0)
-
-    def integrand(theta):
-        return pvalue(theta, mu_n, mu0, w, sigma)
-
-    # Integrate over a wide range
-    result, _ = integrate.quad(
-        integrand,
-        mu_n - limit * sigma,
-        mu_n + limit * sigma,
-        limit=100
-    )
-
-    return result
-
-
-def pvalue_mean_numerical(
-    D: float,
-    mu0: float,
-    sigma: float,
-    sigma0: float,
-    limit: float = 10.0,
-) -> float:
-    """
-    Compute the mean of the normalized p-value function numerically.
-
-    E[theta] = (1/Z) * integral of theta * p(theta) over theta
-
-    Parameters
-    ----------
-    D : float
-        Observed data
-    mu0 : float
-        Prior mean
-    sigma : float
-        Likelihood standard deviation
-    sigma0 : float
-        Prior standard deviation
-    limit : float
-        Integration limit in standard deviations
-
-    Returns
-    -------
-    mean : float
-        Mean of the confidence distribution
-    """
-    mu_n, sigma_n, w = posterior_params(D, mu0, sigma, sigma0)
-
-    def p_func(theta):
-        return pvalue(theta, mu_n, mu0, w, sigma)
-
-    def theta_p_func(theta):
-        return theta * pvalue(theta, mu_n, mu0, w, sigma)
-
-    # Compute normalizing constant
-    Z, _ = integrate.quad(p_func, mu_n - limit * sigma, mu_n + limit * sigma, limit=100)
-
-    # Compute first moment
-    moment1, _ = integrate.quad(theta_p_func, mu_n - limit * sigma, mu_n + limit * sigma, limit=100)
-
-    return moment1 / Z
-
-
-def pvalue_mean_closed_form(
-    D: float,
-    mu0: float,
-    sigma: float,
-    sigma0: float,
-) -> float:
-    """
-    Compute the mean using the closed-form expression from Theorem 5.
-
-    E[theta] = mu_n + sigma * (w-1)/(2-w) * [(Delta^2 + 1)*E + 2*Delta*psi] / [Delta*E + 2*psi]
-
-    where:
-        Delta = (1-w)(mu0 - D) / sigma
-        E = 2*Phi(Delta) - 1
-        psi = phi(Delta)
-
-    Parameters
-    ----------
-    D : float
-        Observed data
-    mu0 : float
-        Prior mean
-    sigma : float
-        Likelihood standard deviation
-    sigma0 : float
-        Prior standard deviation
-
-    Returns
-    -------
-    mean : float
-        Mean of the confidence distribution
-    """
-    mu_n, sigma_n, w = posterior_params(D, mu0, sigma, sigma0)
-    Delta = scaled_conflict(D, mu0, w, sigma)
-
-    # Components of the formula
-    E = 2 * stats.norm.cdf(Delta) - 1  # = erf(Delta/sqrt(2)) for reference
-    psi = stats.norm.pdf(Delta)
-
-    # Handle the case Delta = 0 to avoid division issues
-    if np.abs(Delta) < 1e-10:
-        # When Delta = 0, E = 0 and the formula simplifies
-        # numerator = (0 + 1) * 0 + 2 * 0 * phi(0) = 0
-        # denominator = 0 * 0 + 2 * phi(0) = 2 * phi(0) > 0
-        # So the correction is 0, mean = mu_n
-        return mu_n
-
-    # Full formula
-    numerator = (Delta**2 + 1) * E + 2 * Delta * psi
-    denominator = Delta * E + 2 * psi
-
-    correction = sigma * (w - 1) / (2 - w) * numerator / denominator
-
-    return mu_n + correction
-
-
-def pvalue_mean(
-    D: float,
-    mu0: float,
-    sigma: float,
-    sigma0: float,
-    method: str = 'closed_form',
-) -> float:
-    """
-    Compute the mean of the WALDO confidence distribution.
-
-    Parameters
-    ----------
-    D : float
-        Observed data
-    mu0 : float
-        Prior mean
-    sigma : float
-        Likelihood standard deviation
-    sigma0 : float
-        Prior standard deviation
-    method : str
-        'closed_form' or 'numerical'
-
-    Returns
-    -------
-    mean : float
-        Mean of the confidence distribution
-    """
-    if method == 'closed_form':
-        return pvalue_mean_closed_form(D, mu0, sigma, sigma0)
-    elif method == 'numerical':
-        return pvalue_mean_numerical(D, mu0, sigma, sigma0)
-    else:
-        raise ValueError(f"Unknown method: {method}")
-
-
-def sample_confidence_dist(
-    D: float,
-    mu0: float,
-    sigma: float,
-    sigma0: float,
-    n_samples: int,
-    rng: Optional[np.random.Generator] = None,
-    method: str = 'rejection',
-) -> np.ndarray:
-    """
-    Sample from the normalized p-value function (confidence distribution).
-
-    Parameters
-    ----------
-    D : float
-        Observed data
-    mu0 : float
-        Prior mean
-    sigma : float
-        Likelihood standard deviation
-    sigma0 : float
-        Prior standard deviation
-    n_samples : int
-        Number of samples to generate
-    rng : Generator, optional
-        Random number generator
-    method : str
-        'rejection' for rejection sampling
-
-    Returns
-    -------
-    samples : ndarray
-        Samples from the confidence distribution
-    """
-    if rng is None:
-        rng = np.random.default_rng()
-
-    mu_n, sigma_n, w = posterior_params(D, mu0, sigma, sigma0)
-
-    if method == 'rejection':
-        # Use rejection sampling with a uniform proposal over a wide range
-        samples = []
-        proposal_width = 10 * sigma
-
-        # Maximum p-value is 1 (at the mode)
-        max_p = 1.0
-
-        while len(samples) < n_samples:
-            # Propose from uniform
-            n_batch = 2 * (n_samples - len(samples))
-            proposals = rng.uniform(
-                mu_n - proposal_width,
-                mu_n + proposal_width,
-                n_batch
-            )
-
-            # Compute acceptance probabilities
-            p_vals = np.array([pvalue(theta, mu_n, mu0, w, sigma) for theta in proposals])
-
-            # Accept/reject
-            u = rng.uniform(0, max_p, n_batch)
-            accepted = proposals[u < p_vals]
-            samples.extend(accepted)
-
-        return np.array(samples[:n_samples])
-    else:
-        raise ValueError(f"Unknown sampling method: {method}")
-
-
-def mean_between_mode_and_mle(
-    D: float,
-    mu0: float,
-    sigma: float,
-    sigma0: float,
-) -> Tuple[bool, float, float, float]:
-    """
-    Check that the mean lies between the mode (mu_n) and the MLE (D).
-
-    From Section 5.2.1:
-    - When D > mu0: mu_n < E[theta] < D
-    - When D < mu0: D < E[theta] < mu_n
-    - When D = mu0: E[theta] = mu_n
-
-    Parameters
-    ----------
-    D : float
-        Observed data (MLE)
-    mu0 : float
-        Prior mean
-    sigma : float
-        Likelihood standard deviation
-    sigma0 : float
-        Prior standard deviation
-
-    Returns
-    -------
-    is_between : bool
-        True if mean is between mode and MLE
-    mode : float
-        Mode (= mu_n)
-    mean : float
-        Mean of confidence distribution
-    mle : float
-        MLE (= D)
-    """
-    mode = pvalue_mode(D, mu0, sigma, sigma0)
-    mean = pvalue_mean(D, mu0, sigma, sigma0)
-    mle = D
-
-    if np.isclose(D, mu0, atol=1e-10):
-        # No prior-data conflict: mean should equal mode
-        is_between = np.isclose(mean, mode, atol=0.01 * sigma)
-    elif D > mu0:
-        # Mean should be between mode (= mu_n < D) and MLE (= D)
-        is_between = (mode <= mean <= mle) or np.isclose(mean, mode, atol=0.01 * sigma)
-    else:  # D < mu0
-        # Mean should be between MLE (= D) and mode (= mu_n > D)
-        is_between = (mle <= mean <= mode) or np.isclose(mean, mode, atol=0.01 * sigma)
-
-    return is_between, mode, mean, mle
-
-
-def pvalue_at_mode(
-    D: float,
-    mu0: float,
-    sigma: float,
-    sigma0: float,
-) -> float:
-    """
-    Compute p-value at the mode (should be 1).
-
-    Parameters
-    ----------
-    D : float
-        Observed data
-    mu0 : float
-        Prior mean
-    sigma : float
-        Likelihood standard deviation
-    sigma0 : float
-        Prior standard deviation
-
-    Returns
-    -------
-    p : float
-        P-value at the mode (should be 1.0)
-    """
-    mu_n, _, w = posterior_params(D, mu0, sigma, sigma0)
-    return pvalue(mu_n, mu_n, mu0, w, sigma)
-
-
-def pvalue_wald_symmetric(
-    theta: ArrayLike,
-    mu_n: float,
-    sigma_n: float,
-) -> ArrayLike:
-    """
-    Compute the symmetric (Wald) p-value for comparison.
-
-    p(theta) = 2 * Phi(-|mu_n - theta| / sigma_n)
-
-    This is what you get when b = 0 (no prior bias).
-
-    Parameters
-    ----------
-    theta : float or array
-        Parameter value(s) to test
-    mu_n : float
-        Point estimate
-    sigma_n : float
-        Standard error
-
-    Returns
-    -------
-    p : float or array
-        Wald p-value(s)
-    """
-    a = np.abs(mu_n - theta) / sigma_n
-    return 2 * stats.norm.cdf(-a)

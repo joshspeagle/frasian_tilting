@@ -22,7 +22,7 @@ from frasian.waldo import (
 )
 from frasian.confidence import (
     pvalue_mode,
-    pvalue_mean,
+    waldo_cd_mean,
 )
 from frasian.tilting import (
     tilted_params,
@@ -109,7 +109,7 @@ class TestEstimatorOrdering:
 
         # WALDO estimators
         mu_n = pvalue_mode(D, model.mu0, model.sigma, model.sigma0)
-        mean_waldo = pvalue_mean(D, model.mu0, model.sigma, model.sigma0)
+        mean_waldo = waldo_cd_mean(D, model.mu0, model.sigma, model.sigma0)
 
         # Dynamic tilted mode
         mode_tilt = dynamic_tilted_mode(D, model.mu0, model.sigma, model.sigma0)
@@ -130,7 +130,7 @@ class TestEstimatorOrdering:
         D = -4.0  # D < mu0 = 0
 
         mu_n = pvalue_mode(D, model.mu0, model.sigma, model.sigma0)
-        mean_waldo = pvalue_mean(D, model.mu0, model.sigma, model.sigma0)
+        mean_waldo = waldo_cd_mean(D, model.mu0, model.sigma, model.sigma0)
         mode_tilt = dynamic_tilted_mode(D, model.mu0, model.sigma, model.sigma0)
 
         # When D < mu0, ordering should be reversed

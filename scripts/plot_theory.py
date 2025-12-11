@@ -2,18 +2,23 @@
 """
 Core Theory Figures (Category 1)
 
-Generates figures 1.1-1.6:
+Generates figures 1.1-1.10:
 - Figure 1.1: Posterior Mean Bias (Theorem 1)
 - Figure 1.2: WALDO Statistic Non-centrality (Theorem 2)
 - Figure 1.3: P-value Function and CI Widths (Theorem 3)
-- Figure 1.4: Tilting Parameter Space (Theorem 6)
-- Figure 1.5: Tilted P-value Family (Theorem 8)
-- Figure 1.6: Non-centrality Reduction (Theorem 7)
+- Figure 1.4: What is Tilting?
+- Figure 1.5: Why Tilt? The Width Problem
+- Figure 1.6: The Optimal Tilt eta*(|Delta|)
+- Figure 1.7: Dynamic Tilting - Why theta, Not D
+- Figure 1.7b: The Envelope Construction
+- Figure 1.8: Dynamic Tilting Across Conflict Levels
+- Figure 1.9: P-value to Confidence Distribution (Schweder-Hjort)
+- Figure 1.10: CD Comparison Across Conflict Levels
 
 Usage:
     python scripts/plot_theory.py [--no-save] [--show]
     python scripts/plot_theory.py --fast  # Reduced MC samples
-    python scripts/plot_theory.py --figure 1.4  # Specific figure
+    python scripts/plot_theory.py --figure 1.9  # Specific figure
 """
 
 import sys
@@ -44,6 +49,21 @@ from frasian.tilting import (
     dynamic_tilted_ci,
     optimal_eta_approximation,
     optimal_eta_mlp,
+)
+from frasian.confidence import (
+    wald_cd_density,
+    wald_cd_mean,
+    wald_cd_mode,
+    waldo_cd_params,
+    waldo_cd_density,
+    waldo_cd_mean,
+    waldo_cd_mode,
+    cd_from_pvalue,
+    cd_mean_numerical,
+    cd_mode_numerical,
+    dynamic_cd_density,
+    dynamic_cd_mean,
+    dynamic_cd_mode,
 )
 from frasian.figure_style import (
     COLORS, FIGSIZE, setup_style, save_figure,
@@ -1353,12 +1373,303 @@ def figure_1_8_dynamic_construction(
     return fig
 
 
+# =============================================================================
+# Figure 1.9: P-value to Confidence Distribution
+# =============================================================================
+
+def figure_1_9_pvalue_to_cd(
+    save: bool = True,
+    show: bool = False,
+) -> plt.Figure:
+    """
+    Generate Figure 1.9: From P-value to Confidence Distribution.
+
+    Shows the Schweder-Hjort methodology:
+    Panel A: P-value function with gradient annotations
+    Panel B: Resulting CD density c(θ) = (1/2)|dp/dθ|
+    """
+    print("\n" + "="*60)
+    print("Figure 1.9: P-value to Confidence Distribution")
+    print("="*60)
+
+    # Model parameters - use a case with clear asymmetry
+    w = 0.5
+    sigma = 1.0
+    mu0 = 0.0
+    sigma0 = sigma * np.sqrt(w / (1 - w))
+    D = 2.5  # Moderate conflict for clear visualization
+    alpha = 0.05
+
+    mu_n, sigma_n, _ = posterior_params(D, mu0, sigma, sigma0)
+    delta = np.abs((1 - w) * (mu0 - D) / sigma)
+
+    print(f"  Model: w={w}, D={D}, mu_n={mu_n:.2f}, |Delta|={delta:.2f}")
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    # Theta range
+    thetas = np.linspace(-2, 5, 500)
+
+    # ===================
+    # Panel A: P-value function with gradient annotations
+    # ===================
+    ax1 = axes[0]
+
+    # Compute WALDO p-values
+    p_vals = np.array([pvalue(t, mu_n, mu0, w, sigma) for t in thetas])
+
+    # Plot p-value curve
+    ax1.plot(thetas, p_vals, color=COLORS['waldo'], linewidth=2.5, label='WALDO p-value')
+
+    # Compute gradient for annotation
+    dtheta = thetas[1] - thetas[0]
+    dp_dtheta = np.gradient(p_vals, dtheta)
+
+    # Mark regions of steep vs shallow gradient
+    # Find where |gradient| is large vs small
+    steep_mask = np.abs(dp_dtheta) > 0.3
+    shallow_mask = np.abs(dp_dtheta) < 0.1
+
+    # Annotate steep gradient region (on the "legs" of the p-value curve)
+    idx_steep_left = np.where((thetas < mu_n) & steep_mask)[0]
+    if len(idx_steep_left) > 0:
+        mid_idx = idx_steep_left[len(idx_steep_left)//2]
+        ax1.annotate('Steep gradient\n→ high density',
+                     xy=(thetas[mid_idx], p_vals[mid_idx]),
+                     xytext=(thetas[mid_idx] - 1.5, p_vals[mid_idx] + 0.2),
+                     fontsize=10, ha='center',
+                     arrowprops=dict(arrowstyle='->', color='gray'),
+                     bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
+
+    # Annotate shallow gradient region (near the mode)
+    ax1.annotate('Shallow gradient\n→ low density',
+                 xy=(mu_n, 1.0),
+                 xytext=(mu_n + 1.2, 0.75),
+                 fontsize=10, ha='center',
+                 arrowprops=dict(arrowstyle='->', color='gray'),
+                 bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
+
+    # Mark the mode
+    ax1.axvline(x=mu_n, color=COLORS['posterior'], linestyle='--', linewidth=2,
+                label=f'Mode = $\\mu_n$ = {mu_n:.2f}')
+    ax1.scatter([mu_n], [1.0], color=COLORS['posterior'], s=100, zorder=5)
+
+    # Reference lines
+    ax1.axvline(x=D, color=COLORS['mle'], linestyle=':', linewidth=1.5, alpha=0.7,
+                label=f'MLE D = {D}')
+    ax1.axvline(x=mu0, color=COLORS['prior_mean'], linestyle=':', linewidth=1.5, alpha=0.7,
+                label=f'Prior mean $\\mu_0$ = {mu0}')
+
+    ax1.set_xlabel(r'Hypothesized parameter $\theta$', fontsize=12)
+    ax1.set_ylabel('p-value', fontsize=12)
+    ax1.set_title('(A) The WALDO P-value Function\n'
+                  'Gradient determines confidence density',
+                  fontsize=12, fontweight='bold')
+    ax1.legend(loc='lower right', fontsize=9)
+    ax1.grid(True, alpha=0.3)
+    ax1.set_xlim(-2, 5)
+    ax1.set_ylim(0, 1.1)
+
+    # Add formula
+    ax1.text(0.02, 0.98, r'$c(\theta) = \frac{1}{2}\left|\frac{dp}{d\theta}\right|$',
+             transform=ax1.transAxes, fontsize=12, ha='left', va='top',
+             bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
+
+    # ===================
+    # Panel B: Confidence Distribution density
+    # ===================
+    ax2 = axes[1]
+
+    # Compute CD density via the Schweder-Hjort method
+    cd_density = 0.5 * np.abs(dp_dtheta)
+
+    # Also compute the analytic WALDO CD (Gaussian mixture)
+    cd_params = waldo_cd_params(D, mu0, sigma, sigma0)
+    cd_analytic = waldo_cd_density(thetas, D, mu0, sigma, sigma0)
+
+    # Plot both
+    ax2.fill_between(thetas, 0, cd_density, alpha=0.3, color=COLORS['waldo'],
+                     label='Numerical: $c(\\theta) = \\frac{1}{2}|dp/d\\theta|$')
+    ax2.plot(thetas, cd_analytic, color=COLORS['waldo'], linewidth=2.5,
+             label='Analytic: Gaussian mixture')
+
+    # Show the two Gaussian components
+    component1 = 0.5 * stats.norm.pdf(thetas, loc=cd_params['component1_mean'],
+                                      scale=cd_params['component1_std'])
+    component2 = 0.5 * stats.norm.pdf(thetas, loc=cd_params['component2_mean'],
+                                      scale=cd_params['component2_std'])
+
+    ax2.plot(thetas, component1, color=COLORS['mle'], linewidth=1.5, linestyle='--',
+             alpha=0.7, label=f'Component 1: N(D, $\\sigma^2$) = N({D}, {sigma}²)')
+    ax2.plot(thetas, component2, color='purple', linewidth=1.5, linestyle='--',
+             alpha=0.7, label=f'Component 2: N($\\mu^*$, $\\sigma^{{*2}}$)')
+
+    # Compute and mark mean and mode
+    cd_mean = waldo_cd_mean(D, mu0, sigma, sigma0)
+    cd_mode = waldo_cd_mode(D, mu0, sigma, sigma0)
+
+    ax2.axvline(x=cd_mean, color='darkblue', linestyle='-', linewidth=2,
+                label=f'Mean = {cd_mean:.2f}')
+    ax2.axvline(x=cd_mode, color=COLORS['posterior'], linestyle='--', linewidth=2,
+                label=f'Mode = $\\mu_n$ = {cd_mode:.2f}')
+
+    # Annotations for component parameters
+    mu_star = cd_params['mu_star']
+    sigma_star = cd_params['sigma_star']
+    info_text = (f'$\\mu^* = {mu_star:.2f}$\n'
+                 f'$\\sigma^* = {sigma_star:.2f}$\n'
+                 f'$w = {w}$')
+    ax2.text(0.98, 0.98, info_text, transform=ax2.transAxes,
+             fontsize=10, ha='right', va='top',
+             bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.9))
+
+    ax2.set_xlabel(r'Parameter $\theta$', fontsize=12)
+    ax2.set_ylabel('Confidence density', fontsize=12)
+    ax2.set_title('(B) WALDO Confidence Distribution\n'
+                  '50-50 mixture of two Gaussians',
+                  fontsize=12, fontweight='bold')
+    ax2.legend(loc='upper right', fontsize=8)
+    ax2.grid(True, alpha=0.3)
+    ax2.set_xlim(-2, 5)
+    ax2.set_ylim(0, max(cd_analytic) * 1.15)
+
+    fig.suptitle('From P-value to Confidence Distribution (Schweder-Hjort Method)',
+                 fontsize=14, fontweight='bold', y=1.02)
+
+    plt.tight_layout()
+
+    if save:
+        save_figure(fig, "fig_1_9_pvalue_to_cd", "theory")
+
+    if show:
+        plt.show()
+
+    return fig
+
+
+# =============================================================================
+# Figure 1.10: CD Comparison Across Conflict Levels
+# =============================================================================
+
+def figure_1_10_cd_comparison(
+    save: bool = True,
+    show: bool = False,
+) -> plt.Figure:
+    """
+    Generate Figure 1.10: Confidence Distribution Comparison.
+
+    Three panels showing Agreement, Mild Disagreement, Major Disagreement.
+    Each panel compares: Bayesian Posterior, Wald CD, WALDO CD, Dynamic CD.
+    """
+    print("\n" + "="*60)
+    print("Figure 1.10: CD Comparison Across Conflict Levels")
+    print("="*60)
+
+    # Model parameters (fixed)
+    w = 0.5
+    sigma = 1.0
+    mu0 = 0.0
+    sigma0 = sigma * np.sqrt(w / (1 - w))
+    alpha = 0.05
+
+    # Three conflict levels (same as Figure 1.8)
+    scenarios = [
+        {"D": 0.5, "label": "Agreement", "xlim": (-3, 4)},
+        {"D": 2.5, "label": "Mild Disagreement", "xlim": (-2, 6)},
+        {"D": 5.0, "label": "Major Disagreement", "xlim": (-1, 9)},
+    ]
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+
+    for col, (ax, scenario) in enumerate(zip(axes, scenarios)):
+        D = scenario["D"]
+        label = scenario["label"]
+        xlim = scenario["xlim"]
+
+        mu_n, sigma_n, _ = posterior_params(D, mu0, sigma, sigma0)
+        delta = np.abs((1 - w) * (mu0 - D) / sigma)
+
+        print(f"  Panel {col+1}: {label} - D={D}, |Delta|={delta:.2f}")
+
+        # Theta range
+        thetas = np.linspace(xlim[0], xlim[1], 300)
+
+        # 1. Bayesian posterior density (for comparison)
+        posterior_density = stats.norm.pdf(thetas, mu_n, sigma_n)
+
+        # 2. Wald CD: N(D, sigma²)
+        wald_cd = wald_cd_density(thetas, D, sigma)
+
+        # 3. WALDO CD: Gaussian mixture
+        waldo_cd = waldo_cd_density(thetas, D, mu0, sigma, sigma0)
+
+        # 4. Dynamic WALDO CD (numerical, with smoothing)
+        dynamic_cd = dynamic_cd_density(thetas, D, mu0, sigma, sigma0, smooth=True)
+
+        # Plot all four distributions
+        ax.plot(thetas, posterior_density, color=COLORS['posterior'], linewidth=2,
+                label='Posterior')
+        ax.plot(thetas, wald_cd, color=COLORS['wald'], linewidth=2,
+                linestyle='--', label='Wald CD')
+        ax.plot(thetas, waldo_cd, color=COLORS['waldo'], linewidth=2.5,
+                label='WALDO CD')
+        ax.plot(thetas, dynamic_cd, color=COLORS['tilted'], linewidth=1.5,
+                linestyle=':', alpha=0.8, label='Dynamic CD')
+
+        # Fill under WALDO CD for emphasis
+        ax.fill_between(thetas, 0, waldo_cd, alpha=0.1, color=COLORS['waldo'])
+
+        # Mark key locations with subtle lines
+        ax.axvline(x=mu_n, color=COLORS['posterior'], linestyle='--',
+                   linewidth=1, alpha=0.4)
+        ax.axvline(x=D, color=COLORS['mle'], linestyle=':',
+                   linewidth=1, alpha=0.4)
+
+        # Mark WALDO CD mean (distinct from mode)
+        waldo_mean = waldo_cd_mean(D, mu0, sigma, sigma0)
+        ax.scatter([waldo_mean], [waldo_cd_density(waldo_mean, D, mu0, sigma, sigma0)],
+                   color=COLORS['waldo'], s=50, zorder=5, marker='s',
+                   edgecolor='black', linewidth=1)
+
+        # Simpler info box
+        info_text = f'$|\\Delta| = {delta:.2f}$'
+        ax.text(0.98, 0.98, info_text, transform=ax.transAxes,
+                fontsize=10, ha='right', va='top',
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8, edgecolor='gray'))
+
+        ax.set_xlabel(r'$\theta$', fontsize=11)
+        if col == 0:
+            ax.set_ylabel('Density', fontsize=11)
+        ax.set_title(f'({chr(65+col)}) {label}',
+                     fontsize=12, fontweight='bold')
+        ax.set_xlim(xlim)
+        ax.set_ylim(0, None)
+        ax.grid(True, alpha=0.3)
+
+        if col == 2:
+            ax.legend(loc='upper right', fontsize=8)
+
+    fig.suptitle('Confidence Distributions Across Prior-Data Conflict Levels\n'
+                 'Posterior vs Wald CD vs WALDO CD vs Dynamic CD',
+                 fontsize=13, fontweight='bold', y=1.02)
+
+    plt.tight_layout()
+
+    if save:
+        save_figure(fig, "fig_1_10_cd_comparison", "theory")
+
+    if show:
+        plt.show()
+
+    return fig
+
+
 def main():
     parser = argparse.ArgumentParser(description="Generate core theory figures")
     parser.add_argument("--no-save", action="store_true", help="Don't save figures")
     parser.add_argument("--show", action="store_true", help="Display figures")
     parser.add_argument("--fast", action="store_true", help="Use fewer MC samples")
-    parser.add_argument("--figure", type=str, help="Generate only specific figure (1.1-1.8)")
+    parser.add_argument("--figure", type=str, help="Generate only specific figure (1.1-1.10)")
     args = parser.parse_args()
 
     setup_style()
@@ -1371,7 +1682,7 @@ def main():
     print("CORE THEORY FIGURES")
     print("="*60)
 
-    figures_to_generate = ['1.1', '1.2', '1.3', '1.4', '1.5', '1.6', '1.7', '1.8']
+    figures_to_generate = ['1.1', '1.2', '1.3', '1.4', '1.5', '1.6', '1.7', '1.8', '1.9', '1.10']
     if args.figure:
         figures_to_generate = [args.figure]
 
@@ -1402,6 +1713,12 @@ def main():
 
     if '1.8' in figures_to_generate:
         figure_1_8_dynamic_construction(save=save, show=show)
+
+    if '1.9' in figures_to_generate:
+        figure_1_9_pvalue_to_cd(save=save, show=show)
+
+    if '1.10' in figures_to_generate:
+        figure_1_10_cd_comparison(save=save, show=show)
 
     print("\n" + "="*60)
     print("DONE - Core theory figures generated")

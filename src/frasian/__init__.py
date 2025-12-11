@@ -24,10 +24,28 @@ from .waldo import (
 )
 
 from .confidence import (
+    # Wald CD
+    wald_cd_density,
+    wald_cd_mean,
+    wald_cd_mode,
+    # WALDO CD
+    waldo_cd_params,
+    waldo_cd_density,
+    waldo_cd_mean,
+    waldo_cd_mode,
+    # Numerical CD
+    cd_from_pvalue,
+    cd_mean_numerical,
+    cd_mode_numerical,
+    cd_quantile,
+    cd_variance_numerical,
+    # Dynamic CD
+    dynamic_cd_density,
+    dynamic_cd_mean,
+    dynamic_cd_mode,
+    # Legacy
     pvalue_mode,
-    pvalue_mean,
-    sample_confidence_dist,
-    mean_between_mode_and_mle,
+    pvalue_at_mode,
 )
 
 from .tilting import (
@@ -58,9 +76,22 @@ __all__ = [
     "pvalue_components",
     "confidence_interval",
     "critical_value",
-    # Confidence distribution
+    # Confidence distributions
+    "wald_cd_density",
+    "wald_cd_mean",
+    "wald_cd_mode",
+    "waldo_cd_params",
+    "waldo_cd_density",
+    "waldo_cd_mean",
+    "waldo_cd_mode",
+    "cd_from_pvalue",
+    "cd_mean_numerical",
+    "cd_mode_numerical",
+    "cd_quantile",
+    "cd_variance_numerical",
+    "dynamic_cd_density",
+    "dynamic_cd_mean",
+    "dynamic_cd_mode",
     "pvalue_mode",
-    "pvalue_mean",
-    "sample_confidence_dist",
-    "mean_between_mode_and_mle",
+    "pvalue_at_mode",
 ]
