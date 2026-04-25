@@ -202,11 +202,13 @@ scripts/
 tools/
   check_method_completeness.py  # verify brief + tests + illustration per method
 
-.claude/                     # planned (Step 7)
+.claude/
   agents/                    # skeptic, literature-reviewer, deriver
   commands/                  # /critique, /litreview, /derive, /propose-method
 
-.github/workflows/           # planned (Step 7): CI gating method completeness
+.github/workflows/
+  ci.yaml                    # pytest L0-L4 on Python 3.11/3.12
+  method-completeness.yaml   # check_method_completeness + smoke runs
 
 legacy/                      # archived original implementation; reference only
 ```
@@ -243,9 +245,12 @@ required sections (CI-checked by `tools/check_method_completeness.py`):
 9. Links
 
 Step 7 wires the `.claude/` subagents (`skeptic`, `literature-reviewer`,
-`deriver`) and slash commands (`/propose-method`, `/critique`, `/derive`,
-`/litreview`) that orchestrate brief authoring + critique. Until then,
-briefs are written by hand from the template.
+`deriver`), slash commands (`/propose-method`, `/critique`, `/derive`,
+`/litreview`), and GitHub Actions workflows (`ci.yaml` running L0-L4
+tests + `method-completeness.yaml` running `tools/check_method_completeness.py`
+plus illustration smoke runs) that gate brief / property-test /
+illustration completeness on every PR. See `docs/workflows.md` for the
+full lifecycle.
 
 ## Running Things
 
@@ -292,7 +297,7 @@ clean tree is byte-reproducible.
 | 4    | done   | CoverageExperiment + WidthExperiment + diagnostics + figures.py |
 | 5    | done   | SmoothnessExperiment quantifying the power-law discontinuity    |
 | 6    | done   | Stubs: OT / geodesic / mixture / exp_family / LRT / SR / BCLRT  |
-| 7    | next   | .claude/ subagents + slash commands + GitHub Actions CI gates   |
+| 7    | done   | .claude/ subagents + slash commands + GitHub Actions CI gates   |
 
 ## Key Anti-Patterns to Avoid
 
