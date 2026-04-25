@@ -69,11 +69,18 @@ class Config:
 
     @classmethod
     def fast(cls) -> "Config":
+        """Smoke-mode config: small enough to run end-to-end in seconds.
+
+        Use this for `--fast` CLI flag, examples, and sanity checks. The
+        L3 statistical layer (KS / coverage at nominal level) requires
+        `n_reps >= 1000`; tests that need that ask for it explicitly via
+        `Config.fast().from_overrides(n_reps=...)`.
+        """
         return cls(
-            n_reps=1_000,
-            delta_grid=GridSpec("abs_delta", 0.0, 5.0, 21),
-            w_grid=GridSpec("w", 0.1, 0.9, 9),
-            theta_grid=GridSpec("theta", -4.0, 6.0, 11),
+            n_reps=200,
+            delta_grid=GridSpec("abs_delta", 0.0, 5.0, 11),
+            w_grid=GridSpec("w", 0.2, 0.8, 5),
+            theta_grid=GridSpec("theta", -3.0, 4.0, 8),
         )
 
     def from_overrides(self, **overrides) -> "Config":

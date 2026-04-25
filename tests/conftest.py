@@ -1,40 +1,68 @@
-"""Shared pytest fixtures for the new Frasian framework.
+"""Shared pytest fixtures for the Frasian framework.
 
-Step-1 fixtures cover only registry isolation and Config overrides. Property-
-test strategies for Model / TiltingScheme / TestStatistic land in Step 2,
-alongside the first concrete implementations.
+Test isolation: each test starts with an empty registry; the
+`bootstrapped_registry` fixture restores the concrete implementations
+captured at conftest-import time, so tests that need real methods can
+opt in without hitting the bootstrap-singleton no-op problem.
 """
 
 from __future__ import annotations
 
+import itertools
+
 import pytest
 
 from frasian import Config, registry
+from frasian._registry_bootstrap import bootstrap
+
+# Trigger registration once at collection time and capture the entries.
+bootstrap()
+_BOOTSTRAPPED_ENTRIES = tuple(itertools.chain(
+    registry.models.entries(),
+    registry.tiltings.entries(),
+    registry.statistics.entries(),
+    registry.experiments.entries(),
+    registry.diagnostics.entries(),
+))
 
 
 @pytest.fixture(autouse=True)
 def _isolated_registry():
     """Each test starts with an empty registry; restore on teardown.
 
-    Test isolation is non-negotiable: tests that depend on specific
-    registrations register them explicitly; tests that depend on emptiness
-    can rely on it. Concrete implementations are still importable and
-    instantiable directly from their modules — clearing the registry
-    only affects discovery via `frasian.registry`.
+    Concrete implementations remain importable directly from their
+    modules — clearing the registry only affects discovery via
+    `frasian.registry`. Tests that depend on registry-driven
+    discovery can use the `bootstrapped_registry` fixture below.
     """
-    snapshot = (
-        list(registry.models.entries()),
-        list(registry.tiltings.entries()),
-        list(registry.statistics.entries()),
-        list(registry.experiments.entries()),
-        list(registry.diagnostics.entries()),
-    )
+    snapshot = tuple(itertools.chain(
+        registry.models.entries(),
+        registry.tiltings.entries(),
+        registry.statistics.entries(),
+        registry.experiments.entries(),
+        registry.diagnostics.entries(),
+    ))
     registry.clear()
     yield
     registry.clear()
-    for entry in (*snapshot[0], *snapshot[1], *snapshot[2],
-                  *snapshot[3], *snapshot[4]):
+    for entry in snapshot:
         registry.register(entry)
+
+
+@pytest.fixture
+def bootstrapped_registry():
+    """Restore the framework's concrete methods for this test.
+
+    Use this whenever a test calls `registry.experiments[...]` or
+    `run_experiment(...)` and expects the real Wald / WALDO / power_law
+    implementations to be present. Cleanup is handled by the autouse
+    `_isolated_registry` fixture above.
+    """
+    for entry in _BOOTSTRAPPED_ENTRIES:
+        if entry.name not in getattr(registry, entry.kind + "s",
+                                       registry.models)._entries:
+            registry.register(entry)
+    yield
 
 
 @pytest.fixture

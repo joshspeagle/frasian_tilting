@@ -18,9 +18,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="scripts.run")
     parser.add_argument("--list", action="store_true",
                         help="enumerate registered methods and exit")
+    parser.add_argument("--fast", action="store_true",
+                        help="run on Config.fast() (small grids, few reps)")
     parser.add_argument("experiment", nargs="?", default=None,
-                        help='e.g. "experiment=coverage" (Step 4+)')
+                        help='e.g. "experiment=coverage"')
     args = parser.parse_args(argv)
+
+    from frasian._registry_bootstrap import bootstrap
+    bootstrap()
 
     if args.list:
         groups = list_methods()
@@ -52,11 +57,14 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     experiment_cls = registry.experiments[name]
+    from frasian import Config
+    cfg = Config.fast() if args.fast else Config.default()
     try:
         summary = run_experiment(
             experiment=experiment_cls(),
             tiltings=registry.tiltings.all(),
             statistics=registry.statistics.all(),
+            config=cfg,
             out_dir=Path(f"results/{name}"),
         )
     except EmptyRegistryError as exc:

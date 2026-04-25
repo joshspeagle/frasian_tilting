@@ -68,3 +68,13 @@ class WaldStatistic:
             np.asarray(theta_arr - z_crit * m.sigma, dtype=np.float64),
             np.asarray(theta_arr + z_crit * m.sigma, dtype=np.float64),
         )
+
+    def confidence_interval(self, alpha: float, data: NDArray[np.float64],
+                            model: Model, prior: Prior | None = None
+                            ) -> tuple[float, float]:
+        """Closed-form Wald CI: D ± z_{1-alpha/2} * sigma."""
+        m = _require_normal_normal(model)
+        D = float(np.atleast_1d(np.asarray(data, dtype=np.float64)).mean())
+        z = stats.norm.ppf(1.0 - alpha / 2.0)
+        half = z * m.sigma
+        return (D - half, D + half)

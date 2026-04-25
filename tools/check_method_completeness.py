@@ -64,9 +64,19 @@ def _check_brief(entry, errors: list[str]) -> None:
 def _check_property_tests(entry, errors: list[str]) -> None:
     if entry.status == "stub":
         return  # stubs may have only skipped property tests; that is OK
-    candidates = list((REPO_ROOT / "tests" / "properties").glob(
-        f"test_*{entry.name}*.py"
-    ))
+
+    # Different test directories for different kinds.
+    if entry.kind == "experiment":
+        # Experiments are structural; their tests live in tests/experiments/.
+        candidates = list((REPO_ROOT / "tests" / "experiments").glob(
+            f"test_*{entry.name}*.py"
+        ))
+        test_loc = "tests/experiments"
+    else:
+        candidates = list((REPO_ROOT / "tests" / "properties").glob(
+            f"test_*{entry.name}*.py"
+        ))
+        test_loc = "tests/properties"
     # Allow the conjugate-Normal model's invariants to live under
     # test_normal_distribution.py (the protocol tests for its constituent
     # NormalDistribution cover the load-bearing properties).
@@ -76,8 +86,8 @@ def _check_property_tests(entry, errors: list[str]) -> None:
             return
     if not candidates:
         errors.append(
-            f"  - {entry.kind} '{entry.name}': no property-test file matching "
-            f"'tests/properties/test_*{entry.name}*.py'"
+            f"  - {entry.kind} '{entry.name}': no test file matching "
+            f"'{test_loc}/test_*{entry.name}*.py'"
         )
 
 

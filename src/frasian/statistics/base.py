@@ -54,3 +54,14 @@ class TestStatistic(Protocol):
     def acceptance_region(self, alpha: float, theta0: ArrayLike,
                           model: Model, prior: Prior | None = None
                           ) -> tuple[NDArray[np.float64], NDArray[np.float64]]: ...
+
+    def confidence_interval(self, alpha: float, data: NDArray[np.float64],
+                            model: Model, prior: Prior | None = None
+                            ) -> tuple[float, float]:
+        """Dual of `acceptance_region`: parameter-space CI given data.
+
+        Returns `(lower, upper)` such that `pvalue(theta, data, ...) >= alpha`
+        for all `theta` in the closed interval. Statistics that do not admit a
+        natural CI inversion may raise `NotImplementedError`.
+        """
+        ...

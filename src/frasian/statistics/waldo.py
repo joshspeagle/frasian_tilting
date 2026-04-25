@@ -86,14 +86,56 @@ class WaldoStatistic:
                           ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
         """Acceptance region in `D`-space at fixed theta0.
 
-        Solves p(theta0; D) = alpha for D — the dual of the CI construction
-        used by the legacy `confidence_interval`.
+        Numerical inversion of the WALDO p-value: find D values for which
+        the test fails to reject. We bracket on each side of the
+        prior-data conflict zero (D = mu0) and use brentq_with_doubling.
         """
-        # The dual problem (acceptance region in D-space) is non-trivial in
-        # closed form because mu_n depends on D. Step 4's CoverageExperiment
-        # constructs this region numerically via the CI inversion. Until then,
-        # we expose the contract but defer the implementation.
-        raise NotImplementedError(
-            "WaldoStatistic.acceptance_region: numerical inversion lands with "
-            "the CoverageExperiment in Step 4."
-        )
+        m, pi = _require_normal_normal(model, prior)
+        theta_arr = np.atleast_1d(np.asarray(theta0, dtype=np.float64))
+
+        from ..tilting._solvers import brentq_with_doubling
+
+        D_lo = np.empty_like(theta_arr)
+        D_hi = np.empty_like(theta_arr)
+        for i, theta_val in enumerate(theta_arr):
+            def f(D_val: float) -> float:
+                return float(self.pvalue(float(theta_val),
+                                          np.asarray([D_val]), m, pi)) - alpha
+            # The p-value at D = theta is 1 (mu_n = theta when prior is at D);
+            # bracket outward from there.
+            half = 4.0 * m.sigma
+            D_lo[i] = brentq_with_doubling(
+                f, midpoint=float(theta_val), initial_half_width=half,
+                direction=-1,
+            )
+            D_hi[i] = brentq_with_doubling(
+                f, midpoint=float(theta_val), initial_half_width=half,
+                direction=+1,
+            )
+        return (D_lo if D_lo.size > 1 else D_lo.reshape(()),
+                D_hi if D_hi.size > 1 else D_hi.reshape(()))
+
+    def confidence_interval(self, alpha: float, data: NDArray[np.float64],
+                            model: Model, prior: Prior | None = None
+                            ) -> tuple[float, float]:
+        """Numerical CI inversion of the WALDO p-value via brentq.
+
+        Solves `p(theta; D) = alpha` for theta on each side of `mu_n` (where
+        `p(mu_n) = 1`). Bracket-doubling handles weak priors that produce
+        wide intervals.
+        """
+        m, pi = _require_normal_normal(model, prior)
+        D = float(np.atleast_1d(np.asarray(data, dtype=np.float64)).mean())
+        mu_n, _, _ = posterior_params(D, pi.loc, m.sigma, pi.scale)
+
+        from ..tilting._solvers import brentq_with_doubling
+
+        def f(theta: float) -> float:
+            return float(self.pvalue(theta, np.asarray([D]), m, pi)) - alpha
+
+        half = 4.0 * m.sigma
+        lower = brentq_with_doubling(f, midpoint=float(mu_n),
+                                      initial_half_width=half, direction=-1)
+        upper = brentq_with_doubling(f, midpoint=float(mu_n),
+                                      initial_half_width=half, direction=+1)
+        return (lower, upper)
