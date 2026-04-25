@@ -103,6 +103,9 @@ Thumbs.db
 # Generated output (figures, tables)
 output/
 
+# Experiment results (regenerable via scripts/run.py + figures.py)
+results/
+
 # Temporary files
 *.tmp
 *.temp
@@ -111,5 +114,12 @@ output/
 # Log files
 *.log
 
-# Claude
-.claude/
+# Claude session caches (transient).
+# Note: .claude/agents/ and .claude/commands/ ARE committed — they hold the
+# subagent definitions and slash commands that codify the framework's
+# critique / literature-review / derivation workflow.
+.claude/*
+!.claude/agents/
+!.claude/agents/**
+!.claude/commands/
+!.claude/commands/**

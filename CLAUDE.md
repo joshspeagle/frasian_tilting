@@ -2,353 +2,309 @@
 
 ## Project Overview
 
-This project implements numerical experiments and publication-quality visualizations for the Frasian inference framework, which connects WALDO (Weighted Accurate Likelihood-free inference via Diagnostic Orderings), Fraser's higher-order likelihood inference, and confidence distributions.
+A research framework for studying alternatives to power-law tilting in the
+Frasian inference setting. The driving question: **does optimal-transport
+or geodesic interpolation between prior, likelihood, and posterior produce
+smoother families than naive power-law tilting, and which test statistics
+exploit them best?**
 
-**Key components:**
-- Test framework: 182 tests across 5 tiers validating Theorems 1-10
-- Simulation infrastructure: Three-layer architecture for MC simulations
-- Visualization suite: 24 publication figures + 4 tables
+The framework is structured as a **(TiltingScheme × TestStatistic) cross-
+product**. Every cell of the matrix produces a `RawResult` consumed by a
+shared diagnostic suite (coverage, width, smoothness). Adding a new tilting
+or statistic is a one-file change plus its brief, property tests, and demo.
 
-## The Conjugate Normal Model
+The legacy code that motivated this design lives under `legacy/` for
+reference. The migration status (which Steps are done) is at the bottom.
+
+## The Conjugate Normal Sandbox
+
+All experiments operate on the 1D conjugate Normal-Normal model:
 
 - **Prior**: θ ~ N(μ₀, σ₀²)
 - **Likelihood**: D | θ ~ N(θ, σ²)
 - **Posterior**: θ | D ~ N(μₙ, σₙ²)
-- **Weight**: w = σ₀²/(σ² + σ₀²)
+- **Data weight**: w = σ₀²/(σ² + σ₀²) ∈ (0, 1)
 - **Posterior mean**: μₙ = wD + (1-w)μ₀
-- **Posterior variance**: σₙ² = wσ²
+- **Posterior std**: σₙ = √w · σ
 
-### Key Quantities
-- **Standardized coordinate**: u = (θ - μₙ)/(wσ)
-- **Scaled prior-data conflict**: Δ = (1-w)(μ₀ - D)/σ
-- **Prior residual**: δ(θ) = (θ - μ₀)/σ₀
-- **Non-centrality**: λ(θ) = δ(θ)²/w
+**Key quantities** used by tilting / WALDO / smoothness:
+- Scaled prior-data conflict: Δ = (1-w)(μ₀ - D)/σ
+- Prior residual: δ(θ) = (θ - μ₀)/σ₀
+- Non-centrality: λ(θ) = (1-w)²(μ₀ - θ)² / (w² σ²)
 
-## Extended Tilting Framework
+The protocols in `src/frasian/models/base.py` are designed so future work
+can add non-conjugate or non-Gaussian models without rewriting consumers,
+but **everything implemented today is Normal-Normal only**. Generic
+posterior inference is a flagged future extension.
 
-The tilting parameter η interpolates between methods:
-- **η = -1**: Maximum oversharpening (mode pushed past prior)
-- **η = 0**: WALDO (standard Bayesian-frequentist hybrid)
-- **η = 1**: Wald (pure frequentist, ignores prior)
+## Architecture: Six Protocols
 
-**Key discovery**: Optimal η* can be **negative** at low conflict!
-- At |Δ| ≈ 0: η* ≈ -0.98 yields CIs 15% narrower than Wald
-- Constraint: η > -w/(1-w) to keep variance positive
+Every concrete implementation conforms to one of:
 
-### Non-centrality with Tilting
-λ_η = (1-η)² · λ₀
+| Protocol                | Purpose                              | Module                            |
+|-------------------------|--------------------------------------|-----------------------------------|
+| `Model`                 | Sample data, build posterior, MLE    | `frasian/models/base.py`          |
+| `TiltingScheme`         | tilt(posterior, prior, lik, η)→post  | `frasian/tilting/base.py`         |
+| `TestStatistic`         | evaluate, pvalue, CI, accept region  | `frasian/statistics/base.py`      |
+| `ConfidenceDistribution`| pdf/cdf/quantile/interval/mean/mode  | `frasian/cd/base.py`              |
+| `Experiment`            | grid → cells → diagnostics           | `frasian/experiments/base.py`     |
+| `Diagnostic`            | RawResult → DiagnosticTable + figure | `frasian/diagnostics/base.py`     |
 
-For η < 0: λ_η > λ₀ (oversharpening increases non-centrality but narrows CIs)
+Plus `EtaSelector` and `LearnedArtifact` for the support layer.
 
-## Confidence Distributions (Schweder-Hjort Methodology)
+### Plugin Registry
 
-Confidence distributions (CDs) are derived from p-value functions via:
-- **Confidence density**: c(θ) = (1/2)|dp/dθ|
-- **Confidence CDF**: C(θ) = p(θ)/2 for θ ≤ mode, else 1 - p(θ)/2
+Concrete implementations register via decorators:
 
-### Wald CD
-- **Distribution**: N(D, σ²)
-- **Mean**: D (the MLE)
-- **Mode**: D (the MLE)
-
-### WALDO CD (Key Discovery)
-The WALDO CD is a **50-50 Gaussian mixture**:
+```python
+@register_tilting(name="power_law", brief="docs/methods/power_law.md")
+class PowerLawTilting:
+    ...
 ```
-c(θ) = 0.5 × N(θ | D, σ²) + 0.5 × N(θ | μ*, σ*²)
+
+The decorator records the brief path so `tools/check_method_completeness.py`
+can verify every registered class ships with documentation, property tests,
+and an illustration. A single `_registry_bootstrap.py` enumerates the
+imports so static tooling can find every method.
+
+User-facing call:
+
+```python
+from frasian import run_experiment, registry
+
+summary = run_experiment(
+    experiment=registry.experiments["coverage"](),
+    tiltings=registry.tiltings.all(),
+    statistics=registry.statistics.all(),
+    config=Config.fast(),                # or Config.default()
+    out_dir=Path("results/coverage"),
+)
 ```
-where:
-- μ* = (wD + 2(1-w)μ₀) / (2-w)
-- σ* = wσ / (2-w)
 
-**Closed-form estimators**:
-- **Mean**: E[θ] = (μ_n + (1-w)D) / (2-w)
-- **Mode**: θ_mode = μ_n (posterior mean)
+The runner persists each cell's `RawResult` through the cache layer (keyed
+on Config fingerprint + git sha + raw fingerprint), runs the experiment's
+diagnostics, and writes a `manifest.json` with relative cache paths.
 
-Note: Mean ≠ mode for WALDO CD (unlike Wald where mean = mode = D)
+## Tilting Schemes (status)
 
-### Dynamic WALDO CD
-Uses locally optimal η*(θ) at each evaluation point:
-- No closed form - computed numerically via Schweder-Hjort differentiation
-- Apply Savitzky-Golay smoothing to reduce noise
-- Mode typically near μ_n, mean pulled toward D
+| Name           | Status        | Notes                                        |
+|----------------|---------------|----------------------------------------------|
+| `power_law`    | implemented   | Ported Theorem 6 from legacy `tilting.py`    |
+| `ot_normal`    | scheduled stub| Optimal transport between Gaussians          |
+| `geodesic_normal` | scheduled stub | Fisher-Rao geodesic for Gaussians         |
+| `mixture`      | scheduled stub| Mixture-path interpolation                   |
+| `exp_family`   | scheduled stub| Exponential-family interpolation             |
+
+## Test Statistics (status)
+
+| Name      | Status        | Notes                                         |
+|-----------|---------------|-----------------------------------------------|
+| `wald`    | implemented   | Closed-form CI: D ± z·σ                       |
+| `waldo`   | implemented   | p(θ) = Φ(b−a) + Φ(−a−b); numerical CI inversion |
+| `lrt`     | scheduled stub|                                                 |
+| `signed_root` | scheduled stub|                                             |
+| `bartlett` | scheduled stub| Implemented as decorator over LRT             |
+
+## Experiments (status)
+
+| Name        | Status        | Output                                              |
+|-------------|---------------|-----------------------------------------------------|
+| `coverage`  | implemented   | Empirical coverage on (θ_true, w) grid              |
+| `width`     | implemented   | Mean CI width on (θ_true, w) grid                   |
+| `smoothness`| scheduled     | Lipschitz / spectral / W₁ path-length on η-sweep    |
+| `dynamic_ci`| scheduled stub| Dynamic-η CIs from the legacy framework             |
+
+The `coverage` and `width` cells currently use `eta = scheme.param_space.
+eta_identity` for every tilting; the Tilting dimension becomes load-bearing
+when the smoothness experiment lands.
 
 ## Project Structure
 
 ```
 src/frasian/
-├── __init__.py          # Package exports
-├── core.py              # Posterior params, coordinates (10 functions)
-├── waldo.py             # WALDO statistic, p-value, CIs (15 functions)
-├── tilting.py           # Tilted posterior framework (14 functions)
-├── confidence.py        # Confidence distribution (18 functions)
-├── figure_style.py      # Publication styling, colors, utilities
-├── plotting.py          # Basic visualization utilities
-└── simulations/         # Three-layer simulation infrastructure
-    ├── __init__.py
-    ├── raw.py           # Layer 0: Generate raw D samples
-    ├── processing.py    # Layer 1: Compute CIs, coverage, widths
-    ├── cache.py         # Layer 1.5: Processed results caching
-    ├── storage.py       # HDF5 I/O utilities
-    ├── runner.py        # Orchestration
-    ├── mlp_data.py      # MLP training data generation
-    ├── mlp_model.py     # Width ratio MLP (PyTorch)
-    ├── mlp_lookup.py    # Lookup table from MLP predictions
-    └── mlp_monotonic.py # Monotonic η* MLP (architecturally monotonic)
+  __init__.py                # public surface: run_experiment, registry, Config
+  config.py                  # frozen settings (alpha, grids, eps, seeds)
+  _registry.py               # decorators + Registry singleton
+  _registry_bootstrap.py     # explicit imports of every concrete impl
+  _runner.py                 # cross-product runner + manifest writer
+  _errors.py                 # FrasianError, EmptyRegistryError, etc.
 
-scripts/
-├── run_simulations.py           # Generate raw D samples
-├── train_optimal_eta_mlp.py     # Train width ratio MLP + generate lookup
-├── train_monotonic_eta_mlp.py   # Train monotonic η* MLP (uses width MLP)
-├── plot_theory.py               # Figures 1.1-1.10 (core theory + CDs)
-├── plot_estimators.py           # Figures 4.1-4.3 (CD estimators: mean, mode)
-├── plot_coverage.py             # Figures 2.1-2.3 (coverage & efficiency)
-├── plot_tilting.py              # Figures 3.1-3.4 (tilting validation & methodology)
-├── plot_regimes.py              # Figures 5.1-5.2 (three regimes)
-├── plot_summary.py              # Figures 6.1-6.3 (summary)
-├── generate_tables.py           # Tables 1-4
-└── generate_all.py              # Master script
+  models/
+    base.py                  # Model, Prior, Posterior, Likelihood protocols
+    distributions.py         # NormalDistribution, GaussianLikelihood
+    normal_normal.py         # NormalNormalModel + math primitives
+
+  tilting/
+    base.py                  # TiltingScheme, EtaSelector, TiltingDomainError
+    _solvers.py              # ONE brentq_with_doubling
+    power_law.py             # PowerLawTilting (Theorem 6)
+    {ot_normal,geodesic_normal,mixture,exp_family}.py  # planned stubs
+
+  statistics/
+    base.py                  # TestStatistic + AsymptoticDistribution
+    wald.py                  # WaldStatistic
+    waldo.py                 # WaldoStatistic
+    {lrt,signed_root,bartlett}.py  # planned stubs
+
+  cd/
+    base.py                  # ConfidenceDistribution, CDFamily
+    factory.py               # planned: build_cd dispatcher
+    {from_pvalue,from_closed_form,from_tilted}.py  # planned
+
+  experiments/
+    base.py                  # Experiment, ExperimentContext, RawResult
+    coverage.py              # CoverageExperiment
+    width.py                 # WidthExperiment
+    smoothness.py            # planned (Step 5)
+    illustrations/           # one demo per registered method
+      {wald,waldo,power_law}_demo.py
+
+  diagnostics/
+    base.py                  # Diagnostic + DiagnosticTable
+    coverage_table.py        # CoverageRateDiagnostic
+    width_table.py           # MeanWidthDiagnostic
+    smoothness_metrics.py    # planned (Step 5)
+
+  simulation/
+    storage.py               # npz + json sidecar I/O
+    cache.py                 # mandatory content-keyed cache
+    raw.py                   # generate_normal_D_samples + RawSamples
+    processing.py            # ProcessedResult dataclass
+    runner.py                # persist_cell helper
+
+  learned/
+    base.py                  # LearnedArtifact protocol
+    null.py                  # NullArtifact (for tests)
+    eta_lookup.py            # planned: monotonic η* MLP port
+
+  plotting/                  # planned: shared style + primitives
 
 tests/
-├── conftest.py              # Fixtures: ModelParams, TestConfig
-├── tier1_foundations/       # 45 tests: Theorems 1-2
-├── tier2_pvalue/            # 64 tests: Theorems 3-5
-├── tier3_coverage/          # 19 tests: Coverage, CI widths
-├── tier4_tilting/           # 43 tests: Theorems 6-8
-└── tier5_integration/       # 11 tests: Theorems 9-10
+  conftest.py                # autouse registry isolation + bootstrapped fixture
+  properties/                # hypothesis-based protocol invariants (L1)
+  regression/                # tight-tolerance baselines (L0/L2)
+  experiments/               # end-to-end Experiment runs (L4)
+  integration/               # registry + empty-registry checks
 
-output/
-├── simulations/
-│   ├── raw/                 # Raw D samples (permanent)
-│   │   ├── coverage_raw.h5
-│   │   ├── distribution_raw.h5
-│   │   └── width_raw.h5
-│   ├── mlp/                 # MLP models and data
-│   │   ├── training_data.h5        # LHS samples + width ratios
-│   │   ├── mlp_model.pt            # Trained width ratio MLP
-│   │   ├── optimal_eta_lookup.h5   # Grid lookup (with cummax)
-│   │   └── monotonic_eta_mlp.pt    # Monotonic η* MLP
-│   └── processed/           # Cached results (regenerable)
-├── figures/                 # Generated figures by category
-└── tables/                  # CSV + LaTeX tables
+experiments/                 # planned: versioned analysis configs (yaml)
+
+docs/
+  methods/                   # one .md brief per registered method
+    _template.md             # the skeleton /propose-method writes against
+    {normal_normal,wald,waldo,power_law,coverage_experiment,width_experiment}.md
+  architecture.md            # planned: rationale doc
+  workflows.md               # planned: explains /critique, /derive, /propose-method
+
+scripts/
+  run.py                     # python -m scripts.run [--list] [--fast] experiment=<name>
+  figures.py                 # python -m scripts.figures <results_dir>
+
+tools/
+  check_method_completeness.py  # verify brief + tests + illustration per method
+
+.claude/                     # planned (Step 7)
+  agents/                    # skeptic, literature-reviewer, deriver
+  commands/                  # /critique, /litreview, /derive, /propose-method
+
+.github/workflows/           # planned (Step 7): CI gating method completeness
+
+legacy/                      # archived original implementation; reference only
 ```
 
-## Simulation Infrastructure
+## Test Layering
 
-### Three-Layer Architecture
+| Layer | Purpose                                                  | Tools                  |
+|-------|----------------------------------------------------------|------------------------|
+| L0    | Scalar math primitives (atol 1e-12)                      | pytest                 |
+| L1    | Protocol invariants (continuity, identity, calibration)  | pytest + hypothesis    |
+| L2    | Array-result regression vs committed baselines           | pytest + .npz / formula|
+| L3    | Statistical (KS uniformity, coverage at nominal level)   | pytest + seeded RNG    |
+| L4    | End-to-end Experiment runs on small grids                | pytest                 |
+| L5    | Cross-product cells, smoke mode (nightly)                | pytest + parallel      |
 
-**Layer 0 (Raw)**: Only D ~ N(θ_true, σ) samples are stored. CI endpoints depend on α, so we don't cache them.
+Markers replace the legacy `tier1`...`tier5`. Hypothesis lives only in L1.
+The L3 calibration check (Wald p-values uniform under H0) lives in
+`tests/properties/test_wald_invariants.py`.
 
-**Layer 1 (Processing)**: Compute CIs, coverage indicators, widths from raw D samples on demand.
+## Method Brief Discipline
 
-**Layer 1.5 (Cache)**: Optional caching of processed results with auto-invalidation if raw data is newer.
+Every registered class ships with a markdown brief at the path declared in
+its decorator. Briefs follow `docs/methods/_template.md` with these
+required sections (CI-checked by `tools/check_method_completeness.py`):
 
-### Key Functions
+1. Summary
+2. Motivation
+3. Definition
+4. Derivation
+5. Predicted behavior
+6. Failure modes
+7. Invariants (mirrored as property tests)
+8. Literature
+9. Links
 
-```python
-# Raw simulation generation
-from frasian.simulations import (
-    generate_coverage_D_samples,    # D samples for coverage grid
-    generate_distribution_D_samples, # D samples for distribution validation
-    generate_width_D_samples,       # D samples for width experiments
-    generate_optimal_eta_grid,      # Precompute η*(|Δ|) numerically
-)
+Step 7 wires the `.claude/` subagents (`skeptic`, `literature-reviewer`,
+`deriver`) and slash commands (`/propose-method`, `/critique`, `/derive`,
+`/litreview`) that orchestrate brief authoring + critique. Until then,
+briefs are written by hand from the template.
 
-# Optimal eta (USE THIS for production - monotonic MLP)
-from frasian.tilting import optimal_eta_mlp
-eta_star = optimal_eta_mlp(abs_delta=1.5, w=0.5, alpha=0.05)
-
-# Alternative: raw simulation-based interpolation (for ground truth validation)
-from frasian.simulations import optimal_eta_empirical
-eta_star = optimal_eta_empirical(abs_delta=1.5, fast=False)
-
-# Processing
-from frasian.simulations import (
-    compute_ci,                     # Unified CI for all 5 methods
-    compute_coverage_indicators,    # Boolean coverage array
-    bootstrap_mean,                 # Mean with SE and CI
-    bootstrap_proportion,           # Proportion with SE and CI
-)
-```
-
-### Running Simulations
+## Running Things
 
 ```bash
-# Generate all raw data (including optimal eta grid)
-python scripts/run_simulations.py
+# List registered methods
+python -m scripts.run --list
 
-# Fast mode for testing
-python scripts/run_simulations.py --fast
+# Run an experiment end-to-end (Config.fast() ~ 30s for coverage)
+python -m scripts.run --fast experiment=coverage
+python -m scripts.run --fast experiment=width
 
-# Force regeneration
-python scripts/run_simulations.py --force
+# Regenerate figures + CSVs from a persisted results dir
+python -m scripts.figures results/coverage
 
-# Show cache status
-python scripts/run_simulations.py --list
+# Run the test suite
+python -m pytest                    # all 245 tests
+python -m pytest -m L0              # math primitives only
+python -m pytest -m "L0 or L1"      # core + properties
+python -m pytest -m L4              # end-to-end
+python -m pytest -n auto            # parallel (pytest-xdist)
 
-# Clear caches
-python scripts/run_simulations.py --clear-cache  # Keep raw
-python scripts/run_simulations.py --clear-all    # Clear everything
+# Verify method-completeness (briefs, tests, illustrations)
+python tools/check_method_completeness.py
+
+# Run an illustration
+python -m frasian.experiments.illustrations.power_law_demo --smoke
 ```
 
-### MLP-Based Optimal Eta System
+## Cache Discipline
 
-Optimal η* is computed using a two-stage neural network approach:
+The cache at `<results_dir>/cache/` keys on `(experiment, tilting,
+statistic, config_fingerprint, git_sha, raw_fingerprint, extra)` →
+24-char SHA-256 digest. **Dirty git trees never hit the cache** —
+uncommitted changes always recompute. Same `(config, sha)` on a
+clean tree is byte-reproducible.
 
-**Stage 1: Width Ratio MLP** (`train_optimal_eta_mlp.py`)
-- Predicts `log(E[W_η]/W_Wald)` for any (w, α, |Δ|, η) combination
-- Architecture: 3×64 fully connected layers with GELU activations
-- Training: 10k Latin Hypercube samples, 100 MC simulations each
-- Performance: R² ≈ 0.998, RMSE ≈ 0.05
+## Migration Status
 
-**Stage 2: Monotonic η* MLP** (`train_monotonic_eta_mlp.py`)
-- Predicts η* directly from (w, α, |Δ|)
-- Architecturally guarantees ∂η*/∂|Δ| ≥ 0 using positive weights
-- Uses width ratio MLP for training targets via grid search
-- Output: smooth, strictly monotonic η*(|Δ|) curves
+| Step | Status | Description                                                     |
+|------|--------|-----------------------------------------------------------------|
+| 1    | done   | Scaffolding: protocols, registry, Config, empty-registry runner |
+| 2    | done   | Wald + WALDO + power_law + NormalNormalModel + briefs + demos   |
+| 3    | done   | simulation/ (storage, cache, raw, runner) + LearnedArtifact     |
+| 4    | done   | CoverageExperiment + WidthExperiment + diagnostics + figures.py |
+| 5    | next   | SmoothnessExperiment quantifying the power-law discontinuity    |
+| 6    | next   | Stub OT / geodesic / mixture / LRT / signed-root / Bartlett     |
+| 7    | next   | .claude/ subagents + slash commands + GitHub Actions CI gates   |
 
-**Training workflow:**
-```bash
-# Step 1: Train width ratio MLP (3 min)
-python scripts/train_optimal_eta_mlp.py --train --generate-lookup --epochs 1000
+## Key Anti-Patterns to Avoid
 
-# Step 2: Train monotonic MLP (5-10 min)
-python scripts/train_monotonic_eta_mlp.py --n-samples 50000 --epochs 1000
-```
-
-**Usage in code:**
-```python
-from frasian.tilting import optimal_eta_mlp
-eta_star = optimal_eta_mlp(abs_delta=1.5, w=0.5, alpha=0.05)
-```
-
-**DO NOT use `optimal_eta_approximation()`** - this is the old power-law formula that assumes η ≥ 0.
-
-## Running Tests
-
-```bash
-pytest                    # All tests
-pytest -m tier1           # Specific tier
-pytest -m "not slow"      # Skip slow tests
-pytest -n auto            # Parallel execution
-pytest -v                 # Verbose output
-```
-
-## Generating Figures
-
-```bash
-# All figures
-python scripts/generate_all.py
-
-# Fast mode (reduced MC samples)
-python scripts/generate_all.py --fast
-
-# Specific category
-python scripts/plot_tilting.py --fast
-python scripts/plot_coverage.py --fast --figure 3.1
-
-# Common flags
---fast      Use reduced MC samples
---show      Display figures interactively
---no-save   Don't save to disk
---figure X  Generate only figure X
-```
-
-## Key Numerical Results
-
-### Optimal Tilting (Numerically Computed)
-
-| |Δ| | η* | E[W]/W_Wald |
-|------|--------|-------------|
-| 0.0 | -0.985 | 0.849 |
-| 0.5 | -0.113 | 0.878 |
-| 1.0 | 0.777 | 0.930 |
-| 2.0 | 0.941 | 0.974 |
-| 5.0 | 0.991 | 0.995 |
-
-**Key finding**: E[W]/W_Wald < 1 always - optimal tilting never wider than Wald on average.
-
-### Coverage Table
-
-| θ_true | Wald | Posterior | WALDO |
-|--------|------|-----------|-------|
-| -3 | 95% | 40% | 95% |
-| 0 | 95% | 99% | 95% |
-| 3 | 95% | 40% | 95% |
-| 5 | 95% | 1% | 95% |
-
-### CI Widths
-
-| Δ | W_Wald | W_Post | W_WALDO |
-|------|--------|--------|---------|
-| 0 | 3.92 | 2.77 | 3.29 |
-| -1 | 3.92 | 2.77 | 3.63 |
-| -2.5 | 3.92 | 2.77 | 5.53 |
-
-## Core Library Functions
-
-### core.py
-- `posterior_params(D, mu0, sigma, sigma0)` → (μₙ, σₙ, w)
-- `weight(sigma, sigma0)` → w
-- `scaled_conflict(D, mu0, w, sigma)` → Δ
-- `prior_residual(theta, mu0, sigma0)` → δ(θ)
-
-### waldo.py
-- `waldo_statistic(mu_n, sigma_n, theta)` → τ
-- `noncentrality(theta, mu0, w, sigma, sigma0)` → λ(θ)
-- `pvalue(theta, mu_n, mu0, w, sigma)` → p
-- `confidence_interval(D, mu0, sigma, sigma0, alpha)` → (lower, upper)
-- `wald_ci(D, sigma, alpha)` → (lower, upper)
-- `posterior_ci(D, mu0, sigma, sigma0, alpha)` → (lower, upper)
-
-### tilting.py
-- `tilted_params(D, mu0, sigma, sigma0, eta)` → (μ_η, σ_η, w_η)
-- `tilted_noncentrality(lambda0, eta)` → λ_η = (1-η)²λ₀
-- `tilted_ci(D, mu0, sigma, sigma0, eta, alpha)` → (lower, upper)
-- `tilted_ci_width(D, mu0, sigma, sigma0, eta, alpha)` → width
-- `optimal_eta_mlp(abs_delta, w, alpha)` → η* from monotonic MLP
-- `dynamic_tilted_pvalue(theta, D, mu0, sigma, sigma0)` → p-value with local η*(θ)
-- `dynamic_tilted_ci(D, mu0, sigma, sigma0, alpha)` → CI from dynamic tilting
-
-### confidence.py
-**Wald CD (simple normal)**:
-- `wald_cd_density(theta, D, sigma)` → N(D, σ²) density
-- `wald_cd_mean(D)` → D
-- `wald_cd_mode(D)` → D
-
-**WALDO CD (50-50 Gaussian mixture)**:
-- `waldo_cd_params(D, mu0, sigma, sigma0)` → dict with μ*, σ*, etc.
-- `waldo_cd_density(theta, D, mu0, sigma, sigma0)` → mixture density
-- `waldo_cd_mean(D, mu0, sigma, sigma0)` → (μ_n + (1-w)D)/(2-w)
-- `waldo_cd_mode(D, mu0, sigma, sigma0)` → μ_n
-
-**Numerical CD from p-values**:
-- `cd_from_pvalue(theta_grid, p_values)` → (density, cdf) arrays
-- `cd_mean_numerical(theta_grid, cd_density)` → E[θ]
-- `cd_mode_numerical(theta_grid, cd_density)` → θ_mode
-- `cd_quantile(theta_grid, cd_cdf, q)` → θ at quantile q
-- `cd_variance_numerical(theta_grid, cd_density)` → Var[θ]
-
-**Dynamic WALDO CD**:
-- `dynamic_cd_density(theta_grid, D, mu0, sigma, sigma0)` → density with smoothing
-- `dynamic_cd_mean(D, mu0, sigma, sigma0)` → numerical mean
-- `dynamic_cd_mode(D, mu0, sigma, sigma0)` → numerical mode
-
-**Legacy (kept for compatibility)**:
-- `pvalue_mode(D, mu0, sigma, sigma0)` → θ_mode = μₙ
-
-## Figure Style
-
-Colors (colorblind-friendly):
-- WALDO: `#2E86AB` (blue)
-- Posterior: `#28A745` (green)
-- Wald: `#DC3545` (red)
-- Tilted: `#6F42C1` (purple)
-- MLE: `#FD7E14` (orange)
-
-## Development Notes
-
-- Use canonical coordinates: μ₀=0, σ=1, vary w (or σ₀)
-- `tilted_params()` returns 3 values: (mu_eta, sigma_eta, w_eta)
-- `posterior_ci_width(sigma, sigma0)` - NOT (D, mu0, sigma, sigma0)
-- Bootstrap for proportions near 0 or 1 (more robust than normal approx)
-- Savitzky-Golay smoothing available for noisy η* curve: `smooth_optimal_eta()`
+- Importing from `frasian.models.normal_normal` outside `frasian/models/`.
+  Other modules go through the `Model` protocol; the discipline keeps the
+  framework extensible.
+- Module-level mutable state. The legacy `_get_optimal_eta_predictor`
+  global is replaced by an injected `LearnedArtifact`.
+- Bypassing the cache. Every script goes through `simulation.cache.
+  get_or_compute`; the legacy plot scripts that recomputed grids in the
+  module body are gone.
+- Using α≠0.05 in one place and 0.05 elsewhere. All α values come from
+  `Config.alpha`; tests override via `Config.from_overrides(alpha=...)`.
+- Adding a method without its brief, property tests, and illustration —
+  the completeness check blocks merge.
