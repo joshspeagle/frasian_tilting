@@ -111,7 +111,7 @@ diagnostics, and writes a `manifest.json` with relative cache paths.
 |-------------|---------------|-----------------------------------------------------|
 | `coverage`  | implemented   | Empirical coverage on (θ_true, w) grid              |
 | `width`     | implemented   | Mean CI width on (θ_true, w) grid                   |
-| `smoothness`| scheduled     | Lipschitz / spectral / W₁ path-length on η-sweep    |
+| `smoothness`| implemented   | η*(|Δ|) Lipschitz / TV / discontinuity / spectral   |
 | `dynamic_ci`| scheduled stub| Dynamic-η CIs from the legacy framework             |
 
 The `coverage` and `width` cells currently use `eta = scheme.param_space.
@@ -290,7 +290,7 @@ clean tree is byte-reproducible.
 | 2    | done   | Wald + WALDO + power_law + NormalNormalModel + briefs + demos   |
 | 3    | done   | simulation/ (storage, cache, raw, runner) + LearnedArtifact     |
 | 4    | done   | CoverageExperiment + WidthExperiment + diagnostics + figures.py |
-| 5    | next   | SmoothnessExperiment quantifying the power-law discontinuity    |
+| 5    | done   | SmoothnessExperiment quantifying the power-law discontinuity    |
 | 6    | next   | Stub OT / geodesic / mixture / LRT / signed-root / Bartlett     |
 | 7    | next   | .claude/ subagents + slash commands + GitHub Actions CI gates   |
 

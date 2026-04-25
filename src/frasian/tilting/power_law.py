@@ -130,3 +130,102 @@ class PowerLawTilting:
         eta_low = -w / (1.0 - w) + _ETA_MIN_BUFFER
         eta_high = 1.0 / (1.0 - w) - _ETA_MIN_BUFFER
         return (eta_low, eta_high)
+
+    # ----- (TiltingScheme, TestStatistic) cross-product specializations -----
+    #
+    # The Step-5 SmoothnessExperiment needs `tilted p-value` and `tilted CI`
+    # — quantities that depend on *both* the tilting scheme and the test
+    # statistic. The cleanest factoring (multiple dispatch on (scheme,
+    # statistic) types) is deferred to Step 6 when more cells exist; for
+    # now we dispatch on `statistic.name` inside the scheme. Documented as
+    # a temporary bridge in docs/methods/power_law.md.
+
+    def tilted_pvalue(self, theta: ArrayLike, D: float, model: object,
+                      prior: NormalDistribution, eta: float,
+                      statistic_name: str) -> NDArray[np.float64]:
+        """p-value of `statistic_name` evaluated against the tilted posterior.
+
+        Specialized for (power_law, waldo) — Theorem 8 closed form — and
+        (power_law, wald) — eta-independent two-sided Wald.
+        """
+        from ..models.normal_normal import NormalNormalModel
+
+        if not isinstance(model, NormalNormalModel):
+            raise NotImplementedError(
+                "tilted_pvalue currently requires NormalNormalModel; "
+                f"got {type(model).__name__!r}."
+            )
+        if not isinstance(prior, NormalDistribution):
+            raise NotImplementedError(
+                "tilted_pvalue currently requires a NormalDistribution prior."
+            )
+        sigma = model.sigma
+        mu0 = prior.loc
+        sigma0 = prior.scale
+        w = sigma0 ** 2 / (sigma ** 2 + sigma0 ** 2)
+        denom = _denom(w, eta)
+        if denom <= 0.0:
+            raise TiltingDomainError(
+                f"eta={eta!r} drives denom to {denom!r} <= 0 with w={w!r}."
+            )
+
+        theta_arr = np.asarray(theta, dtype=np.float64)
+        if statistic_name == "wald":
+            # Wald is eta-independent: 2 * (1 - Phi(|D - theta| / sigma)).
+            from scipy import stats as _stats
+            z = np.abs(D - theta_arr) / sigma
+            return np.asarray(2.0 * _stats.norm.sf(z), dtype=np.float64)
+        if statistic_name == "waldo":
+            from scipy import stats as _stats
+            mu_eta = (w * D + (1.0 - eta) * (1.0 - w) * mu0) / denom
+            norm_factor = w * sigma / denom
+            a_eta = np.abs(mu_eta - theta_arr) / norm_factor
+            b_eta = (1.0 - eta) * (1.0 - w) * (mu0 - theta_arr) / (denom * norm_factor)
+            return np.asarray(
+                _stats.norm.cdf(b_eta - a_eta) + _stats.norm.cdf(-a_eta - b_eta),
+                dtype=np.float64,
+            )
+        raise NotImplementedError(
+            f"PowerLawTilting.tilted_pvalue not implemented for "
+            f"statistic={statistic_name!r}; supported: 'wald', 'waldo'."
+        )
+
+    def tilted_confidence_interval(self, alpha: float, D: float,
+                                    model: object,
+                                    prior: NormalDistribution,
+                                    eta: float,
+                                    statistic_name: str
+                                    ) -> tuple[float, float]:
+        """Numerical CI inversion of `tilted_pvalue` via brentq_with_doubling."""
+        from ..models.normal_normal import NormalNormalModel
+        from ._solvers import brentq_with_doubling
+
+        if not isinstance(model, NormalNormalModel):
+            raise NotImplementedError(
+                "tilted_confidence_interval currently requires NormalNormalModel."
+            )
+        sigma = model.sigma
+        sigma0 = prior.scale
+        w = sigma0 ** 2 / (sigma ** 2 + sigma0 ** 2)
+
+        # Use the tilted posterior mean as the bracket midpoint (CI mode for WALDO).
+        denom = _denom(w, eta)
+        if denom <= 0.0:
+            raise TiltingDomainError(
+                f"eta={eta!r} drives denom to {denom!r} <= 0 with w={w!r}."
+            )
+        mu_eta = (w * D + (1.0 - eta) * (1.0 - w) * prior.loc) / denom
+        if statistic_name == "wald":
+            mu_eta = D  # Wald CI is centred on D, not mu_eta.
+
+        def f(theta_val: float) -> float:
+            return float(self.tilted_pvalue(
+                float(theta_val), D, model, prior, eta, statistic_name
+            )) - alpha
+
+        half = 4.0 * sigma
+        lo = brentq_with_doubling(f, midpoint=float(mu_eta),
+                                    initial_half_width=half, direction=-1)
+        hi = brentq_with_doubling(f, midpoint=float(mu_eta),
+                                    initial_half_width=half, direction=+1)
+        return (lo, hi)
