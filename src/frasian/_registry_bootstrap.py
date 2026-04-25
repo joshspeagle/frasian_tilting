@@ -21,7 +21,14 @@ def bootstrap() -> None:
     from .experiments import smoothness as _exp_smooth  # noqa: F401
     from .experiments import width as _exp_width  # noqa: F401
     from .models import normal_normal as _models_nn  # noqa: F401
+    from .statistics import bartlett as _stat_bartlett  # noqa: F401
+    from .statistics import lrt as _stat_lrt  # noqa: F401
+    from .statistics import signed_root as _stat_sr  # noqa: F401
     from .statistics import wald as _stat_wald  # noqa: F401
     from .statistics import waldo as _stat_waldo  # noqa: F401
+    from .tilting import exp_family as _tilt_expf  # noqa: F401
+    from .tilting import geodesic_normal as _tilt_geo  # noqa: F401
+    from .tilting import mixture as _tilt_mix  # noqa: F401
+    from .tilting import ot_normal as _tilt_ot  # noqa: F401
     from .tilting import power_law as _tilt_power  # noqa: F401
     _BOOTSTRAPPED = True

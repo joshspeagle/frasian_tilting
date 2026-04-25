@@ -29,7 +29,7 @@ class TestWidthExperimentEndToEnd:
         experiment = registry.experiments["width"]()
         run_experiment(
             experiment=experiment,
-            tiltings=registry.tiltings.all(),
+            tiltings=registry.tiltings.implemented(),
             statistics=[registry.statistics["wald"]],
             config=_small_config(),
             out_dir=tmp_path,
@@ -47,7 +47,7 @@ class TestWidthExperimentEndToEnd:
         experiment = registry.experiments["width"]()
         run_experiment(
             experiment=experiment,
-            tiltings=registry.tiltings.all(),
+            tiltings=registry.tiltings.implemented(),
             statistics=[registry.statistics["waldo"]],
             config=_small_config(),
             out_dir=tmp_path,

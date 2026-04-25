@@ -56,6 +56,12 @@ class _Slice:
     def all(self) -> list[Any]:
         return [e.cls for e in self._entries.values()]
 
+    def implemented(self) -> list[Any]:
+        """Shortcut for `where(status='implemented')`. Used by the runner
+        to skip stubs by default — running stub cells produces uninformative
+        all-NaN results and wastes compute on the cross-product."""
+        return self.where(status="implemented")
+
     def entries(self) -> list[RegistryEntry]:
         return list(self._entries.values())
 

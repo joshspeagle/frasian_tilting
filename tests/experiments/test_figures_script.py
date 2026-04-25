@@ -26,8 +26,8 @@ class TestFiguresScript:
         experiment = registry.experiments["coverage"]()
         run_experiment(
             experiment=experiment,
-            tiltings=registry.tiltings.all(),
-            statistics=registry.statistics.all(),
+            tiltings=registry.tiltings.implemented(),
+            statistics=registry.statistics.implemented(),
             config=_small_config(),
             out_dir=tmp_path,
         )

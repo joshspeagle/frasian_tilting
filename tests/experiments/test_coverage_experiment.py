@@ -32,8 +32,8 @@ class TestCoverageExperimentEndToEnd:
         experiment = registry.experiments["coverage"]()
         summary = run_experiment(
             experiment=experiment,
-            tiltings=registry.tiltings.all(),
-            statistics=registry.statistics.all(),
+            tiltings=registry.tiltings.implemented(),
+            statistics=registry.statistics.implemented(),
             config=_small_config(),
             out_dir=tmp_path,
         )
@@ -58,7 +58,7 @@ class TestCoverageExperimentEndToEnd:
         experiment = registry.experiments["coverage"]()
         run_experiment(
             experiment=experiment,
-            tiltings=registry.tiltings.all(),
+            tiltings=registry.tiltings.implemented(),
             statistics=[registry.statistics["wald"]],
             config=_small_config(),
             out_dir=tmp_path,
@@ -88,12 +88,12 @@ class TestCoverageExperimentEndToEnd:
         cfg = _small_config()
         experiment = registry.experiments["coverage"]()
         run_experiment(experiment=experiment,
-                        tiltings=registry.tiltings.all(),
-                        statistics=registry.statistics.all(),
+                        tiltings=registry.tiltings.implemented(),
+                        statistics=registry.statistics.implemented(),
                         config=cfg, out_dir=a)
         run_experiment(experiment=experiment,
-                        tiltings=registry.tiltings.all(),
-                        statistics=registry.statistics.all(),
+                        tiltings=registry.tiltings.implemented(),
+                        statistics=registry.statistics.implemented(),
                         config=cfg, out_dir=b)
         m_a = json.loads((a / "manifest.json").read_text())
         m_b = json.loads((b / "manifest.json").read_text())

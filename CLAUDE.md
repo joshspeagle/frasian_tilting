@@ -87,23 +87,23 @@ diagnostics, and writes a `manifest.json` with relative cache paths.
 
 ## Tilting Schemes (status)
 
-| Name           | Status        | Notes                                        |
-|----------------|---------------|----------------------------------------------|
-| `power_law`    | implemented   | Ported Theorem 6 from legacy `tilting.py`    |
-| `ot_normal`    | scheduled stub| Optimal transport between Gaussians          |
-| `geodesic_normal` | scheduled stub | Fisher-Rao geodesic for Gaussians         |
-| `mixture`      | scheduled stub| Mixture-path interpolation                   |
-| `exp_family`   | scheduled stub| Exponential-family interpolation             |
+| Name              | Status        | Notes                                     |
+|-------------------|---------------|-------------------------------------------|
+| `power_law`       | implemented   | Ported Theorem 6 from legacy `tilting.py` |
+| `ot_normal`       | stub          | W2 geodesic between Gaussians             |
+| `geodesic_normal` | stub          | Fisher-Rao geodesic for Gaussians         |
+| `mixture`         | stub          | Convex prior-posterior mixture            |
+| `exp_family`      | stub          | Natural-parameter interpolation           |
 
 ## Test Statistics (status)
 
-| Name      | Status        | Notes                                         |
-|-----------|---------------|-----------------------------------------------|
-| `wald`    | implemented   | Closed-form CI: D ± z·σ                       |
-| `waldo`   | implemented   | p(θ) = Φ(b−a) + Φ(−a−b); numerical CI inversion |
-| `lrt`     | scheduled stub|                                                 |
-| `signed_root` | scheduled stub|                                             |
-| `bartlett` | scheduled stub| Implemented as decorator over LRT             |
+| Name          | Status        | Notes                                          |
+|---------------|---------------|------------------------------------------------|
+| `wald`        | implemented   | Closed-form CI: D ± z·σ                        |
+| `waldo`       | implemented   | p(θ) = Φ(b−a) + Φ(−a−b); numerical CI inversion |
+| `lrt`         | stub          | -2 log Λ; on Normal-location reduces to Wald   |
+| `signed_root` | stub          | sign·√LRT; on Normal-location equals Wald      |
+| `bartlett`    | stub          | LRT/E[LRT]; decorator over base LRT (planned)  |
 
 ## Experiments (status)
 
@@ -291,7 +291,7 @@ clean tree is byte-reproducible.
 | 3    | done   | simulation/ (storage, cache, raw, runner) + LearnedArtifact     |
 | 4    | done   | CoverageExperiment + WidthExperiment + diagnostics + figures.py |
 | 5    | done   | SmoothnessExperiment quantifying the power-law discontinuity    |
-| 6    | next   | Stub OT / geodesic / mixture / LRT / signed-root / Bartlett     |
+| 6    | done   | Stubs: OT / geodesic / mixture / exp_family / LRT / SR / BCLRT  |
 | 7    | next   | .claude/ subagents + slash commands + GitHub Actions CI gates   |
 
 ## Key Anti-Patterns to Avoid

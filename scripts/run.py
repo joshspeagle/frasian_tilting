@@ -62,8 +62,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         summary = run_experiment(
             experiment=experiment_cls(),
-            tiltings=registry.tiltings.all(),
-            statistics=registry.statistics.all(),
+            tiltings=registry.tiltings.implemented(),
+            statistics=registry.statistics.implemented(),
             config=cfg,
             out_dir=Path(f"results/{name}"),
         )
