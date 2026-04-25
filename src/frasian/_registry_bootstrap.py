@@ -17,9 +17,10 @@ def bootstrap() -> None:
     global _BOOTSTRAPPED
     if _BOOTSTRAPPED:
         return
-    # Step 2 will add: from .models import normal_normal as _  # noqa: F401
-    # Step 2 will add: from .tilting import power_law as _  # noqa: F401
-    # Step 2 will add: from .statistics import wald, waldo as _  # noqa: F401
+    from .models import normal_normal as _models_nn  # noqa: F401
+    from .statistics import wald as _stat_wald  # noqa: F401
+    from .statistics import waldo as _stat_waldo  # noqa: F401
+    from .tilting import power_law as _tilt_power  # noqa: F401
     # Step 4 will add: from .experiments import coverage, width as _  # noqa: F401
     # Step 5 will add: from .experiments import smoothness as _  # noqa: F401
     _BOOTSTRAPPED = True

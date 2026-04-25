@@ -14,11 +14,13 @@ from frasian import Config, registry
 
 @pytest.fixture(autouse=True)
 def _isolated_registry():
-    """Snapshot and restore the registry around each test.
+    """Each test starts with an empty registry; restore on teardown.
 
-    Registry mutation during one test must not leak into another. This is the
-    discipline that lets new methods register at module import time without
-    breaking test isolation.
+    Test isolation is non-negotiable: tests that depend on specific
+    registrations register them explicitly; tests that depend on emptiness
+    can rely on it. Concrete implementations are still importable and
+    instantiable directly from their modules — clearing the registry
+    only affects discovery via `frasian.registry`.
     """
     snapshot = (
         list(registry.models.entries()),
@@ -27,6 +29,7 @@ def _isolated_registry():
         list(registry.experiments.entries()),
         list(registry.diagnostics.entries()),
     )
+    registry.clear()
     yield
     registry.clear()
     for entry in (*snapshot[0], *snapshot[1], *snapshot[2],
