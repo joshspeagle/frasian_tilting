@@ -30,6 +30,19 @@ def _D_from_abs_delta(abs_delta: float, w: float, sigma: float, mu0: float
 
 
 @dataclass(frozen=True)
+class _NamedStatistic:
+    """Minimal `.name`-only adapter for selector calls that only need dispatch.
+
+    `dynamic_tilted_confidence_interval` knows the statistic by name (the
+    cell-evaluator dispatch in PowerLawTilting is keyed on `statistic.name`)
+    and does not have a concrete `TestStatistic` instance handy. Wrapping
+    the name in this adapter satisfies the selector's type contract without
+    pulling in the registry.
+    """
+    name: str
+
+
+@dataclass(frozen=True)
 class NumericalEtaSelector:
     """Pick η minimizing the (analytic) CI width for the tilted posterior.
 
@@ -79,3 +92,19 @@ class NumericalEtaSelector:
             options={"xatol": 1e-3},
         )
         return float(result.x)
+
+    def select_grid(self, abs_delta_grid, scheme: TiltingScheme,
+                    *, statistic: TestStatistic, w: float, alpha: float
+                    ):
+        """Vectorised: η* at every |Δ| in `abs_delta_grid`.
+
+        Used by `dynamic_tilted_confidence_interval` to pre-compute a coarse
+        η*(|Δ|) lookup that is then interpolated across the fine θ-scan grid.
+        Repeating `optimize.minimize_scalar` for every fine-grid θ would be
+        prohibitively slow.
+        """
+        out = np.empty(len(abs_delta_grid), dtype=np.float64)
+        for i, ad in enumerate(abs_delta_grid):
+            ctx = TiltingContext(w=w, abs_delta=float(ad), alpha=alpha)
+            out[i] = self.select(ctx, scheme, statistic=statistic)
+        return out

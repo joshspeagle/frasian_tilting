@@ -18,6 +18,7 @@ def bootstrap() -> None:
     if _BOOTSTRAPPED:
         return
     from .experiments import coverage as _exp_cov  # noqa: F401
+    from .experiments import dynamic_ci as _exp_dyn  # noqa: F401
     from .experiments import smoothness as _exp_smooth  # noqa: F401
     from .experiments import width as _exp_width  # noqa: F401
     from .models import normal_normal as _models_nn  # noqa: F401

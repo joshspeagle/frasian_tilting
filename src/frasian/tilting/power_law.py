@@ -190,6 +190,146 @@ class PowerLawTilting:
             f"statistic={statistic_name!r}; supported: 'wald', 'waldo'."
         )
 
+    def dynamic_tilted_pvalue(self, theta: ArrayLike, D: float,
+                                model: object,
+                                prior: NormalDistribution,
+                                statistic_name: str,
+                                eta_at_theta: ArrayLike,
+                                ) -> NDArray[np.float64]:
+        """p(theta) with η varying per θ via a precomputed lookup.
+
+        Caller supplies `eta_at_theta`, the η* value chosen *for each θ*.
+        This is what `dynamic_tilted_confidence_interval` does internally:
+        run a coarse η-selector, then interpolate η*(|Δ(θ)|) across the
+        fine θ scan.
+        """
+        theta_arr = np.atleast_1d(np.asarray(theta, dtype=np.float64))
+        eta_arr = np.atleast_1d(np.asarray(eta_at_theta, dtype=np.float64))
+        if theta_arr.shape != eta_arr.shape:
+            raise ValueError(
+                f"theta and eta_at_theta must have the same shape; got "
+                f"{theta_arr.shape!r} and {eta_arr.shape!r}."
+            )
+        out = np.empty_like(theta_arr)
+        for i in range(theta_arr.size):
+            out[i] = float(self.tilted_pvalue(
+                float(theta_arr[i]), D, model, prior, float(eta_arr[i]),
+                statistic_name,
+            ))
+        return out if out.size > 1 else np.asarray(float(out.item()))
+
+    def dynamic_tilted_confidence_interval(
+        self,
+        alpha: float, D: float,
+        model: object,
+        prior: NormalDistribution,
+        statistic_name: str,
+        eta_selector,
+        n_grid: int = 401,
+        coarse_n: int = 25,
+        search_mult: float = 8.0,
+    ) -> tuple[list[tuple[float, float]], float, int]:
+        """Dynamic-η CI: η = η*(|Δ(θ)|) per θ.
+
+        Algorithm:
+          1. Build a coarse |Δ| grid covering the search range.
+          2. Compute η*(|Δ|) on the coarse grid via `eta_selector.select_grid`.
+          3. Build a fine θ scan; interpolate η* to each θ from the coarse grid.
+          4. Compute the dynamic p-value at each θ.
+          5. Find α-crossings; refine each via brentq.
+          6. Stitch crossings into intervals (region count may be > 1: the
+             dynamic p-value can be multimodal at low |Δ|).
+
+        Returns `(regions, total_width, n_regions)`.
+        """
+        from ..models.normal_normal import NormalNormalModel
+        from scipy import optimize
+
+        if not isinstance(model, NormalNormalModel):
+            raise NotImplementedError(
+                "dynamic_tilted_confidence_interval currently requires "
+                "NormalNormalModel."
+            )
+        sigma = model.sigma
+        mu0 = prior.loc
+        sigma0 = prior.scale
+        w = sigma0 ** 2 / (sigma ** 2 + sigma0 ** 2)
+
+        # Search range centred on D; theta and D agree in scale on canonical sandbox.
+        search_half = search_mult * sigma
+        theta_lo = D - search_half
+        theta_hi = D + search_half
+        theta_grid = np.linspace(theta_lo, theta_hi, n_grid)
+
+        # |Delta(theta)| over the scan.
+        abs_delta_theta = np.abs((1.0 - w) * (mu0 - theta_grid) / sigma)
+
+        # Coarse η* lookup.
+        from .eta_selectors import _NamedStatistic
+        ad_max = float(abs_delta_theta.max()) + 1e-6
+        coarse_grid = np.linspace(0.0, ad_max, coarse_n)
+        coarse_eta = eta_selector.select_grid(
+            coarse_grid, self, statistic=_NamedStatistic(statistic_name),
+            w=w, alpha=alpha,
+        )
+        # Interpolate to the fine θ scan.
+        eta_at_theta = np.interp(abs_delta_theta, coarse_grid, coarse_eta)
+
+        # Dynamic p-values at each θ on the fine grid.
+        p_theta = np.empty_like(theta_grid)
+        for i in range(theta_grid.size):
+            p_theta[i] = float(self.tilted_pvalue(
+                float(theta_grid[i]), D, model, prior,
+                float(eta_at_theta[i]), statistic_name,
+            ))
+
+        # Find α-crossings.
+        diff = p_theta - alpha
+        crossings: list[float] = []
+        for i in range(theta_grid.size - 1):
+            if diff[i] * diff[i + 1] < 0.0:
+                # Brentq refines on the dynamic-p function.
+                def _f(theta_val: float, _i=i) -> float:
+                    ad = abs((1.0 - w) * (mu0 - theta_val) / sigma)
+                    eta = float(np.interp(ad, coarse_grid, coarse_eta))
+                    return float(self.tilted_pvalue(
+                        theta_val, D, model, prior, eta, statistic_name,
+                    )) - alpha
+                try:
+                    cross = optimize.brentq(
+                        _f, theta_grid[i], theta_grid[i + 1], xtol=1e-9,
+                    )
+                    crossings.append(float(cross))
+                except ValueError:
+                    # Linear interpolation fallback.
+                    t = diff[i] / (diff[i] - diff[i + 1])
+                    crossings.append(
+                        float(theta_grid[i] + t * (theta_grid[i + 1]
+                                                    - theta_grid[i]))
+                    )
+
+        # Build intervals from crossings. We treat the scan endpoints as
+        # closed: if p > alpha there, we include the endpoint as an
+        # implicit crossing.
+        regions: list[tuple[float, float]] = []
+        if not crossings:
+            # No crossings — either entirely inside or entirely outside.
+            if p_theta[len(p_theta) // 2] >= alpha:
+                regions = [(float(theta_lo), float(theta_hi))]
+        else:
+            entries = list(crossings)
+            # Prepend / append endpoints if needed so the parity comes out right.
+            if p_theta[0] >= alpha:
+                entries = [float(theta_lo)] + entries
+            if p_theta[-1] >= alpha:
+                entries = entries + [float(theta_hi)]
+            # Pair them up.
+            for i in range(0, len(entries) - 1, 2):
+                regions.append((entries[i], entries[i + 1]))
+
+        total = float(sum(hi - lo for lo, hi in regions))
+        return regions, total, len(regions)
+
     def tilted_confidence_interval(self, alpha: float, D: float,
                                     model: object,
                                     prior: NormalDistribution,
