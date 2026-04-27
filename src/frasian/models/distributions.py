@@ -55,6 +55,85 @@ class NormalDistribution:
 
 
 @dataclass(frozen=True)
+class BetaDistribution:
+    """Beta(alpha, beta) distribution conforming to the Distribution protocol.
+
+    The Beta is the conjugate prior for Bernoulli, so it pops up as both
+    prior and posterior under the BernoulliModel. Both shape parameters
+    must be strictly positive.
+    """
+
+    alpha: float
+    beta: float
+
+    def __post_init__(self) -> None:
+        if not (np.isfinite(self.alpha) and self.alpha > 0):
+            raise ValueError(f"alpha must be positive, got {self.alpha!r}")
+        if not (np.isfinite(self.beta) and self.beta > 0):
+            raise ValueError(f"beta must be positive, got {self.beta!r}")
+
+    def pdf(self, x: ArrayLike) -> NDArray[np.float64]:
+        return np.asarray(stats.beta.pdf(x, self.alpha, self.beta),
+                          dtype=np.float64)
+
+    def logpdf(self, x: ArrayLike) -> NDArray[np.float64]:
+        return np.asarray(stats.beta.logpdf(x, self.alpha, self.beta),
+                          dtype=np.float64)
+
+    def cdf(self, x: ArrayLike) -> NDArray[np.float64]:
+        return np.asarray(stats.beta.cdf(x, self.alpha, self.beta),
+                          dtype=np.float64)
+
+    def quantile(self, q: ArrayLike) -> NDArray[np.float64]:
+        return np.asarray(stats.beta.ppf(q, self.alpha, self.beta),
+                          dtype=np.float64)
+
+    def mean(self) -> float:
+        return float(self.alpha / (self.alpha + self.beta))
+
+    def var(self) -> float:
+        ab = self.alpha + self.beta
+        return float(self.alpha * self.beta / (ab ** 2 * (ab + 1.0)))
+
+    def sample(self, rng: Generator, n: int) -> NDArray[np.float64]:
+        return rng.beta(self.alpha, self.beta, size=n)
+
+
+@dataclass(frozen=True)
+class BernoulliLikelihood:
+    """Likelihood for `data` ~ Bernoulli(theta) — a vector of 0/1 outcomes.
+
+    Stores the sufficient statistic (n_success, n_total) rather than the
+    raw data array; this is what BernoulliModel.posterior consumes.
+    """
+
+    n_success: int
+    n_total: int
+
+    def __post_init__(self) -> None:
+        if self.n_total <= 0:
+            raise ValueError(f"n_total must be positive, got {self.n_total!r}")
+        if not (0 <= self.n_success <= self.n_total):
+            raise ValueError(
+                f"n_success ({self.n_success}) outside [0, {self.n_total}]"
+            )
+
+    def __call__(self, theta: ArrayLike) -> NDArray[np.float64]:
+        return np.exp(self.loglik(theta))
+
+    def loglik(self, theta: ArrayLike) -> NDArray[np.float64]:
+        theta_arr = np.asarray(theta, dtype=np.float64)
+        # Guard against log(0) at the support boundary by clipping.
+        eps = 1e-300
+        return np.asarray(
+            self.n_success * np.log(np.clip(theta_arr, eps, 1.0))
+            + (self.n_total - self.n_success)
+            * np.log(np.clip(1.0 - theta_arr, eps, 1.0)),
+            dtype=np.float64,
+        )
+
+
+@dataclass(frozen=True)
 class GaussianLikelihood:
     """Likelihood for D ~ N(theta, sigma^2) — Normal-Normal model.
 

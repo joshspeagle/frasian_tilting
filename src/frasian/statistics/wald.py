@@ -15,18 +15,14 @@ from numpy.typing import ArrayLike, NDArray
 from scipy import stats
 
 from .._registry import register_statistic
+from ..models._dispatch import require_model
 from ..models.base import Model, Prior
 from ..models.normal_normal import NormalNormalModel
 from .base import AsymptoticDistribution
 
 
 def _require_normal_normal(model: Model) -> NormalNormalModel:
-    if not isinstance(model, NormalNormalModel):
-        raise NotImplementedError(
-            f"WaldStatistic currently requires NormalNormalModel; "
-            f"got {type(model).__name__!r}."
-        )
-    return model
+    return require_model(model, NormalNormalModel, caller="WaldStatistic")
 
 
 @register_statistic(name="wald", brief="docs/methods/wald.md")

@@ -21,6 +21,7 @@ def bootstrap() -> None:
     from .experiments import dynamic_ci as _exp_dyn  # noqa: F401
     from .experiments import smoothness as _exp_smooth  # noqa: F401
     from .experiments import width as _exp_width  # noqa: F401
+    from .models import bernoulli as _models_bern  # noqa: F401
     from .models import normal_normal as _models_nn  # noqa: F401
     from .statistics import bartlett as _stat_bartlett  # noqa: F401
     from .statistics import lrt as _stat_lrt  # noqa: F401

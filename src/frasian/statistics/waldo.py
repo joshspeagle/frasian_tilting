@@ -19,6 +19,7 @@ from numpy.typing import ArrayLike, NDArray
 from scipy import stats
 
 from .._registry import register_statistic
+from ..models._dispatch import require_model, require_prior
 from ..models.base import Model, Prior
 from ..models.distributions import NormalDistribution
 from ..models.normal_normal import NormalNormalModel, posterior_params
@@ -27,17 +28,9 @@ from .base import AsymptoticDistribution
 
 def _require_normal_normal(model: Model, prior: Prior | None
                            ) -> tuple[NormalNormalModel, NormalDistribution]:
-    if not isinstance(model, NormalNormalModel):
-        raise NotImplementedError(
-            f"WaldoStatistic currently requires NormalNormalModel; "
-            f"got {type(model).__name__!r}."
-        )
-    if not isinstance(prior, NormalDistribution):
-        raise NotImplementedError(
-            f"WaldoStatistic requires a NormalDistribution prior; "
-            f"got {type(prior).__name__!r}."
-        )
-    return model, prior
+    m = require_model(model, NormalNormalModel, caller="WaldoStatistic")
+    p = require_prior(prior, NormalDistribution, caller="WaldoStatistic")
+    return m, p
 
 
 def _pvalue_components(theta: NDArray[np.float64], mu_n: float, mu0: float,

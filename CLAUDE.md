@@ -112,7 +112,7 @@ diagnostics, and writes a `manifest.json` with relative cache paths.
 | `coverage`  | implemented   | Empirical coverage on (θ_true, w) grid              |
 | `width`     | implemented   | Mean CI width on (θ_true, w) grid                   |
 | `smoothness`| implemented   | η*(|Δ|) Lipschitz / TV / discontinuity / spectral   |
-| `dynamic_ci`| scheduled stub| Dynamic-η CIs from the legacy framework             |
+| `dynamic_ci`| implemented   | Coverage / width / region-count for η*(|Δ(θ)|) CIs  |
 
 The `coverage` and `width` cells currently use `eta = scheme.param_space.
 eta_identity` for every tilting; the Tilting dimension becomes load-bearing
@@ -261,12 +261,14 @@ python -m scripts.run --list
 # Run an experiment end-to-end (Config.fast() ~ 30s for coverage)
 python -m scripts.run --fast experiment=coverage
 python -m scripts.run --fast experiment=width
+python -m scripts.run --fast experiment=smoothness
+python -m scripts.run --fast experiment=dynamic_ci
 
 # Regenerate figures + CSVs from a persisted results dir
 python -m scripts.figures results/coverage
 
 # Run the test suite
-python -m pytest                    # all 245 tests
+python -m pytest                    # all 406 passing + 32 stub-skipped
 python -m pytest -m L0              # math primitives only
 python -m pytest -m "L0 or L1"      # core + properties
 python -m pytest -m L4              # end-to-end
