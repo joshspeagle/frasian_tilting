@@ -54,6 +54,7 @@ class _Slice:
         return len(self._entries)
 
     def all(self) -> list[Any]:
+        """Every registered class in this slice, regardless of status."""
         return [e.cls for e in self._entries.values()]
 
     def implemented(self) -> list[Any]:
@@ -63,10 +64,14 @@ class _Slice:
         return self.where(status="implemented")
 
     def entries(self) -> list[RegistryEntry]:
+        """Every `RegistryEntry` (with metadata) for tooling like the
+        completeness checker that needs the brief path / status / source file."""
         return list(self._entries.values())
 
     def where(self, *, status: Status | None = None,
               name__in: Iterable[str] | None = None) -> list[Any]:
+        """Filter the slice by `status` and/or `name__in`. Both are optional;
+        when neither is supplied, behaves as `all()`."""
         names = set(name__in) if name__in is not None else None
         out: list[Any] = []
         for entry in self._entries.values():
@@ -92,6 +97,8 @@ class Registry:
         return getattr(self, kind + "s") if kind != "model" else self.models
 
     def register(self, entry: RegistryEntry) -> None:
+        """Insert `entry` into the appropriate slice; raise `RegistryConflictError`
+        if the (kind, name) is already taken."""
         slice_ = self._slice(entry.kind)
         if entry.name in slice_._entries:
             existing = slice_._entries[entry.name]
@@ -102,6 +109,7 @@ class Registry:
         slice_._entries[entry.name] = entry
 
     def all_entries(self) -> list[RegistryEntry]:
+        """Concat of every slice's entries — used by the completeness checker."""
         out: list[RegistryEntry] = []
         for s in (self.models, self.tiltings, self.statistics,
                   self.experiments, self.diagnostics):

@@ -26,6 +26,9 @@ from .simulation.runner import persist_cell
 
 @dataclass
 class CellSummary:
+    """One row of `RunSummary.cells`: the (tilting, statistic) cell and the
+    relative path to its persisted result inside the run's `out_dir`."""
+
     tilting: str
     statistic: str
     cache_path: str
@@ -33,6 +36,13 @@ class CellSummary:
 
 @dataclass
 class RunSummary:
+    """Lightweight, JSON-serialisable summary returned by `run_experiment`.
+
+    `out_dir/manifest.json` is built from this struct; downstream tooling
+    (figures.py, the completeness checker) consumes the manifest to find
+    each cell's persisted arrays.
+    """
+
     experiment: str
     config_fingerprint: str
     git_sha: str

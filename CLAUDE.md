@@ -74,8 +74,8 @@ from frasian import run_experiment, registry
 
 summary = run_experiment(
     experiment=registry.experiments["coverage"](),
-    tiltings=registry.tiltings.all(),
-    statistics=registry.statistics.all(),
+    tiltings=registry.tiltings.implemented(),       # `.all()` includes stubs
+    statistics=registry.statistics.implemented(),
     config=Config.fast(),                # or Config.default()
     out_dir=Path("results/coverage"),
 )
@@ -84,6 +84,17 @@ summary = run_experiment(
 The runner persists each cell's `RawResult` through the cache layer (keyed
 on Config fingerprint + git sha + raw fingerprint), runs the experiment's
 diagnostics, and writes a `manifest.json` with relative cache paths.
+
+## Models (status)
+
+| Name           | Status        | Notes                                     |
+|----------------|---------------|-------------------------------------------|
+| `normal_normal`| implemented   | 1D conjugate Gaussian; framework's sandbox |
+| `bernoulli`    | implemented   | Beta-conjugate; non-Normal protocol check  |
+
+Pairings of `bernoulli` with `Wald` / `WALDO` / `power_law` raise
+`NotImplementedError` (by design — the Normal-only methods name the
+restriction explicitly via `models/_dispatch.require_model`).
 
 ## Tilting Schemes (status)
 
@@ -114,9 +125,10 @@ diagnostics, and writes a `manifest.json` with relative cache paths.
 | `smoothness`| implemented   | η*(|Δ|) Lipschitz / TV / discontinuity / spectral   |
 | `dynamic_ci`| implemented   | Coverage / width / region-count for η*(|Δ(θ)|) CIs  |
 
-The `coverage` and `width` cells currently use `eta = scheme.param_space.
-eta_identity` for every tilting; the Tilting dimension becomes load-bearing
-when the smoothness experiment lands.
+`coverage` and `width` use `eta = scheme.param_space.eta_identity` for
+every tilting; the Tilting dimension is load-bearing in `smoothness` (which
+sweeps eta and reports the optimum's roughness) and in `dynamic_ci`
+(which uses η = η*(|Δ(θ)|) varying per θ).
 
 ## Project Structure
 

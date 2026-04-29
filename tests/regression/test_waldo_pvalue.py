@@ -72,6 +72,58 @@ class TestWaldoPvalueBounds:
 
 
 @pytest.mark.L0
+class TestWaldoEvaluate:
+    """Direct test of the test statistic itself: tau = (mu_n - theta)^2 / sigma_n^2."""
+
+    @pytest.mark.parametrize("D", [-2.0, 0.0, 2.0])
+    @pytest.mark.parametrize("sigma0", [0.5, 1.0, 2.0])
+    def test_matches_closed_form(self, D, sigma0):
+        sigma, mu0 = 1.0, 0.0
+        model = NormalNormalModel(sigma=sigma)
+        prior = NormalDistribution(loc=mu0, scale=sigma0)
+        stat = WaldoStatistic()
+        thetas = np.array([-1.0, 0.0, 1.0, 2.0])
+        tau = stat.evaluate(thetas, np.asarray([D]), model, prior)
+        mu_n, sigma_n, _ = posterior_params(D, mu0, sigma, sigma0)
+        expected = (mu_n - thetas) ** 2 / sigma_n ** 2
+        np.testing.assert_allclose(tau, expected, atol=1e-12)
+
+    def test_zero_at_mu_n(self):
+        """tau(theta = mu_n) = 0 by construction."""
+        model = NormalNormalModel(sigma=1.0)
+        prior = NormalDistribution(loc=0.0, scale=1.0)
+        mu_n, _, _ = posterior_params(2.0, 0.0, 1.0, 1.0)
+        tau = WaldoStatistic().evaluate(float(mu_n), np.asarray([2.0]),
+                                          model, prior)
+        np.testing.assert_allclose(tau, 0.0, atol=1e-24)
+
+
+@pytest.mark.L0
+class TestWaldoAcceptanceRegion:
+    """Acceptance region in D-space: dual to confidence_interval in θ-space."""
+
+    def test_pvalue_at_boundary_is_alpha(self):
+        """For D at the acceptance-region boundary, p(theta=theta0; D) = alpha."""
+        model = NormalNormalModel(sigma=1.0)
+        prior = NormalDistribution(loc=0.0, scale=1.0)
+        stat = WaldoStatistic()
+        alpha = 0.05
+        for theta0 in (-1.0, 0.5, 2.0):
+            D_lo, D_hi = stat.acceptance_region(alpha, theta0, model, prior)
+            for D in (float(D_lo), float(D_hi)):
+                p = float(stat.pvalue(theta0, np.asarray([D]), model, prior))
+                np.testing.assert_allclose(p, alpha, atol=1e-7)
+
+    def test_brackets_theta(self):
+        """The acceptance region in D contains D = theta (where mu_n is far
+        from theta but the test rarely rejects since p approaches 1)."""
+        model = NormalNormalModel(sigma=1.0)
+        prior = NormalDistribution(loc=0.0, scale=1.0)
+        D_lo, D_hi = WaldoStatistic().acceptance_region(0.05, 1.5, model, prior)
+        assert float(D_lo) <= 1.5 <= float(D_hi)
+
+
+@pytest.mark.L0
 class TestWaldStatistic:
     def test_pvalue_at_mle_equals_one(self):
         """Wald's MLE is D, so p(theta=D) = 2*(1 - Phi(0)) = 1."""

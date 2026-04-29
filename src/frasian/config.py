@@ -24,6 +24,7 @@ class GridSpec:
     log_spaced: bool = False
 
     def to_array(self) -> np.ndarray:
+        """Materialise the grid: linspace by default, logspace if `log_spaced`."""
         if self.log_spaced:
             return np.logspace(np.log10(self.low), np.log10(self.high), self.n_points)
         return np.linspace(self.low, self.high, self.n_points)
@@ -65,6 +66,7 @@ class Config:
 
     @classmethod
     def default(cls) -> "Config":
+        """Production-resolution config (n_reps=10_000, full grids)."""
         return cls()
 
     @classmethod
@@ -84,6 +86,11 @@ class Config:
         )
 
     def from_overrides(self, **overrides) -> "Config":
+        """Return a derived `Config` with the named fields replaced.
+
+        The fingerprint changes accordingly, so cached results computed
+        under the original config are invalidated automatically.
+        """
         return replace(self, **overrides)
 
     def fingerprint(self) -> str:
