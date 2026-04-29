@@ -203,9 +203,8 @@ experiments/                 # planned: versioned analysis configs (yaml)
 docs/
   methods/                   # one .md brief per registered method
     _template.md             # the skeleton /propose-method writes against
-    {normal_normal,wald,waldo,power_law,coverage_experiment,width_experiment}.md
-  architecture.md            # planned: rationale doc
-  workflows.md               # planned: explains /critique, /derive, /propose-method
+    {normal_normal,bernoulli,wald,waldo,power_law,...}.md
+  workflows.md               # /propose-method lifecycle + cookbook
 
 scripts/
   run.py                     # python -m scripts.run [--list] [--fast] experiment=<name>
