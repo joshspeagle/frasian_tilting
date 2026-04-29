@@ -1,0 +1,42 @@
+name: method-completeness
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - "claude/**"
+  workflow_dispatch:
+
+concurrency:
+  group: completeness-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  completeness:
+    name: brief + tests + illustration per method
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Verify brief + property tests + illustration per registered method
+        run: python tools/check_method_completeness.py
+
+      - name: Smoke-run all illustrations
+        run: |
+          for demo in src/frasian/experiments/illustrations/*_demo.py; do
+            module="frasian.experiments.illustrations.$(basename "$demo" .py)"
+            echo "=== $module --smoke ==="
+            python -m "$module" --smoke
+          done

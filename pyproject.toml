@@ -4,15 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "frasian"
-version = "0.1.0"
-description = "Numerical experiments for Frasian inference: WALDO, tilted posteriors, and confidence distributions"
+version = "0.2.0.dev0"
+description = "Frasian inference research framework: cross-product (TiltingScheme x TestStatistic) experiments on a 1D conjugate-Normal sandbox."
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.9"
 authors = [
     {name = "Josh Snyder"}
 ]
-keywords = ["statistics", "inference", "confidence-distributions", "waldo", "bayesian"]
+keywords = ["statistics", "inference", "confidence-distributions", "waldo", "tilting", "bayesian"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
@@ -36,6 +36,7 @@ dependencies = [
 dev = [
     "pytest>=7.0",
     "pytest-xdist>=3.0",
+    "hypothesis>=6.80",
     "ipython",
     "jupyter",
 ]
@@ -48,14 +49,16 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "-v --tb=short"
+addopts = "-v --tb=short --strict-markers"
 markers = [
-    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
-    "tier1: Tier 1 foundational tests",
-    "tier2: Tier 2 p-value and confidence distribution tests",
-    "tier3: Tier 3 coverage and interval tests",
-    "tier4: Tier 4 tilting framework tests",
-    "tier5: Tier 5 integration tests",
+    "L0: scalar math primitives (atol 1e-12)",
+    "L1: protocol invariants (hypothesis property tests)",
+    "L2: array-result regression vs committed baselines",
+    "L3: statistical (KS uniformity, coverage at nominal level)",
+    "L4: end-to-end Experiment on a small grid",
+    "L5: cross-product cells, smoke mode, nightly only",
+    "slow: deselect with -m 'not slow'",
+    "properties: alias for L1, used by registry-driven test discovery",
 ]
 
 [tool.black]
