@@ -102,7 +102,7 @@ class DynamicCIExperiment:
         rng = np.random.default_rng(ctx.rng_seed)
         raw = generate_normal_D_samples(
             name="dynamic_ci", model=model, theta_grid=theta_grid,
-            n_reps=n_reps, rng=rng,
+            n_reps=n_reps, rng=rng, seed=ctx.rng_seed,
         )
         selector = NumericalEtaSelector(sigma=self.sigma, mu0=self.mu0)
 

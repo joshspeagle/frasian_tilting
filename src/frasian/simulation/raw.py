@@ -62,6 +62,7 @@ def generate_normal_D_samples(
     theta_grid: NDArray[np.float64],
     n_reps: int,
     rng: Generator,
+    seed: int,
     metadata: Mapping[str, Any] | None = None,
 ) -> RawSamples:
     """Generate D ~ N(theta, sigma) samples on a theta-grid.
@@ -77,16 +78,17 @@ def generate_normal_D_samples(
     n_reps :
         Replicates per theta.
     rng :
-        Seeded `numpy.random.Generator`. The seed is recorded in the result's
-        metadata for reproducibility checks.
+        Seeded `numpy.random.Generator` used for sampling.
+    seed :
+        Integer seed that was used to initialise `rng`. Recorded in the
+        result for reproducibility checks and fingerprinting. The caller
+        is responsible for keeping `rng` and `seed` consistent.
     """
     theta_grid = np.asarray(theta_grid, dtype=np.float64)
     if theta_grid.ndim != 1:
         raise ValueError(f"theta_grid must be 1D, got shape {theta_grid.shape}")
     if n_reps <= 0:
         raise ValueError(f"n_reps must be positive, got {n_reps}")
-    seed_state = rng.bit_generator.state
-    seed = int(seed_state["state"]["state"])  # representative seed value
 
     D = np.empty((theta_grid.size, n_reps), dtype=np.float64)
     for i, theta in enumerate(theta_grid):

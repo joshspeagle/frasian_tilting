@@ -16,6 +16,7 @@ def _gen(seed=0, n_reps=50) -> RawSamples:
         theta_grid=np.array([-1.0, 0.0, 1.0]),
         n_reps=n_reps,
         rng=np.random.default_rng(seed),
+        seed=seed,
     )
 
 
@@ -67,12 +68,12 @@ class TestRawSamplesFingerprint:
         m1 = generate_normal_D_samples(
             name="demo", model=NormalNormalModel(sigma=1.0),
             theta_grid=np.array([0.0]), n_reps=2,
-            rng=np.random.default_rng(0), metadata={"k": 1},
+            rng=np.random.default_rng(0), seed=0, metadata={"k": 1},
         ).fingerprint()
         m2 = generate_normal_D_samples(
             name="demo", model=NormalNormalModel(sigma=1.0),
             theta_grid=np.array([0.0]), n_reps=2,
-            rng=np.random.default_rng(0), metadata={"k": 2},
+            rng=np.random.default_rng(0), seed=0, metadata={"k": 2},
         ).fingerprint()
         assert m1 != m2
 
@@ -84,7 +85,7 @@ class TestRawSamplesValidation:
             generate_normal_D_samples(
                 name="x", model=NormalNormalModel(sigma=1.0),
                 theta_grid=np.zeros((2, 2)), n_reps=3,
-                rng=np.random.default_rng(0),
+                rng=np.random.default_rng(0), seed=0,
             )
 
     def test_zero_n_reps_rejected(self):
@@ -92,5 +93,5 @@ class TestRawSamplesValidation:
             generate_normal_D_samples(
                 name="x", model=NormalNormalModel(sigma=1.0),
                 theta_grid=np.array([0.0]), n_reps=0,
-                rng=np.random.default_rng(0),
+                rng=np.random.default_rng(0), seed=0,
             )

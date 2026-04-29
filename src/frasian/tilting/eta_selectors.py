@@ -19,7 +19,7 @@ from scipy import optimize
 from ..models.distributions import NormalDistribution
 from ..models.normal_normal import NormalNormalModel
 from ..statistics.base import TestStatistic
-from .base import TiltingContext, TiltingScheme
+from .base import TiltingContext, TiltingDomainError, TiltingScheme
 
 
 def _D_from_abs_delta(abs_delta: float, w: float, sigma: float, mu0: float
@@ -82,7 +82,7 @@ class NumericalEtaSelector:
                         f"{type(scheme).__name__} does not implement "
                         f"`tilted_confidence_interval` (Step 5 bridge)."
                     )
-            except Exception:
+            except (NotImplementedError, TiltingDomainError, ValueError, RuntimeError):
                 return np.inf
             w_ci = float(hi - lo)
             return w_ci if (w_ci > 0 and np.isfinite(w_ci)) else np.inf

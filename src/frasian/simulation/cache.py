@@ -6,8 +6,13 @@ on file mtime, which is fragile under reorganisation; this version keys on
 content fingerprints, so a result is reused only when *every input that
 could affect it* matches.
 
-Dirty git trees (uncommitted changes) get a sha of `dirty:<sha-of-tree>`
-which always recomputes — modifying the source must invalidate.
+Dirty git trees (uncommitted changes) get a sha of `dirty:<hash>` where
+`<hash>` is a short SHA-256 of the `git status --porcelain` output.  This
+differs from a git tree-object hash: it reflects only which paths have
+changed, not the content of those changes. The guarantee is that any
+uncommitted modification will produce a different `<hash>` than a clean tree,
+so dirty trees always recompute — committing the source is still the hard
+prerequisite for byte-reproducible results.
 """
 
 from __future__ import annotations
@@ -55,7 +60,12 @@ class CacheKey:
 
 @lru_cache(maxsize=1)
 def git_sha(repo_root: Path | None = None) -> str:
-    """Current git sha or `dirty:<tree-hash>` if there are uncommitted changes.
+    """Current git sha or `dirty:<hash>` if there are uncommitted changes.
+
+    On a dirty tree, `<hash>` is a short SHA-256 of the `git status
+    --porcelain` output — not a git tree-object id.  The returned value
+    always changes when any tracked file is modified or staged, guaranteeing
+    that dirty-tree cache keys never collide with clean-tree keys.
 
     Result is memoised because shelling out to git is the slowest call in
     the cache pipeline. Tests that need fresh evaluation must call
