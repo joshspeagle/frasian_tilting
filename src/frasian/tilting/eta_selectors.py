@@ -16,7 +16,6 @@ from dataclasses import dataclass
 import numpy as np
 from scipy import optimize
 
-from ..config import Config
 from ..models.distributions import NormalDistribution
 from ..models.normal_normal import NormalNormalModel
 from ..statistics.base import TestStatistic
@@ -55,13 +54,14 @@ class NumericalEtaSelector:
     name: str = "numerical"
     sigma: float = 1.0
     mu0: float = 0.0
+    eta_min_buffer: float = 1e-3
 
     def select(self, context: TiltingContext, scheme: TiltingScheme,
                *, statistic: TestStatistic) -> float:
         eta_lo, eta_hi = scheme.admissible_range(context)
         # Cap the upper end at +1 (the Wald limit); anything beyond is
         # mathematically valid but uninteresting in practice.
-        eta_hi = min(eta_hi, 1.0 - Config.default().eta_min_buffer)
+        eta_hi = min(eta_hi, 1.0 - self.eta_min_buffer)
 
         sigma0 = float(np.sqrt(context.w / max(1.0 - context.w, 1e-12))
                         * self.sigma)
