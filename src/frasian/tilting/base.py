@@ -48,8 +48,11 @@ class ParamSpec:
 class TiltingScheme(Protocol):
     """Family of tilted distributions parameterized by η.
 
-    Invariants any implementation must satisfy
-    (tests/properties/test_tilting_invariants.py):
+    Invariants any implementation must satisfy (verified per-scheme in
+    `tests/properties/test_<scheme_name>_invariants.py` —
+    `test_power_law_invariants.py` for the implemented scheme; the
+    stub schemes have skipped placeholder tests under the same naming
+    convention):
         - `tilt(posterior, ..., eta=param_space.eta_identity)` returns a
           distribution numerically equal to `posterior`.
         - `tilt(...).pdf` is non-negative and integrates to 1 (KS-tolerance).

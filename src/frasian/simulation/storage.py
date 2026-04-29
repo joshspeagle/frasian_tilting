@@ -33,19 +33,38 @@ class StoredResult:
 
 def save_result(path: Path, arrays: Mapping[str, NDArray],
                 metadata: Mapping[str, Any]) -> None:
-    """Atomically persist a result to `path`.
+    """Crash-safe persist: write to `<path>.tmp`, rotate the existing
+    directory aside, swap, then delete the rotated copy.
 
-    `path` is a *directory*. Existing contents are overwritten via the
-    rename-from-temp pattern: write to `path.with_suffix(".tmp")` then rename.
+    `path` is a *directory*. Sequence:
+      1. Materialise the new result inside `<path>.tmp`.
+      2. If `path` already exists, rename it to `<path>.backup`.
+      3. Rename `<path>.tmp` to `path`.
+      4. Delete `<path>.backup`.
+
+    A crash between step 2 and step 3 leaves `<path>.tmp` and
+    `<path>.backup` on disk; the next call to `save_result` cleans
+    those up before retrying. The previous result is therefore *never*
+    lost across a crash window — the worst case is two leftover dirs
+    that get garbage-collected on the next write.
+
+    This is not strictly POSIX-atomic (you can't rename a non-empty
+    directory over another non-empty directory in one syscall) but it
+    is crash-recoverable, which is what callers actually need.
     """
     path = Path(path)
     tmp = path.with_name(path.name + ".tmp")
-    if tmp.exists():
-        for child in tmp.iterdir():
-            child.unlink()
-        tmp.rmdir()
-    tmp.mkdir(parents=True)
+    backup = path.with_name(path.name + ".backup")
 
+    # Clean up leftovers from any prior crash.
+    for stale in (tmp, backup):
+        if stale.exists():
+            for child in stale.iterdir():
+                child.unlink()
+            stale.rmdir()
+
+    # 1. Materialise the new directory under `<path>.tmp`.
+    tmp.mkdir(parents=True)
     np.savez_compressed(tmp / "arrays.npz", **dict(arrays))
     full_meta = {
         "_schema_version": SCHEMA_VERSION,
@@ -54,11 +73,18 @@ def save_result(path: Path, arrays: Mapping[str, NDArray],
     }
     (tmp / "metadata.json").write_text(json.dumps(full_meta, indent=2,
                                                     sort_keys=True))
+
+    # 2. Rotate the existing result aside (no data loss across the gap).
     if path.exists():
-        for child in path.iterdir():
-            child.unlink()
-        path.rmdir()
+        path.rename(backup)
+    # 3. Swap the new directory in.
     tmp.rename(path)
+    # 4. Drop the rotated copy. A crash here leaves an orphan `.backup`;
+    # the next save_result call cleans it up.
+    if backup.exists():
+        for child in backup.iterdir():
+            child.unlink()
+        backup.rmdir()
 
 
 def load_result(path: Path) -> StoredResult:

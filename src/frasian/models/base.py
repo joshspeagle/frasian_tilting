@@ -54,11 +54,20 @@ class Model(Protocol):
     likelihood is evaluated, and how a posterior is constructed under a given
     prior. The 1D conjugate-Normal case sets `param_dim = 1`.
 
-    Invariants any implementation must satisfy (verified in
-    tests/properties/test_model_invariants.py):
-        - `posterior(data, prior).mean()` lies between `prior.mean()` and the MLE.
-        - `posterior(data, prior).var()` <= `prior.var()` for informative data.
-        - `quantile(cdf(x)) == x` for all returned distributions, atol depends on tail.
+    Invariants any implementation must satisfy (verified per-model in
+    `tests/properties/test_<model_name>_invariants.py` — currently
+    `test_normal_distribution.py` for normal_normal and
+    `test_bernoulli_invariants.py` for bernoulli):
+        - `posterior(data, prior).mean()` lies between `prior.mean()` and
+          `mle(data)` (the precision-weighted average of the two).
+        - `posterior(data, prior).var() -> 0` as `n_obs -> infinity`
+          (asymptotic concentration). Note: posterior variance is *not*
+          monotonically below prior variance for every finite n — when
+          the prior strongly opposes the data the posterior may
+          transiently widen (verified for Bernoulli; the original draft
+          of this docstring overstated the property).
+        - `quantile(cdf(x)) == x` for all returned distributions
+          (round-trip; atol depends on tail).
         - `mle(sample_data(theta, ...))` is consistent under increasing n.
     """
 

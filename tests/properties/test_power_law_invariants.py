@@ -82,18 +82,58 @@ class TestPowerLawInvariants:
         with pytest.raises(TiltingDomainError):
             PowerLawTilting().tilt(post, prior, lik, 3.0)
 
-    @given(eta=st.floats(min_value=-0.4, max_value=0.9, allow_nan=False))
+    @given(eta=st.floats(min_value=-0.4, max_value=0.9, allow_nan=False),
+           sigma0=st.floats(min_value=0.5, max_value=2.0, allow_nan=False))
     @settings(max_examples=40, deadline=None)
-    def test_noncentrality_quadratic_decay(self, eta):
-        """Theorem 7: lambda_eta = (1 - eta)^2 lambda_0.
+    def test_noncentrality_quadratic_decay(self, eta, sigma0):
+        """Theorem 7: lambda_eta(theta) = (1 - eta)^2 * lambda_0(theta).
 
-        We verify this by an indirect identity: at any theta, the WALDO
-        statistic distribution under the tilted-posterior view must scale
-        with (1 - eta)^2 in noncentrality. We check the identity at the
-        formula level here.
+        Verifies the scaling by computing lambda_eta via the actual
+        Theorem-6 closed forms. Under H0 (D ~ N(theta, sigma)):
+
+            mu_eta - theta = bias_eta + (w/denom)(D - theta),
+            bias_eta       = (1-eta)(1-w)(mu0 - theta) / denom,
+            sigma_eta^2    = w * sigma^2 / denom,
+            denom          = 1 - eta*(1-w).
+
+        Var_D[(mu_eta - theta)/sigma_eta] = w/denom, so the tilted
+        WALDO statistic distributes as (w/denom) * chi^2_1(lambda_eta) with
+
+            lambda_eta = bias_eta^2 * denom^2 / (w^2 * sigma^2)
+                       = (1 - eta)^2 * lambda_0,
+
+        where lambda_0 is `models.normal_normal.noncentrality` at eta=0.
+        Both sides are computed via the actual implementations — no
+        tautology — and the closed-form bias_eta is cross-checked
+        against `PowerLawTilting.tilt(...).loc` at D=theta.
         """
-        # Use a fixed configuration; the property is purely about (1-eta)^2.
-        lambda0 = 4.0
-        expected = (1.0 - eta) ** 2 * lambda0
-        # The legacy `tilted_noncentrality(lambda0, eta)` is exactly this.
-        np.testing.assert_allclose(expected, expected, atol=1e-12)
+        from frasian.models.normal_normal import noncentrality as _nc, weight
+
+        sigma, mu0 = 1.0, 0.0
+        theta = mu0 + 0.5 * sigma0  # representative test point
+
+        w = weight(sigma, sigma0)
+        denom = 1.0 - eta * (1.0 - w)
+        bias_eta = (1.0 - eta) * (1.0 - w) * (mu0 - theta) / denom
+
+        # Cross-check the closed-form bias against the actual tilt() output:
+        # tilting with D = theta makes mu_eta = E_H0[mu_eta], so the tilted
+        # location must equal theta + bias_eta.
+        model = NormalNormalModel(sigma=sigma)
+        prior = NormalDistribution(loc=mu0, scale=sigma0)
+        post_h0 = model.posterior(np.asarray([theta]), prior)
+        lik_h0 = GaussianLikelihood(D=theta, sigma=sigma)
+        tilted_h0 = PowerLawTilting().tilt(post_h0, prior, lik_h0, eta)
+        np.testing.assert_allclose(
+            tilted_h0.loc - theta, bias_eta, atol=1e-12,
+            err_msg="closed-form bias_eta disagrees with tilt() output",
+        )
+
+        # LHS: lambda_eta from the tilted-statistic distribution.
+        lambda_eta_LHS = bias_eta ** 2 * denom ** 2 / (w ** 2 * sigma ** 2)
+
+        # RHS: (1 - eta)^2 * lambda_0.
+        lambda_0 = float(_nc(theta, mu0, w, sigma))
+        lambda_eta_RHS = (1.0 - eta) ** 2 * lambda_0
+
+        np.testing.assert_allclose(lambda_eta_LHS, lambda_eta_RHS, atol=1e-12)
