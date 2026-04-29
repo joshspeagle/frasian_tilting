@@ -14,13 +14,16 @@ the same interface and can be swapped.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Iterable, Protocol, runtime_checkable
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from .._errors import TiltingDomainError  # noqa: F401  (re-export contract)
 from ..models.base import Likelihood, Posterior, Prior
+
+if TYPE_CHECKING:
+    from ..statistics.base import TestStatistic
 
 
 @dataclass(frozen=True)
@@ -81,4 +84,5 @@ class EtaSelector(Protocol):
 
     name: str
 
-    def select(self, context: TiltingContext, scheme: TiltingScheme) -> float: ...
+    def select(self, context: TiltingContext, scheme: TiltingScheme,
+               *, statistic: TestStatistic) -> float: ...
