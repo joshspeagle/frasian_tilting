@@ -4,9 +4,19 @@ The legacy code conflated three solvers (numerical search, closed-form
 approximation, learned MLP) inside `tilting.py`. Here they live behind
 the `EtaSelector` protocol and can be swapped via configuration.
 
-Step 5 ships only `NumericalEtaSelector`. The closed-form approximation
-and the learned-MLP variants land in a later step alongside their tests
-and briefs.
+Selectors come in two flavours flagged by `is_dynamic`:
+  - **static**: `select(context)` returns a single η for the whole CI
+    inversion. `FixedEtaSelector` (constant η) and `NumericalEtaSelector`
+    (η minimising tilted CI width at a representative D) are static.
+  - **dynamic**: η varies per θ. `DynamicNumericalEtaSelector` is the
+    canonical example — it precomputes η*(|Δ|) on a coarse grid then
+    interpolates per θ at CI-inversion time.
+
+Static selectors compose with `TiltingScheme.tilted_confidence_interval`
+(one-shot inversion); dynamic selectors compose with
+`TiltingScheme.dynamic_tilted_confidence_interval` (scan + crossings).
+Both paths route through `TiltingScheme.confidence_interval`, the
+uniform interface the experiments call.
 """
 
 from __future__ import annotations
@@ -42,6 +52,24 @@ class _NamedStatistic:
 
 
 @dataclass(frozen=True)
+class FixedEtaSelector:
+    """Always return the same η. Identity selector for any tilting scheme.
+
+    `(power_law, FixedEtaSelector(0.0))` is numerically identical to the
+    `IdentityTilting` (η=0 recovers the input WALDO posterior); we keep
+    the class so other tiltings can declare a non-zero identity element.
+    """
+
+    eta: float = 0.0
+    name: str = "fixed"
+    is_dynamic: bool = False
+
+    def select(self, context: TiltingContext, scheme: TiltingScheme,
+               *, statistic: TestStatistic) -> float:
+        return float(self.eta)
+
+
+@dataclass(frozen=True)
 class NumericalEtaSelector:
     """Pick η minimizing the (analytic) CI width for the tilted posterior.
 
@@ -55,6 +83,7 @@ class NumericalEtaSelector:
     sigma: float = 1.0
     mu0: float = 0.0
     eta_min_buffer: float = 1e-3
+    is_dynamic: bool = False
 
     def select(self, context: TiltingContext, scheme: TiltingScheme,
                *, statistic: TestStatistic) -> float:
@@ -108,3 +137,86 @@ class NumericalEtaSelector:
             ctx = TiltingContext(w=w, abs_delta=float(ad), alpha=alpha)
             out[i] = self.select(ctx, scheme, statistic=statistic)
         return out
+
+
+@dataclass
+class DynamicNumericalEtaSelector:
+    """Per-θ varying η* via the coarse-grid + interpolation strategy.
+
+    Wraps `NumericalEtaSelector.select_grid`: the inner machinery is the
+    same width-minimising solver, but `is_dynamic = True` flags to the
+    tilting that it should route CI inversion through
+    `dynamic_tilted_confidence_interval` (scan + α-crossings) rather than
+    `tilted_confidence_interval` (one-shot bracket inversion).
+
+    `n_grid` and `coarse_n` control resolution of the per-θ scan and the
+    coarse η*(|Δ|) lookup, respectively. `search_mult` controls the half-
+    width (in σ) of the θ scan window centred on D.
+
+    `select_grid` is memoized by `(w, α, statistic.name, scheme_name, ad_max)`
+    so a per-cell experiment loop (which holds w, α, statistic constant
+    and only varies D) does not recompute η*(|Δ|) from scratch on every
+    sample — the dominant cost without this cache.
+    """
+
+    name: str = "dynamic_numerical"
+    sigma: float = 1.0
+    mu0: float = 0.0
+    eta_min_buffer: float = 1e-3
+    n_grid: int = 401
+    coarse_n: int = 25
+    search_mult: float = 8.0
+    is_dynamic: bool = True
+    # Mutable cache; we rely on dataclass(eq=False) at class level to keep
+    # the selector hashable when needed, and use `field(default_factory=...)`.
+    _cache: dict = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        if self._cache is None:
+            object.__setattr__(self, "_cache", {})
+
+    def _inner(self) -> NumericalEtaSelector:
+        return NumericalEtaSelector(sigma=self.sigma, mu0=self.mu0,
+                                    eta_min_buffer=self.eta_min_buffer)
+
+    def select(self, context: TiltingContext, scheme: TiltingScheme,
+               *, statistic: TestStatistic) -> float:
+        """Convenience: a single-context η* (delegates to the static inner)."""
+        return self._inner().select(context, scheme, statistic=statistic)
+
+    def select_grid(self, abs_delta_grid, scheme: TiltingScheme,
+                    *, statistic: TestStatistic, w: float, alpha: float
+                    ):
+        ad_max = float(np.asarray(abs_delta_grid).max())
+        coarse_n = len(abs_delta_grid)
+        scheme_name = getattr(scheme, "name", type(scheme).__name__)
+        # Cache key drops `ad_max`: η*(|Δ|) is monotone with η* → 1 (Wald
+        # limit) as |Δ| → ∞, so `np.interp` clamping at the cached
+        # boundary returns the correct asymptotic value for any |Δ|
+        # exceeding the cached range. This makes the per-cell loop
+        # (constant w, α, statistic; varying D) hit the cache once and
+        # then run at the cost of a vector interp per D.
+        key = (w, alpha, statistic.name, scheme_name, coarse_n)
+        cached = self._cache.get(key)
+        if cached is not None:
+            cached_grid, cached_eta = cached
+            # If a later call needs a wider ad_max than we cached, extend
+            # the lookup once and cache the wider version.
+            if ad_max > cached_grid[-1] * 1.05:
+                wider = max(ad_max, cached_grid[-1]) * 1.5
+                cached_grid = np.linspace(0.0, wider, coarse_n)
+                cached_eta = self._inner().select_grid(
+                    cached_grid, scheme, statistic=statistic,
+                    w=w, alpha=alpha,
+                )
+                self._cache[key] = (cached_grid, cached_eta)
+            return np.interp(abs_delta_grid, cached_grid, cached_eta)
+        # Fresh compute — slightly pad ad_max so subsequent calls with a
+        # marginally wider range still hit the cache.
+        wider = max(ad_max, 1e-3) * 1.5
+        coarse_grid_full = np.linspace(0.0, wider, coarse_n)
+        eta_full = self._inner().select_grid(
+            coarse_grid_full, scheme, statistic=statistic, w=w, alpha=alpha,
+        )
+        self._cache[key] = (coarse_grid_full, eta_full)
+        return np.interp(abs_delta_grid, coarse_grid_full, eta_full)

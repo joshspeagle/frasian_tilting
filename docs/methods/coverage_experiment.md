@@ -23,9 +23,16 @@ For a fixed `(sigma, mu0)` and grid points `(theta_i, w_j)`:
 
   sigma0_j = sqrt(w_j / (1 - w_j)) * sigma
   Generate D_{i,j,k} ~ N(theta_i, sigma) for k = 1..n_reps
-  CI_{i,j,k}      = statistic.confidence_interval(D_{i,j,k}, model, prior_j, alpha)
+  CI_{i,j,k}      = tilting.confidence_interval(alpha, [D_{i,j,k}], model, prior_j, statistic)
   coverage_{i,j}  = mean_k [ theta_i in CI_{i,j,k} ]
   coverage_se_{i,j} = sqrt( coverage(1 - coverage) / n_reps )    (Wald-binomial SE)
+
+The CI computation is dispatched through the **tilting**: `IdentityTilting`
+delegates to `statistic.confidence_interval(...)`; `PowerLawTilting`
+resolves its own selector (fixed-η static or dynamic-η per θ) before
+inverting the tilted p-value. This is the uniform interface that lets
+`(identity, wald)`, `(identity, waldo)`, and
+`(power_law[dynamic_numerical], waldo)` share one cell loop.
 
 ## Derivation
 
@@ -75,6 +82,9 @@ for this level of estimation given `n_reps >= 1000`.)
 
 ## Status notes
 
-The Tilting dimension currently records `eta = scheme.param_space.eta_identity`
-for every cell; this makes coverage independent of the tilting scheme. Step
-5's smoothness experiment sweeps `eta` and is where Tilting becomes load-bearing.
+The Tilting dimension is load-bearing: each cell's CI is computed via
+`tilting.confidence_interval(...)`, so `(identity, waldo)` produces the
+plain WALDO CI while `(power_law[dynamic_numerical], waldo)` produces
+the Dynamic-WALDO CI (η*(|Δ|) per θ). Cells gated incompatible by
+`statistic.accepts_tilting(tilting)` are recorded in the manifest with
+`status="incompatible"` and skip their `run_cell` entirely.

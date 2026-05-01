@@ -2,12 +2,15 @@
 
 For each cell (TiltingScheme x TestStatistic) and each (theta_true, w):
   1. Generate `n_reps` samples D ~ N(theta_true, sigma).
-  2. Compute CI for each D and collect the widths.
+  2. Compute CI for each D via
+     `tilting.confidence_interval(alpha, [D], model, prior, statistic)`
+     and collect the widths.
   3. Mean width = average; SE = sample standard error.
 
-Equivalent to plotting the dependence of CI width on the scaled
-prior-data conflict `Delta = (1 - w)(mu0 - D)/sigma`, which is what the
-Step-5 smoothness diagnostic operates on.
+The uniform CI interface routes through the tilting; for dynamic-η
+tiltings the CI is the convex hull of the per-θ regions (see
+`PowerLawTilting.confidence_interval`). This experiment is therefore
+"Dynamic-WALDO width" when run on `(power_law[dynamic], waldo)`.
 """
 
 from __future__ import annotations
@@ -83,8 +86,8 @@ class WidthExperiment:
                 for k in range(n_reps):
                     D = raw.D[i, k]
                     try:
-                        lo, hi = statistic.confidence_interval(
-                            alpha, np.asarray([D]), model, prior,
+                        lo, hi = tilting.confidence_interval(
+                            alpha, np.asarray([D]), model, prior, statistic,
                         )
                     except NotImplementedError:
                         supported = False
@@ -97,9 +100,10 @@ class WidthExperiment:
                     mean_width[i, j] = float(widths.mean())
                     width_se[i, j] = float(widths.std(ddof=1) / np.sqrt(n_reps))
 
+        cell_name = getattr(tilting, "cell_name", tilting.name)
         return RawResult(
             experiment=self.name,
-            tilting=tilting.name,
+            tilting=cell_name,
             statistic=statistic.name,
             arrays={
                 "theta_grid": theta_grid,
@@ -113,7 +117,8 @@ class WidthExperiment:
                 "n_reps": n_reps,
                 "sigma": self.sigma,
                 "mu0": self.mu0,
-                "eta": tilting.param_space.eta_identity,
+                "selector": getattr(getattr(tilting, "selector", None),
+                                    "name", None),
             },
         )
 

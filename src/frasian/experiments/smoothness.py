@@ -6,6 +6,10 @@ For each cell (TiltingScheme x TestStatistic) and each |Δ| on a fine grid:
 
 Outputs: arrays(abs_delta_grid, eta_star, ci_lower, ci_upper) per cell.
 
+For tiltings with no parameter to sweep (e.g. `IdentityTilting`), the
+diagnostic records a degenerate constant row — the bare-statistic CI at
+each |Δ| — for use as a smoothness reference baseline.
+
 Downstream `SmoothnessDiagnostic` computes Lipschitz, TV, discontinuity
 count, and spectral roughness — making the user's "power-law tilting
 produces sharp transitions" hypothesis falsifiable. Cells whose
@@ -65,12 +69,52 @@ class SmoothnessExperiment:
         ci_lo = np.full(n, np.nan)
         ci_hi = np.full(n, np.nan)
 
+        cell_name = getattr(tilting, "cell_name", tilting.name)
+        sigma0 = float(np.sqrt(self.w / max(1.0 - self.w, 1e-12)) * self.sigma)
+        prior = NormalDistribution(loc=self.mu0, scale=sigma0)
+        model = NormalNormalModel(sigma=self.sigma)
+
+        # IdentityTilting has nothing to sweep — record the bare-statistic
+        # CI at each |Δ| as the smoothness reference (constant η = 0).
+        if tilting.name == "identity":
+            for i, abs_delta in enumerate(delta_grid):
+                D = _D_from_abs_delta(float(abs_delta), self.w, self.sigma,
+                                        self.mu0)
+                try:
+                    lo, hi = tilting.confidence_interval(
+                        alpha, np.asarray([D]), model, prior, statistic,
+                    )
+                    eta_star[i] = 0.0
+                    ci_lo[i] = lo
+                    ci_hi[i] = hi
+                except (NotImplementedError, ValueError, RuntimeError):
+                    continue
+            return RawResult(
+                experiment=self.name,
+                tilting=cell_name,
+                statistic=statistic.name,
+                arrays={
+                    "abs_delta_grid": delta_grid,
+                    "eta_star": eta_star,
+                    "ci_lower": ci_lo,
+                    "ci_upper": ci_hi,
+                },
+                metadata={
+                    "w": self.w, "alpha": alpha,
+                    "sigma": self.sigma, "mu0": self.mu0,
+                    "supported": True,
+                    "selector": "identity",
+                    "note": "identity tilting: η fixed at 0; row is the "
+                            "bare-statistic CI baseline.",
+                },
+            )
+
         # Detect whether this cell supports the tilted-CI bridge. If not,
         # we record NaNs — the diagnostic preserves them.
         if not hasattr(tilting, "tilted_confidence_interval"):
             return RawResult(
                 experiment=self.name,
-                tilting=tilting.name,
+                tilting=cell_name,
                 statistic=statistic.name,
                 arrays={
                     "abs_delta_grid": delta_grid,
@@ -84,9 +128,6 @@ class SmoothnessExperiment:
             )
 
         selector = NumericalEtaSelector(sigma=self.sigma, mu0=self.mu0)
-        sigma0 = float(np.sqrt(self.w / max(1.0 - self.w, 1e-12)) * self.sigma)
-        prior = NormalDistribution(loc=self.mu0, scale=sigma0)
-        model = NormalNormalModel(sigma=self.sigma)
 
         for i, abs_delta in enumerate(delta_grid):
             ctx_i = TiltingContext(w=self.w, abs_delta=float(abs_delta),
@@ -108,7 +149,7 @@ class SmoothnessExperiment:
 
         return RawResult(
             experiment=self.name,
-            tilting=tilting.name,
+            tilting=cell_name,
             statistic=statistic.name,
             arrays={
                 "abs_delta_grid": delta_grid,
@@ -122,6 +163,8 @@ class SmoothnessExperiment:
                 "sigma": self.sigma,
                 "mu0": self.mu0,
                 "supported": True,
+                "selector": getattr(getattr(tilting, "selector", None),
+                                    "name", None),
             },
         )
 

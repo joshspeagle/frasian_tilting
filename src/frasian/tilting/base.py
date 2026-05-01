@@ -23,6 +23,7 @@ from .._errors import TiltingDomainError  # noqa: F401  (re-export contract)
 from ..models.base import Likelihood, Posterior, Prior
 
 if TYPE_CHECKING:
+    from ..models.base import Model
     from ..statistics.base import TestStatistic
 
 
@@ -74,6 +75,23 @@ class TiltingScheme(Protocol):
     def is_identity(self, eta: float) -> bool: ...
 
     def admissible_range(self, context: TiltingContext) -> tuple[float, float]: ...
+
+    def confidence_interval(self, alpha: float, data: NDArray[np.float64],
+                            model: "Model", prior: Prior,
+                            statistic: "TestStatistic"
+                            ) -> tuple[float, float]:
+        """Compute the (1-α) CI under this tilting and the given statistic.
+
+        The single uniform interface that experiments (coverage, width,
+        smoothness) call on every cell. Implementations dispatch on their
+        own selector: `IdentityTilting` delegates to the bare statistic;
+        non-identity schemes resolve their parameter via `self.selector`
+        and invert the tilted p-value.
+
+        Cells whose `(scheme, statistic)` combination is unsupported MUST
+        raise `NotImplementedError`.
+        """
+        ...
 
 
 @runtime_checkable

@@ -27,7 +27,7 @@ generic numerical fallback is a future extension and would obscure the math.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterable
 
 import numpy as np
@@ -36,10 +36,13 @@ from numpy.typing import ArrayLike, NDArray
 from .._errors import TiltingDomainError
 from .._registry import register_tilting
 from ..config import Config
-from ..models.base import Likelihood, Posterior, Prior
+from ..models.base import Likelihood, Model, Posterior, Prior
 from ..models.distributions import GaussianLikelihood, NormalDistribution
 from ..models.normal_normal import weight as _weight
+from ..statistics.base import TestStatistic
 from .base import ParamSpec, TiltingContext
+from .eta_selectors import (DynamicNumericalEtaSelector, FixedEtaSelector,
+                            NumericalEtaSelector)
 
 
 _ETA_MIN_BUFFER = Config.default().eta_min_buffer
@@ -75,7 +78,17 @@ def _denom(w: float, eta: float) -> float:
 @register_tilting(name="power_law", brief="docs/methods/power_law.md")
 @dataclass(frozen=True)
 class PowerLawTilting:
-    """The legacy eta-tilting scheme as a `TiltingScheme` implementation."""
+    """The legacy eta-tilting scheme as a `TiltingScheme` implementation.
+
+    Parameterised by an `EtaSelector` that decides the η used at CI
+    inversion time. Static selectors (`FixedEtaSelector`,
+    `NumericalEtaSelector`) route through `tilted_confidence_interval`;
+    dynamic selectors (`DynamicNumericalEtaSelector`) route through
+    `dynamic_tilted_confidence_interval` and produce per-θ varying η.
+    The cell display name picks up the selector's name when non-default
+    so the runner emits distinguishable cells like
+    `power_law[dynamic_numerical]`.
+    """
 
     name: str = "power_law"
     param_space: ParamSpec = ParamSpec(
@@ -83,6 +96,21 @@ class PowerLawTilting:
         eta_identity=0.0,
         description="eta=0 recovers WALDO; eta=1 recovers Wald.",
     )
+    selector: object = field(
+        default_factory=lambda: FixedEtaSelector(eta=0.0)
+    )
+
+    @property
+    def cell_name(self) -> str:
+        """Display name for the runner's cell key.
+
+        `power_law` for the default fixed-η-zero selector (matches the
+        identity tilting numerically); `power_law[<selector>]` otherwise.
+        """
+        sel_name = getattr(self.selector, "name", "")
+        if isinstance(self.selector, FixedEtaSelector) and self.selector.eta == 0.0:
+            return self.name
+        return f"{self.name}[{sel_name}]"
 
     # ----- TiltingScheme protocol -----
 
@@ -329,6 +357,62 @@ class PowerLawTilting:
 
         total = float(sum(hi - lo for lo, hi in regions))
         return regions, total, len(regions)
+
+    # ----- Uniform CI interface (called by experiments) -----
+
+    def confidence_interval(self, alpha: float, data: NDArray[np.float64],
+                            model: Model, prior: Prior,
+                            statistic: TestStatistic
+                            ) -> tuple[float, float]:
+        """Uniform CI: pick η via `self.selector`, then invert.
+
+        Static selector → one-shot `tilted_confidence_interval` at the
+        selected η. Dynamic selector → `dynamic_tilted_confidence_interval`
+        with η*(|Δ(θ)|); when the result is multi-region we return the
+        convex hull (min lo, max hi). Region-count metadata is not
+        propagated through this interface — callers that need it should
+        invoke `dynamic_tilted_confidence_interval` directly.
+        """
+        from ..models.normal_normal import NormalNormalModel
+
+        if not isinstance(model, NormalNormalModel):
+            raise NotImplementedError(
+                "PowerLawTilting.confidence_interval requires "
+                f"NormalNormalModel; got {type(model).__name__!r}."
+            )
+        if not isinstance(prior, NormalDistribution):
+            raise NotImplementedError(
+                "PowerLawTilting.confidence_interval requires a "
+                f"NormalDistribution prior; got {type(prior).__name__!r}."
+            )
+
+        D = float(np.atleast_1d(np.asarray(data, dtype=np.float64)).mean())
+        sigma = model.sigma
+        sigma0 = prior.scale
+        w = sigma0 ** 2 / (sigma ** 2 + sigma0 ** 2)
+        # |Δ| at the observed D, used as the single context for static selectors.
+        abs_delta = abs((1.0 - w) * (prior.loc - D) / sigma)
+        ctx = TiltingContext(w=w, abs_delta=abs_delta, alpha=alpha)
+
+        if getattr(self.selector, "is_dynamic", False):
+            regions, _, _ = self.dynamic_tilted_confidence_interval(
+                alpha, D, model, prior, statistic.name, self.selector,
+                n_grid=getattr(self.selector, "n_grid", 401),
+                coarse_n=getattr(self.selector, "coarse_n", 25),
+                search_mult=getattr(self.selector, "search_mult", 8.0),
+            )
+            if not regions:
+                raise RuntimeError(
+                    f"dynamic CI inversion produced no regions at D={D!r}"
+                )
+            lo = float(min(r[0] for r in regions))
+            hi = float(max(r[1] for r in regions))
+            return (lo, hi)
+
+        eta = float(self.selector.select(ctx, self, statistic=statistic))
+        return self.tilted_confidence_interval(
+            alpha, D, model, prior, eta, statistic.name,
+        )
 
     def tilted_confidence_interval(self, alpha: float, D: float,
                                     model: object,

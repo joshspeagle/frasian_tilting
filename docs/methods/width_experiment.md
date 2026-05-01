@@ -21,9 +21,16 @@ tables (`CLAUDE.md` "CI Widths" section) live in this experiment.
 For each `(theta_i, w_j)`:
 
   Generate D_{i,j,k} ~ N(theta_i, sigma) for k = 1..n_reps
-  width_{i,j,k}   = upper_{i,j,k} - lower_{i,j,k}    (one CI per D sample)
+  (lo, hi)        = tilting.confidence_interval(alpha, [D_{i,j,k}], model, prior_j, statistic)
+  width_{i,j,k}   = hi - lo
   mean_width_{i,j} = mean_k width_{i,j,k}
   width_se_{i,j}   = std_k(width_{i,j,k}) / sqrt(n_reps)
+
+For dynamic-η tiltings the CI is the convex hull of the (possibly
+multi-region) crossings; multi-region count is not propagated through
+this experiment (the original `dynamic_ci` experiment exposed it
+explicitly, but the Phase-4 refactor folded those measurements into
+`coverage` / `width` and dropped the region-count surface).
 
 ## Derivation
 
@@ -69,6 +76,9 @@ quantity used in the "efficiency" comparisons against Wald.
 
 ## Status notes
 
-Same Tilting-dimension caveat as `coverage_experiment.md`: every cell
-uses `eta = scheme.param_space.eta_identity`. Step 5 sweeps `eta` to
-study width-vs-eta and the smoothness of the optimum.
+Each cell's CI is computed via `tilting.confidence_interval(...)`: the
+tilting owns the η-selector. `(identity, waldo)` produces the plain
+WALDO width; `(power_law[dynamic_numerical], waldo)` produces the
+Dynamic-WALDO width (formerly the central column of `dynamic_ci`).
+Cells gated incompatible by `accepts_tilting` are recorded with
+`status="incompatible"` and skipped.

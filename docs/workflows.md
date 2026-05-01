@@ -147,7 +147,7 @@ The location depends on `<kind>`:
 |-------------|-----------------------------------------------|----------|
 | tilting     | `src/frasian/tilting/<name>.py`               | `tilting/ot_normal.py` (stub) or `tilting/power_law.py` (impl) |
 | statistic   | `src/frasian/statistics/<name>.py`            | `statistics/lrt.py` (stub) or `statistics/wald.py` (impl) |
-| experiment  | `src/frasian/experiments/<name>.py`           | `experiments/dynamic_ci.py` |
+| experiment  | `src/frasian/experiments/<name>.py`           | `experiments/coverage.py` |
 | diagnostic  | `src/frasian/diagnostics/<name>_table.py`     | `diagnostics/coverage_table.py` |
 | model       | `src/frasian/models/<name>.py`                | `models/bernoulli.py` |
 

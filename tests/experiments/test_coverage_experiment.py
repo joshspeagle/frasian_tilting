@@ -13,15 +13,32 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from frasian import Config, registry, run_experiment
+from frasian import Config, default_cells, registry, run_experiment
 from frasian.config import GridSpec
+from frasian.statistics.wald import WaldStatistic
+from frasian.tilting.identity import IdentityTilting
 
 
 def _small_config() -> Config:
+    """Used by the identity-only Wald sub-test (cheap CI path)."""
     return Config.fast().from_overrides(
         n_reps=80,
         theta_grid=GridSpec("theta", -2.0, 2.0, 5),
         w_grid=GridSpec("w", 0.2, 0.8, 4),
+    )
+
+
+def _dynamic_friendly_config() -> Config:
+    """For tests that exercise the (power_law[dynamic], waldo) cell.
+
+    Dynamic CI inversion runs an η* lookup + scan per D sample, which is
+    hundreds of times more expensive than the static path; we shrink the
+    grid + n_reps so the test stays within a few seconds.
+    """
+    return Config.fast().from_overrides(
+        n_reps=4,
+        theta_grid=GridSpec("theta", -1.0, 1.0, 2),
+        w_grid=GridSpec("w", 0.5, 0.5, 1),
     )
 
 
@@ -30,20 +47,28 @@ class TestCoverageExperimentEndToEnd:
     def test_runs_and_produces_manifest(self, tmp_path: Path,
                                           bootstrapped_registry):
         experiment = registry.experiments["coverage"]()
+        tiltings, statistics = default_cells(n_grid=81, coarse_n=9)
+        cfg = _dynamic_friendly_config()
         summary = run_experiment(
             experiment=experiment,
-            tiltings=registry.tiltings.implemented(),
-            statistics=registry.statistics.implemented(),
-            config=_small_config(),
-            out_dir=tmp_path,
+            tiltings=tiltings, statistics=statistics,
+            config=cfg, out_dir=tmp_path,
         )
         manifest = json.loads((tmp_path / "manifest.json").read_text())
         assert manifest["experiment"] == "coverage"
-        assert manifest["config_fingerprint"] == _small_config().fingerprint()
-        assert len(manifest["cells"]) == 2  # power_law x {wald, waldo}
+        assert manifest["config_fingerprint"] == cfg.fingerprint()
+        # 4 cells in the cross-product; one (wald x power_law[dyn]) gated
+        # out as incompatible. Three cells run.
+        ok = [c for c in manifest["cells"] if c["status"] == "ok"]
+        skipped = [c for c in manifest["cells"]
+                   if c["status"] == "incompatible"]
+        assert len(ok) == 3
+        assert len(skipped) == 1
+        assert skipped[0]["statistic"] == "wald"
+        assert skipped[0]["tilting"].startswith("power_law")
         assert "coverage_rate" in manifest["diagnostics"]
         # Cache paths are relative to the manifest directory.
-        for cell in manifest["cells"]:
+        for cell in ok:
             cache_path = tmp_path / cell["cache_path"]
             assert cache_path.exists(), cache_path
         # Figure file produced.
@@ -58,14 +83,15 @@ class TestCoverageExperimentEndToEnd:
         experiment = registry.experiments["coverage"]()
         run_experiment(
             experiment=experiment,
-            tiltings=registry.tiltings.implemented(),
-            statistics=[registry.statistics["wald"]],
+            tiltings=[IdentityTilting()],
+            statistics=[WaldStatistic()],
             config=_small_config(),
             out_dir=tmp_path,
         )
         # Load the Wald cell's arrays directly.
         manifest = json.loads((tmp_path / "manifest.json").read_text())
-        wald_cell = next(c for c in manifest["cells"] if c["statistic"] == "wald")
+        wald_cell = next(c for c in manifest["cells"]
+                          if c["statistic"] == "wald" and c["status"] == "ok")
         from frasian.simulation.storage import load_result
         result = load_result(tmp_path / wald_cell["cache_path"])
         cov = result.arrays["coverage"]
@@ -85,15 +111,17 @@ class TestCoverageExperimentEndToEnd:
         cells and manifests *modulo* the figures (matplotlib timestamps)."""
         a = tmp_path / "a"
         b = tmp_path / "b"
-        cfg = _small_config()
+        cfg = _dynamic_friendly_config()
         experiment = registry.experiments["coverage"]()
+        tiltings, statistics = default_cells(n_grid=81, coarse_n=9)
         run_experiment(experiment=experiment,
-                        tiltings=registry.tiltings.implemented(),
-                        statistics=registry.statistics.implemented(),
+                        tiltings=tiltings, statistics=statistics,
                         config=cfg, out_dir=a)
+        # Reconstruct fresh instances (frozen dataclasses are hashable but
+        # we want a clean state for the second run).
+        tiltings2, statistics2 = default_cells(n_grid=81, coarse_n=9)
         run_experiment(experiment=experiment,
-                        tiltings=registry.tiltings.implemented(),
-                        statistics=registry.statistics.implemented(),
+                        tiltings=tiltings2, statistics=statistics2,
                         config=cfg, out_dir=b)
         m_a = json.loads((a / "manifest.json").read_text())
         m_b = json.loads((b / "manifest.json").read_text())

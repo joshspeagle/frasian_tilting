@@ -2,13 +2,14 @@
 
 For each cell (TiltingScheme x TestStatistic) and each (theta_true, w):
   1. Generate `n_reps` samples D ~ N(theta_true, sigma).
-  2. Compute the (1 - alpha) CI from each D via the statistic's
-     `confidence_interval`.
+  2. Compute the (1 - alpha) CI from each D via
+     `tilting.confidence_interval(alpha, [D], model, prior, statistic)`.
   3. Coverage = fraction of CIs containing theta_true.
 
-The Tilting dimension records `eta = scheme.param_space.eta_identity` for
-Step 4; Step 5's smoothness experiment sweeps eta and consumes the cells'
-metadata to compute Lipschitz / spectral diagnostics.
+The single uniform CI interface routes through the tilting:
+`IdentityTilting` delegates to the bare statistic; `PowerLawTilting`
+resolves its own selector (fixed-η static or dynamic-η per θ) before
+inverting the tilted p-value.
 
 Conventions:
   - Canonical sigma = 1 (configurable via `Config.from_overrides`).
@@ -94,8 +95,8 @@ class CoverageExperiment:
                 for k in range(n_reps):
                     D = raw.D[i, k]
                     try:
-                        lo, hi = statistic.confidence_interval(
-                            alpha, np.asarray([D]), model, prior,
+                        lo, hi = tilting.confidence_interval(
+                            alpha, np.asarray([D]), model, prior, statistic,
                         )
                     except NotImplementedError:
                         # Cell that does not support CI inversion: record NaN.
@@ -112,9 +113,10 @@ class CoverageExperiment:
                         np.sqrt(max(p * (1.0 - p), 1e-12) / n_reps)
                     )
 
+        cell_name = getattr(tilting, "cell_name", tilting.name)
         return RawResult(
             experiment=self.name,
-            tilting=tilting.name,
+            tilting=cell_name,
             statistic=statistic.name,
             arrays={
                 "theta_grid": theta_grid,
@@ -128,7 +130,8 @@ class CoverageExperiment:
                 "n_reps": n_reps,
                 "sigma": self.sigma,
                 "mu0": self.mu0,
-                "eta": tilting.param_space.eta_identity,
+                "selector": getattr(getattr(tilting, "selector", None),
+                                    "name", None),
             },
         )
 

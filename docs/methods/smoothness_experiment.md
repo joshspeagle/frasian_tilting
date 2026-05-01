@@ -70,9 +70,11 @@ For (`power_law`, `waldo`):
 - A *visible kink* near `|Δ| ≈ 0.3-0.7` where η* leaves the boundary.
 - Lipschitz spike at the kink; TV(η*) ~ 1; discontinuity count > 0.
 
-For (`power_law`, `wald`): η* is irrelevant (Wald ignores prior); η*
-returns to its identity element 1.0 trivially. Width is constant.
-The diagnostic's purpose for the Wald row is as a *zero baseline*.
+For (`identity`, `wald`): η* is constant 0 by construction; width is
+constant `2 z_{1-α/2} σ`. The diagnostic's purpose for this row is as
+the *zero baseline*. (Wald gates against non-identity tiltings via
+`accepts_tilting`, so `(power_law, wald)` is incompatible and absent
+from the matrix.)
 
 ## Failure modes
 
@@ -88,7 +90,7 @@ The diagnostic's purpose for the Wald row is as a *zero baseline*.
 - `lipschitz_eta >= 0` (or NaN).
 - `total_variation_eta >= 0` (or NaN).
 - `discontinuity_count_eta >= 0` integer.
-- For (power_law, wald): `eta_star` constant in `|Δ|` → `lipschitz_eta = 0`.
+- For (identity, wald): `eta_star` constant 0 → `lipschitz_eta = 0`.
 
 ## Literature
 
@@ -114,5 +116,14 @@ The diagnostic's purpose for the Wald row is as a *zero baseline*.
 The (TiltingScheme, TestStatistic) cell-evaluator is currently a
 specialization on `statistic.name` inside `PowerLawTilting`. Step 6
 generalizes via multiple dispatch when more cell shapes exist (LRT,
-signed-root). The smoothness experiment is *the* gating diagnostic
-for any new tilting scheme.
+signed-root).
+
+This experiment uses `default_smoothness_tiltings()` (the **bare**
+families, not the selector-baked instances coverage/width use) — η is
+swept by the experiment's own internal `NumericalEtaSelector`, so the
+cell's selector would be ignored anyway. Hence the matrix is just
+`[identity, power_law]` × `[wald, waldo]`, with `(power_law, wald)`
+gated incompatible.
+
+The smoothness experiment is *the* gating diagnostic for any new
+tilting scheme.

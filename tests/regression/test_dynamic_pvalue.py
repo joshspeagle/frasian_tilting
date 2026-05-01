@@ -13,7 +13,9 @@ from scipy import stats
 
 from frasian.models.distributions import NormalDistribution
 from frasian.models.normal_normal import NormalNormalModel
-from frasian.tilting.eta_selectors import NumericalEtaSelector
+from frasian.statistics.waldo import WaldoStatistic
+from frasian.tilting.eta_selectors import (DynamicNumericalEtaSelector,
+                                              NumericalEtaSelector)
 from frasian.tilting.power_law import PowerLawTilting
 
 
@@ -124,3 +126,42 @@ class TestDynamicTiltedConfidenceInterval:
             assert n_reg >= 1, f"empty CI at D={D}"
             for lo, hi in regions:
                 assert lo < hi
+
+
+@pytest.mark.L0
+class TestDynamicNumericalEtaSelectorCache:
+    """The selector caches `coarse_eta` per `(w, α, statistic, scheme,
+    coarse_n)` so per-cell experiment loops (which hold all of these
+    constant and only vary D) don't recompute η*(|Δ|) on every sample.
+    Without this cache, coverage/width on the dynamic cell would scale
+    as `n_reps * n_theta * (coarse_n * brent_iters)` — minutes per cell.
+    """
+
+    def test_cache_hit_count_after_many_D_values(self):
+        sel = DynamicNumericalEtaSelector(n_grid=81, coarse_n=11)
+        scheme = PowerLawTilting(selector=sel)
+        model = NormalNormalModel(sigma=1.0)
+        prior = NormalDistribution(loc=0.0, scale=1.0)
+        stat = WaldoStatistic()
+        # Call with 30 different D values; should produce exactly one
+        # cache entry (w, alpha, stat, scheme, coarse_n all constant).
+        for D in np.linspace(-3, 3, 30):
+            scheme.confidence_interval(
+                0.05, np.asarray([float(D)]), model, prior, stat,
+            )
+        assert len(sel._cache) == 1, (
+            f"selector cache should have 1 entry, got {len(sel._cache)}"
+        )
+
+    def test_cache_distinguishes_w(self):
+        """Different priors (different w) need different cache entries."""
+        sel = DynamicNumericalEtaSelector(n_grid=81, coarse_n=11)
+        scheme = PowerLawTilting(selector=sel)
+        model = NormalNormalModel(sigma=1.0)
+        stat = WaldoStatistic()
+        for sigma0 in (0.5, 1.0, 2.0):
+            prior = NormalDistribution(loc=0.0, scale=sigma0)
+            scheme.confidence_interval(
+                0.05, np.asarray([1.0]), model, prior, stat,
+            )
+        assert len(sel._cache) == 3

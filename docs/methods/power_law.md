@@ -8,6 +8,14 @@ The legacy η-tilting scheme as a `TiltingScheme` plugin. Tilts the prior
 by a power: `q(theta; eta) ∝ L(theta) * pi(theta)^(1 - eta)`. Identity
 element is `eta = 0` (recovers WALDO); `eta = 1` recovers Wald.
 
+The class takes an `EtaSelector` constructor argument: a static selector
+(`FixedEtaSelector`, `NumericalEtaSelector`) chooses one η for the whole
+inversion; a dynamic selector (`DynamicNumericalEtaSelector`) varies η
+per θ via the precomputed-coarse-grid + interpolate strategy. The cell
+display name picks up the selector's name when it is non-default
+(e.g. `power_law[dynamic_numerical]`), so the `(power_law, waldo)`
+matrix entry the runner produces is **Dynamic-WALDO** by default.
+
 ## Motivation
 
 Power-law tilting is the *baseline* the framework is designed to
@@ -93,7 +101,15 @@ scheduled with the Step-7 docs/derivations sweep.
 
 ## Status notes
 
-η-selectors (numerical / closed-form / learned) live separately and are
-scheduled for Step 4. The `EtaSelector` protocol is already defined in
-`src/frasian/tilting/base.py`. Optimal-transport, Fisher–Rao-geodesic,
-and mixture tilting alternatives are scheduled stubs in Step 6.
+η-selectors live in `src/frasian/tilting/eta_selectors.py`:
+
+- `FixedEtaSelector(eta=0.0)` — identity selector (default).
+- `NumericalEtaSelector` — single η minimising tilted CI width at the
+  data's |Δ|. Static.
+- `DynamicNumericalEtaSelector` — per-θ varying η*(|Δ|) via
+  coarse-grid + interpolation. Dynamic.
+
+`(power_law[FixedEtaSelector(0.0)], waldo)` is numerically equal to
+`(identity, waldo)`; the runner ships only the latter to keep the
+matrix tight. Optimal-transport, Fisher–Rao-geodesic, and mixture
+tilting alternatives are scheduled stubs in Step 6.

@@ -30,9 +30,9 @@ and illustration.
 | Kind        | Implemented                              | Scheduled stubs |
 |-------------|------------------------------------------|-----------------|
 | Models      | normal_normal, bernoulli                 | —               |
-| Tiltings    | power_law                                | ot_normal, geodesic_normal, mixture, exp_family |
+| Tiltings    | identity, power_law                      | ot_normal, geodesic_normal, mixture, exp_family |
 | Statistics  | wald, waldo                              | lrt, signed_root, bartlett |
-| Experiments | coverage, width, smoothness, dynamic_ci  | —               |
+| Experiments | coverage, width, smoothness              | —               |
 
 Stubs are first-class: each is registered, briefed (9 required
 sections), and has skipped property tests. Flipping skip → pass is the
@@ -69,7 +69,7 @@ cell *must* show Lipschitz>1 and at least one discontinuity outlier.
 Phase-3 follow-ups bundled in this PR:
 
 - **(3)** CI workflows triggered on push to `claude/**` branches; locally verified.
-- **(4)** `DynamicCIExperiment` + `PowerLawTilting.dynamic_tilted_*` — port of the legacy dynamic-η CI logic, now measurable on the standard diagnostic surface.
+- **(4)** `PowerLawTilting.dynamic_tilted_*` — port of the legacy dynamic-η CI engine. The Phase-8 refactor folded the formerly-separate `DynamicCIExperiment` into the `coverage` / `width` cells (via `power_law[dynamic_numerical]`).
 - **(5)** `BernoulliModel` + `BetaDistribution` + `models/_dispatch.py` proving the Model protocol generalises beyond Normal-Normal; pairings with Normal-only methods raise uniform `NotImplementedError`s.
 
 ## Verification

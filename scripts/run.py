@@ -11,7 +11,8 @@ import argparse
 import sys
 from pathlib import Path
 
-from frasian import EmptyRegistryError, list_methods, registry, run_experiment
+from frasian import (EmptyRegistryError, default_cells, list_methods, registry,
+                       run_experiment)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -59,18 +60,27 @@ def main(argv: list[str] | None = None) -> int:
     experiment_cls = registry.experiments[name]
     from frasian import Config
     cfg = Config.fast() if args.fast else Config.default()
+    # Smaller scan grid + coarse-η budget for the dynamic selector under --fast
+    # so the cross-product of n_reps × dynamic-CI per D stays tractable.
+    n_grid, coarse_n = (201, 11) if args.fast else (401, 25)
+    tiltings, statistics = default_cells(
+        experiment=name, n_grid=n_grid, coarse_n=coarse_n,
+    )
     try:
         summary = run_experiment(
             experiment=experiment_cls(),
-            tiltings=registry.tiltings.implemented(),
-            statistics=registry.statistics.implemented(),
+            tiltings=tiltings,
+            statistics=statistics,
             config=cfg,
             out_dir=Path(f"results/{name}"),
         )
     except EmptyRegistryError as exc:
         print(f"refusing to run: {exc}", file=sys.stderr)
         return 2
-    print(f"ran {len(summary.cells)} cells; out_dir={summary.out_dir}")
+    n_run = sum(1 for c in summary.cells if c.status == "ok")
+    n_skip = sum(1 for c in summary.cells if c.status == "incompatible")
+    print(f"ran {n_run} cells (skipped {n_skip} incompatible); "
+          f"out_dir={summary.out_dir}")
     return 0
 
 
