@@ -61,7 +61,41 @@ class TestWasserstein2GaussianClosedForm:
         b = _gaussian_cd(mu_b, sigma_b)
         actual = wasserstein_2(a, b)
         expected = wasserstein_2_gaussian(mu_a, sigma_a, mu_b, sigma_b)
-        assert actual == pytest.approx(expected, abs=1e-3)
+        # Gauss–Hermite W₂ matches closed-form Olkin–Pukelsheim within
+        # ~1e-5 on a 4001-point Gaussian grid; the residual is the CD's
+        # own grid-quantile interpolation error, not the quadrature.
+        assert actual == pytest.approx(expected, abs=5e-5)
+
+    @pytest.mark.parametrize("sigma_b", [0.5, 2.0, 5.0, 10.0])
+    def test_w2_scale_mismatch_remains_tight(self, sigma_b):
+        """Extreme σ-mismatch was the case that motivated switching from
+        u-grid trapezoidal to z-axis Gauss–Hermite. The change of
+        variables `z = Φ⁻¹(u)` weights tail contributions by φ(z), so
+        the integrand stays well-behaved no matter how heavy one CD's
+        tails are relative to the other. This pins that property."""
+        a = _gaussian_cd(0.0, 1.0)
+        b = _gaussian_cd(0.0, sigma_b, n=8001)  # finer grid for σ=10 tail
+        actual = wasserstein_2(a, b)
+        expected = wasserstein_2_gaussian(0.0, 1.0, 0.0, sigma_b)
+        assert actual == pytest.approx(expected, abs=1e-4), (
+            f"W₂ at σ-mismatch (1, {sigma_b}): expected {expected}, got {actual}"
+        )
+
+    def test_w2_n_quad_doubling_converged(self):
+        """Doubling n_quad changes the result by less than the CD's own
+        grid-quantile interpolation error (~1e-5 on a 4001-point Gaussian
+        grid). This pins that 32 nodes is enough — the Gauss–Hermite
+        integration error is negligible compared to the CD primitive's
+        resolution. (Larger n_quad just samples the same θ-grid at
+        slightly different points.)"""
+        a = _gaussian_cd(0.0, 1.0)
+        b = _gaussian_cd(0.0, 2.0)
+        v_32 = wasserstein_2(a, b, n_quad=32)
+        v_64 = wasserstein_2(a, b, n_quad=64)
+        v_128 = wasserstein_2(a, b, n_quad=128)
+        # All three within ~1e-5 of each other.
+        assert abs(v_32 - v_64) < 5e-5
+        assert abs(v_64 - v_128) < 5e-5
 
 
 @pytest.mark.L0

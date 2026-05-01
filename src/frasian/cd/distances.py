@@ -57,37 +57,51 @@ def wasserstein_1(a: GridConfidenceDistribution,
 
 def wasserstein_2(a: GridConfidenceDistribution,
                   b: GridConfidenceDistribution,
-                  *, n_quantile: int = 4001,
-                  u_eps: float = 1e-5) -> float:
+                  *, n_quad: int = 64) -> float:
     """W₂(F_a, F_b) = sqrt(∫₀¹ (F_a^{-1}(u) − F_b^{-1}(u))² du).
 
-    Quantile-integral form, valid for any pair of valid probability CDFs
-    (i.e. monotone non-decreasing). The framework's pdf-primary CDFs
-    always satisfy this — distance metrics act on the *real* probability
-    distributions even when the underlying p-value is multimodal.
+    Computed via the change of variables `z = Φ⁻¹(u)`:
+        W₂² = ∫_{-∞}^{∞} (Q_a(Φ(z)) − Q_b(Φ(z)))² φ(z) dz
+    and integrated by Gauss–Hermite quadrature with `n_quad` nodes.
+
+    Why the change of variables: on the raw u-grid, the integrand
+    `(Q_a(u) − Q_b(u))²` blows up at u → 0, 1 whenever the two CDs
+    have different tail behaviour (e.g. σ-mismatched Gaussians), and
+    trapezoidal integration is sensitive to that. Mapping to the
+    z-axis weights tail contributions by φ(z) — the natural weight
+    inherited from the standard normal — and Gauss–Hermite nodes are
+    placed precisely where the integrand is largest. For Gaussian
+    pairs this evaluates the Olkin–Pukelsheim closed form
+    `W₂² = (μ_a − μ_b)² + (σ_a − σ_b)²` to machine precision with
+    n_quad ≈ 32; n_quad = 64 leaves headroom for non-Gaussian CDs
+    (bimodal Dyn-WALDO etc.).
+
+    Both CDs must have monotone non-decreasing cdf — guaranteed by
+    the framework's pdf-primary design. No rearrangement, no
+    boundary clipping, no rescaling: the integral is exact in the
+    quadrature limit.
 
     Parameters
     ----------
-    n_quantile : int
-        Number of u-grid points for the trapezoidal integral.
-    u_eps : float
-        Small clip on the u-grid endpoints. The integrand
-        `(Q_a(u) − Q_b(u))²` may diverge as u → 0, 1 when one CD's tails
-        are heavier than the other (e.g. comparing `N(0, 1)` to
-        `N(0, 2)`); trapezoidal integration is sensitive to that. The
-        default `u_eps = 1e-5` matches the closed-form Olkin–Pukelsheim
-        W₂ to within 1e-3 on a 4001-point Gaussian grid, well below the
-        framework's tolerance for distance comparisons.
+    n_quad : int
+        Number of Gauss–Hermite nodes. Default 64 is comfortably
+        more than needed for Gaussian agreement at 1e-12; trim to 32
+        if profiling shows this is the bottleneck.
     """
-    u = np.linspace(u_eps, 1.0 - u_eps, n_quantile)
+    from numpy.polynomial.hermite_e import hermegauss
+    from scipy import stats as _stats
+    # `hermegauss(n)` returns nodes z_i and weights w_i such that
+    # `∫ f(z) e^{-z²/2} dz ≈ Σ w_i f(z_i)`. Dividing by √(2π) converts
+    # to expectation under the standard normal density φ(z).
+    z, w = hermegauss(n_quad)
+    # Probabilist's normalisation: divide weights by √(2π).
+    w = w / np.sqrt(2.0 * np.pi)
+    u = _stats.norm.cdf(z)
     qa = a.quantile(u)
     qb = b.quantile(u)
     sq_diff = (qa - qb) ** 2
-    integral = float(np.trapezoid(sq_diff, u))
-    # We integrate over (u_eps, 1−u_eps) of length 1−2·u_eps; rescale to
-    # the [0, 1] integral so the result is on the same scale as the
-    # closed-form value.
-    return float(np.sqrt(integral / (1.0 - 2.0 * u_eps)))
+    integral = float(np.sum(w * sq_diff))
+    return float(np.sqrt(max(integral, 0.0)))
 
 
 def total_variation(a: GridConfidenceDistribution,
