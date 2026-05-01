@@ -22,9 +22,11 @@ from frasian.models.distributions import NormalDistribution
 from frasian.models.normal_normal import NormalNormalModel
 from frasian.statistics.wald import WaldStatistic
 from frasian.statistics.waldo import WaldoStatistic
-from frasian.tilting.eta_selectors import (DynamicNumericalEtaSelector,
-                                              FixedEtaSelector,
-                                              _NamedStatistic)
+from frasian.tilting.eta_selectors import (
+    DynamicNumericalEtaSelector,
+    FixedEtaSelector,
+    _NamedStatistic,
+)
 from frasian.tilting.identity import IdentityTilting
 from frasian.tilting.power_law import PowerLawTilting
 

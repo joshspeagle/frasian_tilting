@@ -20,10 +20,14 @@ import numpy as np
 import pytest
 from scipy import optimize, stats
 
-from frasian.cd.distances import (total_variation, wasserstein_1,
-                                     wasserstein_1_gaussian_shift,
-                                     wasserstein_1_gaussian_zero_mean_scale,
-                                     wasserstein_2, wasserstein_2_gaussian)
+from frasian.cd.distances import (
+    total_variation,
+    wasserstein_1,
+    wasserstein_1_gaussian_shift,
+    wasserstein_1_gaussian_zero_mean_scale,
+    wasserstein_2,
+    wasserstein_2_gaussian,
+)
 from frasian.cd.grid import GridConfidenceDistribution
 
 

@@ -21,14 +21,16 @@ import numpy as np
 import pytest
 from scipy import stats
 
-from frasian.cd.from_closed_form import (tilted_waldo_cd, wald_cd, waldo_cd)
+from frasian.cd.from_closed_form import tilted_waldo_cd, wald_cd, waldo_cd
 from frasian.cd.from_pvalue import build_cd_from_pvalue
 from frasian.models.distributions import NormalDistribution
 from frasian.models.normal_normal import NormalNormalModel
 from frasian.statistics.wald import WaldStatistic
 from frasian.statistics.waldo import WaldoStatistic
-from frasian.tilting.eta_selectors import (DynamicNumericalEtaSelector,
-                                              FixedEtaSelector)
+from frasian.tilting.eta_selectors import (
+    DynamicNumericalEtaSelector,
+    FixedEtaSelector,
+)
 from frasian.tilting.identity import IdentityTilting
 from frasian.tilting.power_law import PowerLawTilting
 

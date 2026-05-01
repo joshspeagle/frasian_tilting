@@ -16,10 +16,14 @@ not re-exported here.
 """
 
 from .base import ConfidenceDistribution
-from .distances import (total_variation, wasserstein_1,
-                          wasserstein_1_gaussian_shift,
-                          wasserstein_1_gaussian_zero_mean_scale,
-                          wasserstein_2, wasserstein_2_gaussian)
+from .distances import (
+    total_variation,
+    wasserstein_1,
+    wasserstein_1_gaussian_shift,
+    wasserstein_1_gaussian_zero_mean_scale,
+    wasserstein_2,
+    wasserstein_2_gaussian,
+)
 from .from_pvalue import build_cd_from_pvalue
 from .grid import CDValidityIssue, GridConfidenceDistribution
 

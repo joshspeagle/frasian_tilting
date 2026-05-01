@@ -21,16 +21,20 @@ tables (`CLAUDE.md` "CI Widths" section) live in this experiment.
 For each `(theta_i, w_j)`:
 
   Generate D_{i,j,k} ~ N(theta_i, sigma) for k = 1..n_reps
-  (lo, hi)        = tilting.confidence_interval(alpha, [D_{i,j,k}], model, prior_j, statistic)
-  width_{i,j,k}   = hi - lo
-  mean_width_{i,j} = mean_k width_{i,j,k}
-  width_se_{i,j}   = std_k(width_{i,j,k}) / sqrt(n_reps)
+  regions_{i,j,k}   = tilting.confidence_regions(alpha, [D_{i,j,k}], model, prior_j, statistic)
+  width_{i,j,k}     = sum(hi - lo for (lo, hi) in regions_{i,j,k})    (union width)
+  n_regions_{i,j,k} = len(regions_{i,j,k})
+  mean_width_{i,j}     = mean_k width_{i,j,k}
+  width_se_{i,j}       = std_k(width_{i,j,k}) / sqrt(n_reps)
+  mean_n_regions_{i,j} = mean_k n_regions_{i,j,k}
 
-For dynamic-η tiltings the CI is the convex hull of the (possibly
-multi-region) crossings; multi-region count is not propagated through
-this experiment (the original `dynamic_ci` experiment exposed it
-explicitly, but the Phase-4 refactor folded those measurements into
-`coverage` / `width` and dropped the region-count surface).
+**Union semantics**: width is the sum of region widths, not the
+convex-hull `(max hi − min lo)`. For single-region cells (Wald, plain
+WALDO, all static-η `power_law`) the two coincide. For multi-region
+cells (Dyn-WALDO at low |Δ|, where the dynamic p-value is multimodal
+and dips below α between the peaks) union ≤ hull strictly. The cell
+also records `mean_n_regions` (≥ 1; > 1 indicates the multimodal-p
+regime).
 
 ## Derivation
 

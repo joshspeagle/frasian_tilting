@@ -165,10 +165,13 @@ def tilted_waldo_cd(D: float, model: NormalNormalModel,
     Z = float(np.trapezoid(c_unnorm, theta_grid))
     pdf_values = c_unnorm / max(Z, 1e-300)
 
+    # Signed-inversion C(θ) from two-sided p-value:
+    #   C(θ) = p(θ)/2     on lower tail (θ ≤ mode);
+    #   C(θ) = 1 − p(θ)/2 on upper tail (θ ≥ mode).
     mode_idx = int(np.argmax(pvals))
     signed = np.empty_like(pvals)
-    signed[:mode_idx] = (1.0 - pvals[:mode_idx]) / 2.0
-    signed[mode_idx:] = (1.0 + pvals[mode_idx:]) / 2.0
+    signed[:mode_idx] = pvals[:mode_idx] / 2.0
+    signed[mode_idx:] = 1.0 - pvals[mode_idx:] / 2.0
 
     return GridConfidenceDistribution(
         name=f"tilted_waldo(η={eta:+.3f})_cd@D={float(D):+.3f}",

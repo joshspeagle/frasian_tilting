@@ -43,7 +43,7 @@ The two selector flavours have **different coverage properties**:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 from scipy import optimize
@@ -206,10 +206,15 @@ class DynamicNumericalEtaSelector:
     coarse η*(|Δ|) lookup, respectively. `search_mult` controls the half-
     width (in σ) of the θ scan window centred on D.
 
-    `select_grid` is memoized by `(w, α, statistic.name, scheme_name, ad_max)`
-    so a per-cell experiment loop (which holds w, α, statistic constant
-    and only varies D) does not recompute η*(|Δ|) from scratch on every
-    sample — the dominant cost without this cache.
+    `select_grid` is memoized by
+    `(w, α, statistic.name, scheme_name, coarse_n, ad_max_bin)`, where
+    `ad_max_bin = ceil(max(abs_delta_grid) / cache_bin_width) *
+    cache_bin_width` — the smallest 0.5-wide cache bin that covers the
+    requested range. This makes the cache **order-independent**: every
+    call with the same `ad_max_bin` returns the same lookup (the same
+    `np.linspace(0, ad_max_bin, coarse_n)` evaluated by the inner
+    width-minimising solver), regardless of what other queries have hit
+    the selector first.
     """
 
     name: str = "dynamic_numerical"
@@ -219,14 +224,11 @@ class DynamicNumericalEtaSelector:
     n_grid: int = 401
     coarse_n: int = 25
     search_mult: float = 8.0
+    cache_bin_width: float = 0.5
     is_dynamic: bool = True
-    # Mutable cache; we rely on dataclass(eq=False) at class level to keep
-    # the selector hashable when needed, and use `field(default_factory=...)`.
-    _cache: dict = None  # type: ignore[assignment]
-
-    def __post_init__(self) -> None:
-        if self._cache is None:
-            object.__setattr__(self, "_cache", {})
+    # Mutable cache; `compare=False, repr=False` keeps the dataclass's
+    # auto-generated `__eq__` / `__repr__` independent of the cache state.
+    _cache: dict = field(default_factory=dict, compare=False, repr=False)
 
     def _inner(self) -> NumericalEtaSelector:
         return NumericalEtaSelector(sigma=self.sigma, mu0=self.mu0,
@@ -240,36 +242,27 @@ class DynamicNumericalEtaSelector:
     def select_grid(self, abs_delta_grid, scheme: TiltingScheme,
                     *, statistic: TestStatistic, w: float, alpha: float
                     ):
-        ad_max = float(np.asarray(abs_delta_grid).max())
         coarse_n = len(abs_delta_grid)
         scheme_name = getattr(scheme, "name", type(scheme).__name__)
-        # Cache key drops `ad_max`: η*(|Δ|) is monotone with η* → 1 (Wald
-        # limit) as |Δ| → ∞, so `np.interp` clamping at the cached
-        # boundary returns the correct asymptotic value for any |Δ|
-        # exceeding the cached range. This makes the per-cell loop
-        # (constant w, α, statistic; varying D) hit the cache once and
-        # then run at the cost of a vector interp per D.
-        key = (w, alpha, statistic.name, scheme_name, coarse_n)
+        ad_max = float(np.asarray(abs_delta_grid).max())
+        # Bin `ad_max` to the next multiple of `cache_bin_width`. This
+        # makes the cached coarse grid `linspace(0, ad_max_bin, coarse_n)`
+        # deterministic given the bin — different `ad_max` values within
+        # the same bin produce identical grid points and η values.
+        # Multiple bins coexist in the cache.
+        ad_max_bin = float(np.ceil(max(ad_max, self.cache_bin_width)
+                                     / self.cache_bin_width)
+                           * self.cache_bin_width)
+        key = (w, alpha, statistic.name, scheme_name, coarse_n, ad_max_bin)
         cached = self._cache.get(key)
-        if cached is not None:
+        if cached is None:
+            coarse_grid_full = np.linspace(0.0, ad_max_bin, coarse_n)
+            eta_full = self._inner().select_grid(
+                coarse_grid_full, scheme, statistic=statistic,
+                w=w, alpha=alpha,
+            )
+            self._cache[key] = (coarse_grid_full, eta_full)
+            cached_grid, cached_eta = coarse_grid_full, eta_full
+        else:
             cached_grid, cached_eta = cached
-            # If a later call needs a wider ad_max than we cached, extend
-            # the lookup once and cache the wider version.
-            if ad_max > cached_grid[-1] * 1.05:
-                wider = max(ad_max, cached_grid[-1]) * 1.5
-                cached_grid = np.linspace(0.0, wider, coarse_n)
-                cached_eta = self._inner().select_grid(
-                    cached_grid, scheme, statistic=statistic,
-                    w=w, alpha=alpha,
-                )
-                self._cache[key] = (cached_grid, cached_eta)
-            return np.interp(abs_delta_grid, cached_grid, cached_eta)
-        # Fresh compute — slightly pad ad_max so subsequent calls with a
-        # marginally wider range still hit the cache.
-        wider = max(ad_max, 1e-3) * 1.5
-        coarse_grid_full = np.linspace(0.0, wider, coarse_n)
-        eta_full = self._inner().select_grid(
-            coarse_grid_full, scheme, statistic=statistic, w=w, alpha=alpha,
-        )
-        self._cache[key] = (coarse_grid_full, eta_full)
-        return np.interp(abs_delta_grid, coarse_grid_full, eta_full)
+        return np.interp(abs_delta_grid, cached_grid, cached_eta)

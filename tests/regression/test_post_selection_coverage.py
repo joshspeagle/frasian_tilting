@@ -27,8 +27,10 @@ import pytest
 from frasian.models.distributions import NormalDistribution
 from frasian.models.normal_normal import NormalNormalModel
 from frasian.statistics.waldo import WaldoStatistic
-from frasian.tilting.eta_selectors import (DynamicNumericalEtaSelector,
-                                              NumericalEtaSelector)
+from frasian.tilting.eta_selectors import (
+    DynamicNumericalEtaSelector,
+    NumericalEtaSelector,
+)
 from frasian.tilting.identity import IdentityTilting
 from frasian.tilting.power_law import PowerLawTilting
 

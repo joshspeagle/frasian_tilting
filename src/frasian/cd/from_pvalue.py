@@ -6,18 +6,22 @@ distribution by:
 
   1. Evaluating `p(θ) = tilting.pvalue(θ_grid, [D], model, prior, statistic)`
      on a fine θ-grid.
-  2. Computing the unnormalised density `c̃(θ) = ½ |dp/dθ|` via central
-     differences. `½` is the Schweder-Hjort factor that makes c̃
-     integrate to ≈ 1 for unimodal p (p ranges 0 → 1 → 0, so
-     `∫|dp/dθ| dθ = 2`).
+  2. Computing the unnormalised density `c̃(θ) = ½ |dp/dθ|` via the
+     averaged-absolute-one-sided-differences scheme (kink-robust at
+     θ = D for Wald and θ = μ_n for WALDO; central differences cancel
+     across those kinks and produce a false zero at the peak of |dp/dθ|).
+     `½` is the Schweder-Hjort factor that makes c̃ integrate to ≈ 1
+     for unimodal p (p ranges 0 → 1 → 0, so `∫|dp/dθ| dθ = 2`).
   3. Normalising: `Z = ∫ c̃(θ) dθ`, `pdf = c̃ / Z`. For unimodal p,
      Z ≈ 1 exactly. For multimodal p (Dyn-WALDO under conflict, where
      |dp/dθ| has a higher total variation than 2), Z > 1 and the pdf
      is renormalised to a proper probability density. **The renormalised
      pdf is what the framework treats as the CD density** — the
      distance metrics operate on the resulting probability distribution.
-  4. Constructing the inversion-based `signed_confidence`:
-     `C(θ) = (1−p(θ))/2` for θ < mode_p, `(1+p(θ))/2` for θ ≥ mode_p,
+  4. Constructing the inversion-based `signed_confidence` from the
+     two-sided p-value `p(θ) = 2·min(C(θ), 1−C(θ))`:
+        C(θ) = p(θ)/2     on the lower tail (θ ≤ mode_p; C ∈ [0, ½])
+        C(θ) = 1 − p(θ)/2 on the upper tail (θ ≥ mode_p; C ∈ [½, 1])
      where `mode_p` is the θ at which p attains its global maximum.
      For unimodal p, this is exactly the conventional confidence
      CDF; for multimodal p, C(θ) is non-monotone and is preserved as

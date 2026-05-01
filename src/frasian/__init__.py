@@ -33,13 +33,23 @@ from ._registry import (
     register_tilting,
     registry,
 )
-from ._default_cells import (default_cells, default_smoothness_tiltings,
-                               default_statistics, default_tiltings,
-                               post_selection_demo_tiltings)
+from ._default_cells import (
+    default_cells,
+    default_smoothness_tiltings,
+    default_statistics,
+    default_tiltings,
+    post_selection_demo_tiltings,
+)
 from ._runner import RunSummary, list_methods, run_experiment
-from .cd import (CDValidityIssue, ConfidenceDistribution,
-                   GridConfidenceDistribution, build_cd_from_pvalue,
-                   total_variation, wasserstein_1, wasserstein_2)
+from .cd import (
+    CDValidityIssue,
+    ConfidenceDistribution,
+    GridConfidenceDistribution,
+    build_cd_from_pvalue,
+    total_variation,
+    wasserstein_1,
+    wasserstein_2,
+)
 from .config import Config, GridSpec
 
 __all__ = [
