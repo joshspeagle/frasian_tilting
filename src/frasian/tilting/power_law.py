@@ -359,39 +359,33 @@ class PowerLawTilting:
         total = float(sum(hi - lo for lo, hi in regions))
         return regions, total, len(regions)
 
-    # ----- Uniform CI interface (called by experiments) -----
+    # ----- Uniform CI / regions / pvalue interface (called by experiments) -----
 
-    def confidence_interval(self, alpha: float, data: NDArray[np.float64],
-                            model: Model, prior: Prior,
-                            statistic: TestStatistic
-                            ) -> tuple[float, float]:
-        """Uniform CI: pick η via `self.selector`, then invert.
-
-        Static selector → one-shot `tilted_confidence_interval` at the
-        selected η. Dynamic selector → `dynamic_tilted_confidence_interval`
-        with η*(|Δ(θ)|); when the result is multi-region we return the
-        convex hull (min lo, max hi). Region-count metadata is not
-        propagated through this interface — callers that need it should
-        invoke `dynamic_tilted_confidence_interval` directly.
-        """
+    def _require_normal_sandbox(self, model: Model, prior: Prior) -> None:
         from ..models.normal_normal import NormalNormalModel
-
         if not isinstance(model, NormalNormalModel):
             raise NotImplementedError(
-                "PowerLawTilting.confidence_interval requires "
-                f"NormalNormalModel; got {type(model).__name__!r}."
+                "PowerLawTilting requires NormalNormalModel; "
+                f"got {type(model).__name__!r}."
             )
         if not isinstance(prior, NormalDistribution):
             raise NotImplementedError(
-                "PowerLawTilting.confidence_interval requires a "
-                f"NormalDistribution prior; got {type(prior).__name__!r}."
+                "PowerLawTilting requires a NormalDistribution prior; "
+                f"got {type(prior).__name__!r}."
             )
 
+    def confidence_regions(self, alpha: float, data: NDArray[np.float64],
+                            model: Model, prior: Prior,
+                            statistic: TestStatistic
+                            ) -> list[tuple[float, float]]:
+        """Selector-aware region list. Single-element for static selectors;
+        multi-element for dynamic selectors at conflict-band D where the
+        dynamic p-value is multimodal."""
+        self._require_normal_sandbox(model, prior)
         D = float(np.atleast_1d(np.asarray(data, dtype=np.float64)).mean())
         sigma = model.sigma
         sigma0 = prior.scale
         w = sigma0 ** 2 / (sigma ** 2 + sigma0 ** 2)
-        # |Δ| at the observed D, used as the single context for static selectors.
         abs_delta = abs((1.0 - w) * (prior.loc - D) / sigma)
         ctx = TiltingContext(w=w, abs_delta=abs_delta, alpha=alpha)
 
@@ -406,14 +400,76 @@ class PowerLawTilting:
                 raise RuntimeError(
                     f"dynamic CI inversion produced no regions at D={D!r}"
                 )
-            lo = float(min(r[0] for r in regions))
-            hi = float(max(r[1] for r in regions))
-            return (lo, hi)
+            return regions
 
         eta = float(self.selector.select(ctx, self, statistic=statistic))
-        return self.tilted_confidence_interval(
+        return [self.tilted_confidence_interval(
             alpha, D, model, prior, eta, statistic.name,
-        )
+        )]
+
+    def confidence_interval(self, alpha: float, data: NDArray[np.float64],
+                            model: Model, prior: Prior,
+                            statistic: TestStatistic
+                            ) -> tuple[float, float]:
+        """Convex hull of `confidence_regions` — single (lo, hi) summary.
+
+        Multi-region cells (e.g. dynamic-η Dyn-WALDO at low |Δ|) collapse
+        to `(min lo, max hi)` here; consumers that need union semantics
+        should call `confidence_regions` directly.
+        """
+        regions = self.confidence_regions(alpha, data, model, prior, statistic)
+        lo = float(min(r[0] for r in regions))
+        hi = float(max(r[1] for r in regions))
+        return (lo, hi)
+
+    def pvalue(self, theta: ArrayLike, data: NDArray[np.float64],
+               model: Model, prior: Prior,
+               statistic: TestStatistic) -> NDArray[np.float64]:
+        """Selector-aware p-value at hypothesised θ values.
+
+        Static selector: resolve a single η via `selector.select(...)`,
+        evaluate `tilted_pvalue(θ, D, …, η, statistic.name)`.
+
+        Dynamic selector: precompute the coarse η*(|Δ|) lookup once, then
+        interpolate to the per-θ |Δ_θ| values in `theta`, and evaluate
+        `dynamic_tilted_pvalue` with the resulting `eta_at_theta` array.
+
+        The α used by the dynamic selector defaults to
+        `Config.default().alpha` (= 0.05) — overridable via
+        `metadata={'alpha': ...}` on the prior or via subclassing if a
+        downstream consumer needs different per-α p-value evaluation.
+        """
+        self._require_normal_sandbox(model, prior)
+        from ..config import Config
+        from .eta_selectors import _NamedStatistic
+
+        alpha = float(Config.default().alpha)
+        D = float(np.atleast_1d(np.asarray(data, dtype=np.float64)).mean())
+        theta_arr = np.atleast_1d(np.asarray(theta, dtype=np.float64))
+        sigma = model.sigma
+        sigma0 = prior.scale
+        w = sigma0 ** 2 / (sigma ** 2 + sigma0 ** 2)
+
+        if getattr(self.selector, "is_dynamic", False):
+            # Per-θ |Δ_θ| values, then interpolate η*(|Δ|) onto them.
+            abs_delta_theta = np.abs((1.0 - w) * (prior.loc - theta_arr) / sigma)
+            coarse_n = int(getattr(self.selector, "coarse_n", 25))
+            ad_max = float(abs_delta_theta.max()) + 1e-6
+            coarse_grid = np.linspace(0.0, ad_max, coarse_n)
+            coarse_eta = self.selector.select_grid(
+                coarse_grid, self, statistic=_NamedStatistic(statistic.name),
+                w=w, alpha=alpha,
+            )
+            eta_at_theta = np.interp(abs_delta_theta, coarse_grid, coarse_eta)
+            return self.dynamic_tilted_pvalue(
+                theta_arr, D, model, prior, statistic.name, eta_at_theta,
+            )
+
+        # Static selector: single η for the whole evaluation.
+        abs_delta = abs((1.0 - w) * (prior.loc - D) / sigma)
+        ctx = TiltingContext(w=w, abs_delta=abs_delta, alpha=alpha)
+        eta = float(self.selector.select(ctx, self, statistic=statistic))
+        return self.tilted_pvalue(theta_arr, D, model, prior, eta, statistic.name)
 
     def tilted_confidence_interval(self, alpha: float, D: float,
                                     model: object,

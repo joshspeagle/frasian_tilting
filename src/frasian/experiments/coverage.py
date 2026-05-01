@@ -2,14 +2,18 @@
 
 For each cell (TiltingScheme x TestStatistic) and each (theta_true, w):
   1. Generate `n_reps` samples D ~ N(theta_true, sigma).
-  2. Compute the (1 - alpha) CI from each D via
-     `tilting.confidence_interval(alpha, [D], model, prior, statistic)`.
-  3. Coverage = fraction of CIs containing theta_true.
+  2. Compute the (1 - alpha) CI *regions* from each D via
+     `tilting.confidence_regions(alpha, [D], model, prior, statistic)`.
+  3. Coverage = fraction of replicates where `theta_true` lies in any
+     of the returned regions (union semantics; for single-region cells
+     this is the standard coverage check).
 
-The single uniform CI interface routes through the tilting:
-`IdentityTilting` delegates to the bare statistic; `PowerLawTilting`
-resolves its own selector (fixed-η static or dynamic-η per θ) before
-inverting the tilted p-value.
+The uniform CI interface routes through the tilting: `IdentityTilting`
+delegates to the bare statistic; `PowerLawTilting` resolves its own
+selector (fixed-η static or dynamic-η per θ) before inverting the
+tilted p-value. Multi-region union semantics replaces the prior
+convex-hull check so that Dyn-WALDO (which can produce two regions
+under conflict) is evaluated against the actual CI it constructs.
 
 Conventions:
   - Canonical sigma = 1 (configurable via `Config.from_overrides`).
@@ -92,10 +96,11 @@ class CoverageExperiment:
             prior = NormalDistribution(loc=self.mu0, scale=sigma0)
             for i in range(n_theta):
                 hits = 0
+                theta_true = float(theta_grid[i])
                 for k in range(n_reps):
                     D = raw.D[i, k]
                     try:
-                        lo, hi = tilting.confidence_interval(
+                        regions = tilting.confidence_regions(
                             alpha, np.asarray([D]), model, prior, statistic,
                         )
                     except NotImplementedError:
@@ -103,7 +108,7 @@ class CoverageExperiment:
                         coverage[i, j] = np.nan
                         coverage_se[i, j] = np.nan
                         break
-                    if lo <= float(theta_grid[i]) <= hi:
+                    if any(lo <= theta_true <= hi for lo, hi in regions):
                         hits += 1
                 else:
                     p = hits / n_reps

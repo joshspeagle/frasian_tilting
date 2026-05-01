@@ -59,7 +59,7 @@ class IdentityTilting:
     def admissible_range(self, context: TiltingContext) -> tuple[float, float]:
         return (-np.inf, np.inf)
 
-    # ----- Uniform CI interface -----
+    # ----- Uniform CI / regions / pvalue interface -----
 
     def confidence_interval(self, alpha: float, data: NDArray[np.float64],
                             model: Model, prior: Prior,
@@ -67,3 +67,16 @@ class IdentityTilting:
                             ) -> tuple[float, float]:
         """Delegate to the bare statistic — no tilting applied."""
         return statistic.confidence_interval(alpha, data, model, prior)
+
+    def confidence_regions(self, alpha: float, data: NDArray[np.float64],
+                            model: Model, prior: Prior,
+                            statistic: TestStatistic
+                            ) -> list[tuple[float, float]]:
+        """Single-element list around the bare-statistic CI."""
+        return [self.confidence_interval(alpha, data, model, prior, statistic)]
+
+    def pvalue(self, theta: ArrayLike, data: NDArray[np.float64],
+               model: Model, prior: Prior,
+               statistic: TestStatistic) -> NDArray[np.float64]:
+        """Delegate to the bare statistic — no tilting applied."""
+        return statistic.pvalue(theta, data, model, prior)
