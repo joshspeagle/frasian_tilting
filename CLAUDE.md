@@ -115,13 +115,24 @@ restriction explicitly via `models/_dispatch.require_model`).
 
 Each `TiltingScheme` owns its **selector** (`EtaSelector`) as a
 constructor argument: `FixedEtaSelector` is the static identity,
-`NumericalEtaSelector` is static-with-context, and
-`DynamicNumericalEtaSelector` varies η per θ. The cell name picks up
-the selector when non-default, so `power_law[dynamic_numerical]` is
-the **Dynamic-WALDO** cell when paired with `waldo`. The `identity`
-tilting + a uniform `tilting.confidence_interval(alpha, data, model,
-prior, statistic)` API let coverage / width / smoothness all share one
-cell loop.
+`NumericalEtaSelector` is static-with-context (post-selection — see
+caveat below), and `DynamicNumericalEtaSelector` varies η per θ. The
+cell name picks up the selector when non-default, so
+`power_law[dynamic_numerical]` is the **Dynamic-WALDO** cell when
+paired with `waldo`. The `identity` tilting + a uniform
+`tilting.confidence_interval(alpha, data, model, prior, statistic)`
+API let coverage / width / smoothness all share one cell loop.
+
+**Calibration caveat — important.** The framework's calibrated default
+is `DynamicNumericalEtaSelector`: η at each θ depends only on θ (not
+on D), so the WALDO p-value at any fixed η is U[0,1] under H0 and the
+CI achieves exact 1-α coverage. The static `NumericalEtaSelector`
+gives strictly narrower CIs (≤ Wald asymptotically) but is post-
+selection inference and **undercovers by ~2 points at α=0.05** —
+pinned by `tests/regression/test_post_selection_coverage.py`. The
+static selector is exposed via `post_selection_demo_tiltings()` only
+to make the trade-off measurable; never use it for production CI
+estimation.
 
 ## Test Statistics (status)
 

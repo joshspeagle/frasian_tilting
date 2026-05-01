@@ -34,7 +34,8 @@ from ._registry import (
     registry,
 )
 from ._default_cells import (default_cells, default_smoothness_tiltings,
-                               default_statistics, default_tiltings)
+                               default_statistics, default_tiltings,
+                               post_selection_demo_tiltings)
 from ._runner import RunSummary, list_methods, run_experiment
 from .config import Config, GridSpec
 
@@ -48,6 +49,7 @@ __all__ = [
     "default_smoothness_tiltings",
     "default_statistics",
     "default_tiltings",
+    "post_selection_demo_tiltings",
     "registry",
     "register_diagnostic",
     "register_experiment",

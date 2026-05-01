@@ -17,6 +17,28 @@ Static selectors compose with `TiltingScheme.tilted_confidence_interval`
 `TiltingScheme.dynamic_tilted_confidence_interval` (scan + crossings).
 Both paths route through `TiltingScheme.confidence_interval`, the
 uniform interface the experiments call.
+
+Coverage caveat — read before using `NumericalEtaSelector`
+==========================================================
+
+The two selector flavours have **different coverage properties**:
+
+  - `DynamicNumericalEtaSelector` (per-θ): the η used at each θ depends
+    only on θ (not on the data D). The WALDO p-value at any fixed η is
+    U[0,1] under H0: θ = θ_true, so the CI achieves exact 1-α coverage
+    by construction. **This is the calibrated default** used by
+    `default_tiltings()` and the `coverage` / `width` experiments.
+
+  - `NumericalEtaSelector` (static, post-selection): η = argmin_η
+    |CI_η(D)|. Width is monotone non-increasing in flexibility, so this
+    CI is always ≤ WALDO and asymptotes to Wald at large |Δ|. **But the
+    coverage drops below nominal** (~93% empirically at α=0.05; see
+    `tests/regression/test_post_selection_coverage.py`) because picking
+    the narrowest CI per D is post-selection inference. Use this
+    selector only as a *baseline for studying the coverage / width
+    trade-off* — it is not a calibrated estimator. The framework's
+    research goal is to find smoother tilting families that retrieve
+    static-η-opt's narrowness *while* keeping per-θ-η's calibration.
 """
 
 from __future__ import annotations
@@ -72,6 +94,22 @@ class FixedEtaSelector:
 @dataclass(frozen=True)
 class NumericalEtaSelector:
     """Pick η minimizing the (analytic) CI width for the tilted posterior.
+
+    DOES NOT MAINTAIN NOMINAL COVERAGE. Choosing η = argmin_η |CI_η(D)|
+    per data sample is post-selection inference: the resulting CI is
+    biased toward narrow CIs that systematically exclude θ_true at a
+    rate higher than α. Empirically the shortfall is ~2 percentage
+    points at α=0.05 (see `tests/regression/test_post_selection_coverage.py`),
+    and grows with |Δ|.
+
+    Use this selector only as a baseline for illustrating the
+    coverage / width trade-off. For calibrated CIs, use
+    `DynamicNumericalEtaSelector` (the per-θ varying selector that the
+    framework defaults to in `default_tiltings()`).
+
+    Width-wise, this selector is the genuine optimum: ≤ WALDO at every
+    D, → Wald at large |Δ|. That's exactly why coverage drops — the
+    procedure is too eager to shrink.
 
     The width is computed by inverting the tilted p-value at a single
     representative `D` (no Monte-Carlo). For the (power_law, waldo) cell
@@ -142,6 +180,21 @@ class NumericalEtaSelector:
 @dataclass
 class DynamicNumericalEtaSelector:
     """Per-θ varying η* via the coarse-grid + interpolation strategy.
+
+    The framework's **calibrated default** for `power_law` cells.
+    Maintains 1-α coverage by construction: the η used at each θ depends
+    only on θ (not on D), so the WALDO p-value at any fixed η is U[0,1]
+    under H0, and the CI = {θ : p_dyn(θ; D) ≥ α} has the correct level.
+    Contrast with `NumericalEtaSelector`, which picks η post hoc per D
+    and undercovers (see that class's docstring).
+
+    Width behaviour: at large |Δ| the dynamic procedure approaches Wald
+    *eventually*, but takes a detour past Wald in the conflict band
+    (around |Δ| ≈ 2-3 for w=0.5) — the η used at θ values near the
+    prior is heavily prior-amplifying even when D is far from the
+    prior, dragging the CI toward μ₀. This non-monotone width is the
+    structural pathology that smoother tilting families (OT, geodesic,
+    mixture) are intended to fix without sacrificing the calibration.
 
     Wraps `NumericalEtaSelector.select_grid`: the inner machinery is the
     same width-minimising solver, but `is_dynamic = True` flags to the

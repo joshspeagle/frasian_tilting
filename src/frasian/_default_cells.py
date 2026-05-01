@@ -9,11 +9,28 @@ explicit, configurable set of three cells:
 
     (identity, wald)                       — plain Wald
     (identity, waldo)                      — plain (static) WALDO
-    (power_law[dynamic_numerical], waldo)  — Dynamic-WALDO
+    (power_law[dynamic_numerical], waldo)  — Dynamic-WALDO (calibrated)
 
 The redundant `(power_law[fixed-η=0], waldo)` cell is omitted by
 design: it is numerically identical to `(identity, waldo)` (η=0
 recovers WALDO).
+
+Why the dynamic-η selector and not the static η*-opt?
+=====================================================
+
+`DynamicNumericalEtaSelector` (η varying per θ during inversion) has
+exact 1-α coverage by construction. `NumericalEtaSelector` (single
+η minimising CI width per D) gives strictly narrower CIs but
+**undercovers** by ~2 points at α=0.05 because of post-selection
+inference. The framework's default insists on calibration, so the
+dynamic selector is the headline. The static selector is exposed via
+`post_selection_demo_tiltings()` purely as a baseline for studying
+the coverage / width trade-off — running it on `coverage` is the way
+to *see* the calibration loss empirically.
+
+See `NumericalEtaSelector` and `DynamicNumericalEtaSelector` docstrings
+for details, and `tests/regression/test_post_selection_coverage.py`
+for the regression that pins the empirical shortfall.
 """
 
 from __future__ import annotations
@@ -48,6 +65,31 @@ def default_tiltings(*, sigma: float = 1.0, mu0: float = 0.0,
                 sigma=sigma, mu0=mu0,
                 n_grid=n_grid, coarse_n=coarse_n,
             ),
+        ),
+    ]
+
+
+def post_selection_demo_tiltings(*, sigma: float = 1.0, mu0: float = 0.0,
+                                   ) -> list["TiltingScheme"]:
+    """Tiltings for the **post-selection coverage demo**.
+
+    Returns `[IdentityTilting(), PowerLawTilting(NumericalEtaSelector())]`.
+    Run this through the `coverage` / `width` experiments to demonstrate
+    that the static η*-opt selector achieves narrower-than-WALDO CIs
+    (in fact ≤ Wald asymptotically) but at the cost of ~2 points of
+    nominal coverage — a textbook post-selection inference effect.
+
+    NOT for production CI estimation. The framework's calibrated
+    default is `default_tiltings()` (which uses
+    `DynamicNumericalEtaSelector`).
+    """
+    from .tilting.eta_selectors import NumericalEtaSelector
+    from .tilting.identity import IdentityTilting
+    from .tilting.power_law import PowerLawTilting
+    return [
+        IdentityTilting(),
+        PowerLawTilting(
+            selector=NumericalEtaSelector(sigma=sigma, mu0=mu0),
         ),
     ]
 

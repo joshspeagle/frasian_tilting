@@ -105,11 +105,34 @@ scheduled with the Step-7 docs/derivations sweep.
 
 - `FixedEtaSelector(eta=0.0)` — identity selector (default).
 - `NumericalEtaSelector` — single η minimising tilted CI width at the
-  data's |Δ|. Static.
+  data's |Δ|. Static. **Post-selection: undercovers by ~2 points at
+  α=0.05; not a calibrated estimator.** Exposed via
+  `post_selection_demo_tiltings()` for studying the trade-off only.
 - `DynamicNumericalEtaSelector` — per-θ varying η*(|Δ|) via
-  coarse-grid + interpolation. Dynamic.
+  coarse-grid + interpolation. Dynamic. The framework's calibrated
+  default; exact 1-α coverage by construction (η at θ does not depend
+  on D, so the WALDO p-value at fixed η is U[0,1] under H0).
 
 `(power_law[FixedEtaSelector(0.0)], waldo)` is numerically equal to
 `(identity, waldo)`; the runner ships only the latter to keep the
-matrix tight. Optimal-transport, Fisher–Rao-geodesic, and mixture
-tilting alternatives are scheduled stubs in Step 6.
+matrix tight.
+
+### The static-vs-dynamic trade-off, in one paragraph
+
+The static η*-opt CI is genuinely narrower than WALDO at every D and
+asymptotes to Wald at large |Δ| — your theoretical intuition that
+"η=0 is in the search space, so optimisation should never hurt"
+holds for the *width* dimension. But the procedure is post-selection:
+η is a function of D, then the narrow CI is reported, so coverage
+empirically falls to ~0.93 at α=0.05 (regression-pinned in
+`tests/regression/test_post_selection_coverage.py`). The dynamic-η-
+per-θ procedure recovers exact calibration by making η depend on θ
+(not D), but pays for it with a non-monotone width that detours past
+Wald in the conflict band. The framework's research question is then:
+**can a smoother tilting family give a per-θ η whose width competes
+with the static optimum without the conflict-band detour?** That is
+what the OT / Fisher-Rao / mixture / exp-family stubs are intended to
+explore.
+
+Optimal-transport, Fisher–Rao-geodesic, and mixture tilting
+alternatives are scheduled stubs in Step 6.
