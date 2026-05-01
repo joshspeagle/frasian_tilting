@@ -96,3 +96,10 @@ class TestWidthExperimentEndToEnd:
         # Dynamic CI must produce positive widths.
         assert finite.size > 0
         assert (finite > 0).all()
+        # Multi-region uplift: `mean_n_regions` is now a stored array.
+        # On this tiny grid at α=0.05 we expect single-region everywhere
+        # (the bimodal regime is at high α; see test_confidence_regions).
+        assert "mean_n_regions" in result.arrays
+        n_reg = result.arrays["mean_n_regions"]
+        n_reg_finite = n_reg[np.isfinite(n_reg)]
+        assert (n_reg_finite >= 1.0).all()

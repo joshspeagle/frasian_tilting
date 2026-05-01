@@ -153,11 +153,12 @@ cells before `run_cell` and records them in the manifest with
 
 ## Experiments (status)
 
-| Name        | Status        | Output                                              |
-|-------------|---------------|-----------------------------------------------------|
-| `coverage`  | implemented   | Empirical coverage on (θ_true, w) grid              |
-| `width`     | implemented   | Mean CI width on (θ_true, w) grid                   |
-| `smoothness`| implemented   | η*(|Δ|) Lipschitz / TV / discontinuity / spectral   |
+| Name                       | Status      | Output                                              |
+|----------------------------|-------------|-----------------------------------------------------|
+| `coverage`                 | implemented | Empirical coverage on (θ_true, w) grid              |
+| `width`                    | implemented | Mean CI width on (θ_true, w) grid                   |
+| `smoothness`               | implemented | η*(|Δ|) Lipschitz / TV / discontinuity / spectral   |
+| `confidence_distribution`  | implemented | CD median / 95-width / W₁-to-Wald / non-monotone fraction |
 
 All three experiments dispatch CI computation through
 `tilting.confidence_interval(alpha, data, model, prior, statistic)` —

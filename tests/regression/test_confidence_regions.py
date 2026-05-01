@@ -191,3 +191,44 @@ class TestConfidenceRegionsStructure:
             )
             assert ci_lo == pytest.approx(min(r[0] for r in regions))
             assert ci_hi == pytest.approx(max(r[1] for r in regions))
+
+
+@pytest.mark.L0
+class TestMultiRegionEmpiricallyExercised:
+    """Pins that the multi-region branch is actually reachable.
+
+    At standard α=0.05 the dynamic p-value is bimodal in *shape* but its
+    inter-peak valley sits well above 0.05, so CIs collapse to a single
+    region — no multi-region path exercised at production α. To verify
+    the plumbing actually emits >1 regions under the conditions where it
+    should, we use a *high* α=0.86 at (D=3, w=0.5): the dynamic p-value's
+    twin peaks (≈0.91 and ≈1.00) and inter-peak valley (≈0.83) straddle
+    this α level, producing two disjoint regions.
+
+    This is per the user's request to "adjust the test alpha level to
+    get a bimodal region" — the test confirms multi-region wiring works.
+    """
+
+    def test_dyn_waldo_two_regions_at_alpha_0p86(self):
+        m, p = _model_prior()
+        sel = DynamicNumericalEtaSelector(sigma=1.0, mu0=0.0,
+                                            n_grid=401, coarse_n=25)
+        scheme = PowerLawTilting(selector=sel)
+        regions = scheme.confidence_regions(
+            0.86, np.asarray([3.0]), m, p, WaldoStatistic(),
+        )
+        assert len(regions) == 2, (
+            f"expected 2 regions at α=0.86 / D=3 / w=0.5; got {regions}"
+        )
+        # Disjoint and sorted (re-asserts class-level invariant on this case).
+        for r in regions:
+            assert r[0] < r[1]
+        assert regions[0][1] < regions[1][0]
+        # Convex hull is strictly greater than union — the gap between
+        # peaks accounts for the difference.
+        union = sum(hi - lo for lo, hi in regions)
+        hull = regions[1][1] - regions[0][0]
+        assert hull > union + 1e-6, (
+            f"expected hull strictly greater than union; got hull={hull}, "
+            f"union={union}"
+        )

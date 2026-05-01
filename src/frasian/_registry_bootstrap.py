@@ -17,6 +17,7 @@ def bootstrap() -> None:
     global _BOOTSTRAPPED
     if _BOOTSTRAPPED:
         return
+    from .experiments import confidence_distribution as _exp_cd  # noqa: F401
     from .experiments import coverage as _exp_cov  # noqa: F401
     from .experiments import smoothness as _exp_smooth  # noqa: F401
     from .experiments import width as _exp_width  # noqa: F401

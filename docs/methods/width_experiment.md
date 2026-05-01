@@ -77,9 +77,16 @@ quantity used in the "efficiency" comparisons against Wald.
 
 ## Status notes
 
-Each cell's CI is computed via `tilting.confidence_interval(...)`: the
-tilting owns the η-selector. `(identity, waldo)` produces the plain
-WALDO width; `(power_law[dynamic_numerical], waldo)` produces the
-Dynamic-WALDO width (formerly the central column of `dynamic_ci`).
-Cells gated incompatible by `accepts_tilting` are recorded with
-`status="incompatible"` and skipped.
+Each cell's CI is computed via `tilting.confidence_regions(...)` (the
+multi-region-aware interface): the tilting owns the η-selector.
+`(identity, waldo)` produces the plain WALDO width;
+`(power_law[dynamic_numerical], waldo)` produces the Dynamic-WALDO
+width (formerly the central column of the legacy `dynamic_ci`). Width
+uses **union semantics** — `sum(hi − lo for lo, hi in regions)` —
+which strictly equals the convex-hull width for single-region cells
+(Wald, plain WALDO, all static-η power_law) and is strictly less for
+multi-region cells (Dyn-WALDO at low |Δ| where the inter-peak gap is
+excluded). The cell also records `mean_n_regions` (≥ 1; > 1 indicates
+the multimodal-p regime). Cells gated incompatible by
+`accepts_tilting` are recorded with `status="incompatible"` and
+skipped.

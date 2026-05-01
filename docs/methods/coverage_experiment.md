@@ -83,8 +83,16 @@ for this level of estimation given `n_reps >= 1000`.)
 ## Status notes
 
 The Tilting dimension is load-bearing: each cell's CI is computed via
-`tilting.confidence_interval(...)`, so `(identity, waldo)` produces the
-plain WALDO CI while `(power_law[dynamic_numerical], waldo)` produces
-the Dynamic-WALDO CI (η*(|Δ|) per θ). Cells gated incompatible by
-`statistic.accepts_tilting(tilting)` are recorded in the manifest with
-`status="incompatible"` and skip their `run_cell` entirely.
+`tilting.confidence_regions(...)` (the multi-region-aware interface),
+so `(identity, waldo)` produces the plain WALDO CI while
+`(power_law[dynamic_numerical], waldo)` produces the Dynamic-WALDO CI
+(η*(|Δ|) per θ). Coverage uses **union-of-regions** semantics: a
+replicate is "covered" iff θ_true lies in *any* of the returned
+regions. For single-region cells (Wald, plain WALDO, all static-η
+power_law cells) the union check coincides with the standard
+single-interval check; for the dynamic-η power_law cell at low |Δ|,
+where the dynamic p-value is multimodal, the union check honours the
+actual CI structure rather than the convex hull. Cells gated
+incompatible by `statistic.accepts_tilting(tilting)` are recorded in
+the manifest with `status="incompatible"` and skip their `run_cell`
+entirely.

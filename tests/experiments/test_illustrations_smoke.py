@@ -23,6 +23,7 @@ DEMOS = [
     "frasian.experiments.illustrations.waldo_demo",
     "frasian.experiments.illustrations.power_law_demo",
     "frasian.experiments.illustrations.smoothness_demo",
+    "frasian.experiments.illustrations.confidence_distribution_demo",
 ]
 
 
