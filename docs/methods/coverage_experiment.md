@@ -23,9 +23,21 @@ For a fixed `(sigma, mu0)` and grid points `(theta_i, w_j)`:
 
   sigma0_j = sqrt(w_j / (1 - w_j)) * sigma
   Generate D_{i,j,k} ~ N(theta_i, sigma) for k = 1..n_reps
-  CI_{i,j,k}      = statistic.confidence_interval(D_{i,j,k}, model, prior_j, alpha)
-  coverage_{i,j}  = mean_k [ theta_i in CI_{i,j,k} ]
+  regions_{i,j,k} = tilting.confidence_regions(alpha, [D_{i,j,k}], model, prior_j, statistic)
+  hit_{i,j,k}     = any(lo <= theta_i <= hi for (lo, hi) in regions_{i,j,k})
+  coverage_{i,j}  = mean_k hit_{i,j,k}
   coverage_se_{i,j} = sqrt( coverage(1 - coverage) / n_reps )    (Wald-binomial SE)
+
+The region computation is dispatched through the **tilting**:
+`IdentityTilting` and static-η `PowerLawTilting` cells return a single
+region (the conventional CI); dynamic-η `PowerLawTilting` may return
+multiple regions at low |Δ| where the dynamic p-value is multimodal.
+**Union semantics**: a replicate is counted as covered iff θ_true lies
+in any returned region — for single-region cells this matches the
+standard CI containment check; for multi-region cells it honours the
+actual CI structure rather than the convex hull. The uniform interface
+lets `(identity, wald)`, `(identity, waldo)`, and
+`(power_law[dynamic_numerical], waldo)` share one cell loop.
 
 ## Derivation
 
@@ -49,8 +61,8 @@ for this level of estimation given `n_reps >= 1000`.)
 - Statistics whose `confidence_interval` raises `NotImplementedError`
   produce `NaN` rows; the diagnostic preserves them rather than masking.
 - Strong-prior corners (`w → 0`) produce CIs that depend acutely on
-  `D`; the local Lipschitz behavior of the WALDO p-value (Step-5 study)
-  shows up here as variability between replicates.
+  `D`; the local Lipschitz behavior of the WALDO p-value (see the
+  `smoothness` experiment) shows up here as variability between replicates.
 
 ## Invariants
 
@@ -75,6 +87,17 @@ for this level of estimation given `n_reps >= 1000`.)
 
 ## Status notes
 
-The Tilting dimension currently records `eta = scheme.param_space.eta_identity`
-for every cell; this makes coverage independent of the tilting scheme. Step
-5's smoothness experiment sweeps `eta` and is where Tilting becomes load-bearing.
+The Tilting dimension is load-bearing: each cell's CI is computed via
+`tilting.confidence_regions(...)` (the multi-region-aware interface),
+so `(identity, waldo)` produces the plain WALDO CI while
+`(power_law[dynamic_numerical], waldo)` produces the Dynamic-WALDO CI
+(η*(|Δ|) per θ). Coverage uses **union-of-regions** semantics: a
+replicate is "covered" iff θ_true lies in *any* of the returned
+regions. For single-region cells (Wald, plain WALDO, all static-η
+power_law cells) the union check coincides with the standard
+single-interval check; for the dynamic-η power_law cell at low |Δ|,
+where the dynamic p-value is multimodal, the union check honours the
+actual CI structure rather than the convex hull. Cells gated
+incompatible by `statistic.accepts_tilting(tilting)` are recorded in
+the manifest with `status="incompatible"` and skip their `run_cell`
+entirely.

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from frasian import registry, run_experiment
+from frasian import default_cells, registry, run_experiment
 from frasian.config import Config, GridSpec
 
 
@@ -24,10 +24,10 @@ class TestFiguresScript:
     def test_regenerate_from_results(self, tmp_path: Path,
                                         bootstrapped_registry):
         experiment = registry.experiments["coverage"]()
+        tiltings, statistics = default_cells(n_grid=81, coarse_n=9)
         run_experiment(
             experiment=experiment,
-            tiltings=registry.tiltings.implemented(),
-            statistics=registry.statistics.implemented(),
+            tiltings=tiltings, statistics=statistics,
             config=_small_config(),
             out_dir=tmp_path,
         )

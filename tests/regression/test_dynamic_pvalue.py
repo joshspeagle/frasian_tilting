@@ -13,7 +13,9 @@ from scipy import stats
 
 from frasian.models.distributions import NormalDistribution
 from frasian.models.normal_normal import NormalNormalModel
-from frasian.tilting.eta_selectors import NumericalEtaSelector
+from frasian.statistics.waldo import WaldoStatistic
+from frasian.tilting.eta_selectors import (DynamicNumericalEtaSelector,
+                                              NumericalEtaSelector)
 from frasian.tilting.power_law import PowerLawTilting
 
 
@@ -124,3 +126,78 @@ class TestDynamicTiltedConfidenceInterval:
             assert n_reg >= 1, f"empty CI at D={D}"
             for lo, hi in regions:
                 assert lo < hi
+
+
+@pytest.mark.L0
+class TestDynamicNumericalEtaSelectorCache:
+    """The selector caches `coarse_eta` per `(w, α, statistic, scheme,
+    coarse_n, ad_max_bin)` so per-cell experiment loops (which hold the
+    first five constant) don't recompute η*(|Δ|) on every sample. The
+    `ad_max_bin` (binned to 0.5-wide buckets) makes the cache
+    order-independent: every call with the same bin returns the same
+    grid points regardless of which D values arrive first. Without the
+    cache, coverage/width on the dynamic cell would scale as
+    `n_reps * n_theta * (coarse_n * brent_iters)` — minutes per cell.
+    """
+
+    def test_cache_hit_count_after_many_D_values(self):
+        sel = DynamicNumericalEtaSelector(n_grid=81, coarse_n=11)
+        scheme = PowerLawTilting(selector=sel)
+        model = NormalNormalModel(sigma=1.0)
+        prior = NormalDistribution(loc=0.0, scale=1.0)
+        stat = WaldoStatistic()
+        # Call with 30 different D values spanning [-3, 3]: the resulting
+        # ad_max values fall in a small number of 0.5-wide bins, so the
+        # cache stays bounded (typically ≤ 6 entries on this range).
+        for D in np.linspace(-3, 3, 30):
+            scheme.confidence_interval(
+                0.05, np.asarray([float(D)]), model, prior, stat,
+            )
+        assert 1 <= len(sel._cache) <= 6, (
+            f"cache should fall in a small number of ad_max bins, got "
+            f"{len(sel._cache)}"
+        )
+
+    def test_cache_order_independence(self):
+        """Two selectors that see D values in different orders end up
+        with the same cache contents — keys are (w, α, stat, scheme,
+        coarse_n, ad_max_bin) and values are deterministic given the
+        bin. This is the property we lost in the previous implementation
+        and gained back via binning."""
+        kwargs = dict(n_grid=81, coarse_n=11)
+        sel_a = DynamicNumericalEtaSelector(**kwargs)
+        sel_b = DynamicNumericalEtaSelector(**kwargs)
+        scheme_a = PowerLawTilting(selector=sel_a)
+        scheme_b = PowerLawTilting(selector=sel_b)
+        model = NormalNormalModel(sigma=1.0)
+        prior = NormalDistribution(loc=0.0, scale=1.0)
+        stat = WaldoStatistic()
+        Ds = list(np.linspace(-3, 3, 12))
+        # sel_a sees Ds in forward order; sel_b in reverse.
+        for D in Ds:
+            scheme_a.confidence_interval(0.05, np.asarray([float(D)]),
+                                           model, prior, stat)
+        for D in reversed(Ds):
+            scheme_b.confidence_interval(0.05, np.asarray([float(D)]),
+                                           model, prior, stat)
+        # Same set of cache keys.
+        assert set(sel_a._cache) == set(sel_b._cache)
+        # Same cached grid + η values per key.
+        for key in sel_a._cache:
+            grid_a, eta_a = sel_a._cache[key]
+            grid_b, eta_b = sel_b._cache[key]
+            np.testing.assert_array_equal(grid_a, grid_b)
+            np.testing.assert_array_equal(eta_a, eta_b)
+
+    def test_cache_distinguishes_w(self):
+        """Different priors (different w) need different cache entries."""
+        sel = DynamicNumericalEtaSelector(n_grid=81, coarse_n=11)
+        scheme = PowerLawTilting(selector=sel)
+        model = NormalNormalModel(sigma=1.0)
+        stat = WaldoStatistic()
+        for sigma0 in (0.5, 1.0, 2.0):
+            prior = NormalDistribution(loc=0.0, scale=sigma0)
+            scheme.confidence_interval(
+                0.05, np.asarray([1.0]), model, prior, stat,
+            )
+        assert len(sel._cache) == 3

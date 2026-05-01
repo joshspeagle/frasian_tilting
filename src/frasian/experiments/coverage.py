@@ -2,13 +2,18 @@
 
 For each cell (TiltingScheme x TestStatistic) and each (theta_true, w):
   1. Generate `n_reps` samples D ~ N(theta_true, sigma).
-  2. Compute the (1 - alpha) CI from each D via the statistic's
-     `confidence_interval`.
-  3. Coverage = fraction of CIs containing theta_true.
+  2. Compute the (1 - alpha) CI *regions* from each D via
+     `tilting.confidence_regions(alpha, [D], model, prior, statistic)`.
+  3. Coverage = fraction of replicates where `theta_true` lies in any
+     of the returned regions (union semantics; for single-region cells
+     this is the standard coverage check).
 
-The Tilting dimension records `eta = scheme.param_space.eta_identity` for
-Step 4; Step 5's smoothness experiment sweeps eta and consumes the cells'
-metadata to compute Lipschitz / spectral diagnostics.
+The uniform CI interface routes through the tilting: `IdentityTilting`
+delegates to the bare statistic; `PowerLawTilting` resolves its own
+selector (fixed-η static or dynamic-η per θ) before inverting the
+tilted p-value. Multi-region union semantics replaces the prior
+convex-hull check so that Dyn-WALDO (which can produce two regions
+under conflict) is evaluated against the actual CI it constructs.
 
 Conventions:
   - Canonical sigma = 1 (configurable via `Config.from_overrides`).
@@ -91,18 +96,19 @@ class CoverageExperiment:
             prior = NormalDistribution(loc=self.mu0, scale=sigma0)
             for i in range(n_theta):
                 hits = 0
+                theta_true = float(theta_grid[i])
                 for k in range(n_reps):
                     D = raw.D[i, k]
                     try:
-                        lo, hi = statistic.confidence_interval(
-                            alpha, np.asarray([D]), model, prior,
+                        regions = tilting.confidence_regions(
+                            alpha, np.asarray([D]), model, prior, statistic,
                         )
                     except NotImplementedError:
                         # Cell that does not support CI inversion: record NaN.
                         coverage[i, j] = np.nan
                         coverage_se[i, j] = np.nan
                         break
-                    if lo <= float(theta_grid[i]) <= hi:
+                    if any(lo <= theta_true <= hi for lo, hi in regions):
                         hits += 1
                 else:
                     p = hits / n_reps
@@ -112,9 +118,10 @@ class CoverageExperiment:
                         np.sqrt(max(p * (1.0 - p), 1e-12) / n_reps)
                     )
 
+        cell_name = getattr(tilting, "cell_name", tilting.name)
         return RawResult(
             experiment=self.name,
-            tilting=tilting.name,
+            tilting=cell_name,
             statistic=statistic.name,
             arrays={
                 "theta_grid": theta_grid,
@@ -128,7 +135,8 @@ class CoverageExperiment:
                 "n_reps": n_reps,
                 "sigma": self.sigma,
                 "mu0": self.mu0,
-                "eta": tilting.param_space.eta_identity,
+                "selector": getattr(getattr(tilting, "selector", None),
+                                    "name", None),
             },
         )
 

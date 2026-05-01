@@ -74,3 +74,7 @@ class WaldStatistic:
         z = stats.norm.ppf(1.0 - alpha / 2.0)
         half = z * m.sigma
         return (D - half, D + half)
+
+    def accepts_tilting(self, tilting) -> bool:
+        """Wald ignores the prior, so non-identity tiltings are degenerate."""
+        return getattr(tilting, "name", "") == "identity"

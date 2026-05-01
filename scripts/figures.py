@@ -30,6 +30,9 @@ def _load_cells(manifest_path: Path) -> tuple[str, list[RawResult]]:
     raw_results: list[RawResult] = []
     base = manifest_path.parent
     for cell in manifest["cells"]:
+        # Skip cells the runner gated as incompatible (no cached arrays).
+        if cell.get("status", "ok") != "ok":
+            continue
         cell_path = Path(cell["cache_path"])
         path = cell_path if cell_path.is_absolute() else base / cell_path
         stored = load_result(path)

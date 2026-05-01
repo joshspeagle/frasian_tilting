@@ -8,7 +8,7 @@ Wasserstein-2 geodesic interpolation between the prior and the posterior
 on the univariate Gaussian family. Candidate replacement for power-law
 tilting; the central hypothesis is that this geodesic produces a
 smoother `eta*(|Delta|)` curve and avoids the kink at low `|Delta|`
-that the Step-5 smoothness diagnostic detects in `power_law`.
+that the `smoothness` diagnostic detects in `power_law`.
 
 ## Motivation
 
@@ -68,7 +68,7 @@ chosen identity element relates to WALDO's `(mu_n, sigma_n)`.
 - `tilt(...)` is continuous in `eta` (no clamps, no NaNs in the
   admissible range).
 - Output is a Gaussian N(mu, sigma^2) with `sigma > 0`.
-- Smoothness invariant: the Step-5 diagnostic must report
+- Smoothness invariant: the `smoothness` diagnostic must report
   `lipschitz_eta < 1.0` on the canonical sandbox (claim).
 
 ## Literature
@@ -91,5 +91,4 @@ chosen identity element relates to WALDO's `(mu_n, sigma_n)`.
 
 ## Status notes
 
-Stub — implementation lands via `/propose-method ot_normal` once the
-`.claude/` workflow is wired up in Step 7.
+Stub — implementation lands via `/propose-method ot_normal`.

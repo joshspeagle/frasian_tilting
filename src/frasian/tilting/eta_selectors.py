@@ -4,14 +4,46 @@ The legacy code conflated three solvers (numerical search, closed-form
 approximation, learned MLP) inside `tilting.py`. Here they live behind
 the `EtaSelector` protocol and can be swapped via configuration.
 
-Step 5 ships only `NumericalEtaSelector`. The closed-form approximation
-and the learned-MLP variants land in a later step alongside their tests
-and briefs.
+Selectors come in two flavours flagged by `is_dynamic`:
+  - **static**: `select(context)` returns a single η for the whole CI
+    inversion. `FixedEtaSelector` (constant η) and `NumericalEtaSelector`
+    (η minimising tilted CI width at a representative D) are static.
+  - **dynamic**: η varies per θ. `DynamicNumericalEtaSelector` is the
+    canonical example — it precomputes η*(|Δ|) on a coarse grid then
+    interpolates per θ at CI-inversion time.
+
+Static selectors compose with `TiltingScheme.tilted_confidence_interval`
+(one-shot inversion); dynamic selectors compose with
+`TiltingScheme.dynamic_tilted_confidence_interval` (scan + crossings).
+Both paths route through `TiltingScheme.confidence_interval`, the
+uniform interface the experiments call.
+
+Coverage caveat — read before using `NumericalEtaSelector`
+==========================================================
+
+The two selector flavours have **different coverage properties**:
+
+  - `DynamicNumericalEtaSelector` (per-θ): the η used at each θ depends
+    only on θ (not on the data D). The WALDO p-value at any fixed η is
+    U[0,1] under H0: θ = θ_true, so the CI achieves exact 1-α coverage
+    by construction. **This is the calibrated default** used by
+    `default_tiltings()` and the `coverage` / `width` experiments.
+
+  - `NumericalEtaSelector` (static, post-selection): η = argmin_η
+    |CI_η(D)|. Width is monotone non-increasing in flexibility, so this
+    CI is always ≤ WALDO and asymptotes to Wald at large |Δ|. **But the
+    coverage drops below nominal** (~93% empirically at α=0.05; see
+    `tests/regression/test_post_selection_coverage.py`) because picking
+    the narrowest CI per D is post-selection inference. Use this
+    selector only as a *baseline for studying the coverage / width
+    trade-off* — it is not a calibrated estimator. The framework's
+    research goal is to find smoother tilting families that retrieve
+    static-η-opt's narrowness *while* keeping per-θ-η's calibration.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 from scipy import optimize
@@ -42,8 +74,42 @@ class _NamedStatistic:
 
 
 @dataclass(frozen=True)
+class FixedEtaSelector:
+    """Always return the same η. Identity selector for any tilting scheme.
+
+    `(power_law, FixedEtaSelector(0.0))` is numerically identical to the
+    `IdentityTilting` (η=0 recovers the input WALDO posterior); we keep
+    the class so other tiltings can declare a non-zero identity element.
+    """
+
+    eta: float = 0.0
+    name: str = "fixed"
+    is_dynamic: bool = False
+
+    def select(self, context: TiltingContext, scheme: TiltingScheme,
+               *, statistic: TestStatistic) -> float:
+        return float(self.eta)
+
+
+@dataclass(frozen=True)
 class NumericalEtaSelector:
     """Pick η minimizing the (analytic) CI width for the tilted posterior.
+
+    DOES NOT MAINTAIN NOMINAL COVERAGE. Choosing η = argmin_η |CI_η(D)|
+    per data sample is post-selection inference: the resulting CI is
+    biased toward narrow CIs that systematically exclude θ_true at a
+    rate higher than α. Empirically the shortfall is ~2 percentage
+    points at α=0.05 (see `tests/regression/test_post_selection_coverage.py`),
+    and grows with |Δ|.
+
+    Use this selector only as a baseline for illustrating the
+    coverage / width trade-off. For calibrated CIs, use
+    `DynamicNumericalEtaSelector` (the per-θ varying selector that the
+    framework defaults to in `default_tiltings()`).
+
+    Width-wise, this selector is the genuine optimum: ≤ WALDO at every
+    D, → Wald at large |Δ|. That's exactly why coverage drops — the
+    procedure is too eager to shrink.
 
     The width is computed by inverting the tilted p-value at a single
     representative `D` (no Monte-Carlo). For the (power_law, waldo) cell
@@ -55,6 +121,7 @@ class NumericalEtaSelector:
     sigma: float = 1.0
     mu0: float = 0.0
     eta_min_buffer: float = 1e-3
+    is_dynamic: bool = False
 
     def select(self, context: TiltingContext, scheme: TiltingScheme,
                *, statistic: TestStatistic) -> float:
@@ -80,7 +147,7 @@ class NumericalEtaSelector:
                 else:
                     raise NotImplementedError(
                         f"{type(scheme).__name__} does not implement "
-                        f"`tilted_confidence_interval` (Step 5 bridge)."
+                        f"`tilted_confidence_interval`."
                     )
             except (NotImplementedError, TiltingDomainError, ValueError, RuntimeError):
                 return np.inf
@@ -108,3 +175,94 @@ class NumericalEtaSelector:
             ctx = TiltingContext(w=w, abs_delta=float(ad), alpha=alpha)
             out[i] = self.select(ctx, scheme, statistic=statistic)
         return out
+
+
+@dataclass
+class DynamicNumericalEtaSelector:
+    """Per-θ varying η* via the coarse-grid + interpolation strategy.
+
+    The framework's **calibrated default** for `power_law` cells.
+    Maintains 1-α coverage by construction: the η used at each θ depends
+    only on θ (not on D), so the WALDO p-value at any fixed η is U[0,1]
+    under H0, and the CI = {θ : p_dyn(θ; D) ≥ α} has the correct level.
+    Contrast with `NumericalEtaSelector`, which picks η post hoc per D
+    and undercovers (see that class's docstring).
+
+    Width behaviour: at large |Δ| the dynamic procedure approaches Wald
+    *eventually*, but takes a detour past Wald in the conflict band
+    (around |Δ| ≈ 2-3 for w=0.5) — the η used at θ values near the
+    prior is heavily prior-amplifying even when D is far from the
+    prior, dragging the CI toward μ₀. This non-monotone width is the
+    structural pathology that smoother tilting families (OT, geodesic,
+    mixture) are intended to fix without sacrificing the calibration.
+
+    Wraps `NumericalEtaSelector.select_grid`: the inner machinery is the
+    same width-minimising solver, but `is_dynamic = True` flags to the
+    tilting that it should route CI inversion through
+    `dynamic_tilted_confidence_interval` (scan + α-crossings) rather than
+    `tilted_confidence_interval` (one-shot bracket inversion).
+
+    `n_grid` and `coarse_n` control resolution of the per-θ scan and the
+    coarse η*(|Δ|) lookup, respectively. `search_mult` controls the half-
+    width (in σ) of the θ scan window centred on D.
+
+    `select_grid` is memoized by
+    `(w, α, statistic.name, scheme_name, coarse_n, ad_max_bin)`, where
+    `ad_max_bin = ceil(max(abs_delta_grid) / cache_bin_width) *
+    cache_bin_width` — the smallest 0.5-wide cache bin that covers the
+    requested range. This makes the cache **order-independent**: every
+    call with the same `ad_max_bin` returns the same lookup (the same
+    `np.linspace(0, ad_max_bin, coarse_n)` evaluated by the inner
+    width-minimising solver), regardless of what other queries have hit
+    the selector first.
+    """
+
+    name: str = "dynamic_numerical"
+    sigma: float = 1.0
+    mu0: float = 0.0
+    eta_min_buffer: float = 1e-3
+    n_grid: int = 401
+    coarse_n: int = 25
+    search_mult: float = 8.0
+    cache_bin_width: float = 0.5
+    is_dynamic: bool = True
+    # Mutable cache; `compare=False, repr=False` keeps the dataclass's
+    # auto-generated `__eq__` / `__repr__` independent of the cache state.
+    _cache: dict = field(default_factory=dict, compare=False, repr=False)
+
+    def _inner(self) -> NumericalEtaSelector:
+        return NumericalEtaSelector(sigma=self.sigma, mu0=self.mu0,
+                                    eta_min_buffer=self.eta_min_buffer)
+
+    def select(self, context: TiltingContext, scheme: TiltingScheme,
+               *, statistic: TestStatistic) -> float:
+        """Convenience: a single-context η* (delegates to the static inner)."""
+        return self._inner().select(context, scheme, statistic=statistic)
+
+    def select_grid(self, abs_delta_grid, scheme: TiltingScheme,
+                    *, statistic: TestStatistic, w: float, alpha: float
+                    ):
+        coarse_n = len(abs_delta_grid)
+        scheme_name = getattr(scheme, "name", type(scheme).__name__)
+        ad_max = float(np.asarray(abs_delta_grid).max())
+        # Bin `ad_max` to the next multiple of `cache_bin_width`. This
+        # makes the cached coarse grid `linspace(0, ad_max_bin, coarse_n)`
+        # deterministic given the bin — different `ad_max` values within
+        # the same bin produce identical grid points and η values.
+        # Multiple bins coexist in the cache.
+        ad_max_bin = float(np.ceil(max(ad_max, self.cache_bin_width)
+                                     / self.cache_bin_width)
+                           * self.cache_bin_width)
+        key = (w, alpha, statistic.name, scheme_name, coarse_n, ad_max_bin)
+        cached = self._cache.get(key)
+        if cached is None:
+            coarse_grid_full = np.linspace(0.0, ad_max_bin, coarse_n)
+            eta_full = self._inner().select_grid(
+                coarse_grid_full, scheme, statistic=statistic,
+                w=w, alpha=alpha,
+            )
+            self._cache[key] = (coarse_grid_full, eta_full)
+            cached_grid, cached_eta = coarse_grid_full, eta_full
+        else:
+            cached_grid, cached_eta = cached
+        return np.interp(abs_delta_grid, cached_grid, cached_eta)

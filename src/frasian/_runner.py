@@ -22,16 +22,23 @@ from .config import Config
 from .experiments.base import Experiment, RawResult
 from .simulation.cache import git_sha
 from .simulation.runner import persist_cell
+from .statistics.base import accepts_tilting as _accepts_tilting
 
 
 @dataclass
 class CellSummary:
     """One row of `RunSummary.cells`: the (tilting, statistic) cell and the
-    relative path to its persisted result inside the run's `out_dir`."""
+    relative path to its persisted result inside the run's `out_dir`.
+
+    `cache_path` is empty for cells skipped due to `accepts_tilting`
+    incompatibility; `status` carries the reason ('ok' | 'incompatible').
+    """
 
     tilting: str
     statistic: str
     cache_path: str
+    status: str = "ok"
+    reason: str = ""
 
 
 @dataclass
@@ -57,12 +64,29 @@ def _to_jsonable(obj: Any) -> Any:
         return str(obj)
     if isinstance(obj, CellSummary):
         return {"tilting": obj.tilting, "statistic": obj.statistic,
-                "cache_path": obj.cache_path}
+                "cache_path": obj.cache_path,
+                "status": obj.status, "reason": obj.reason}
     if isinstance(obj, dict):
         return {k: _to_jsonable(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
         return [_to_jsonable(x) for x in obj]
     return obj
+
+
+def _instantiate(obj: Any) -> Any:
+    """Accept a class or instance; return an instance.
+
+    The runner used to take iterables of classes; the refactor allows
+    iterables of instances so callers can configure tilting selectors.
+    Bare classes still work as long as they accept zero-arg construction.
+    """
+    return obj() if isinstance(obj, type) else obj
+
+
+def _cell_name(tilting: Any) -> str:
+    """Display name used in the manifest. Tiltings may opt into a
+    `cell_name` property to encode their selector; fall back to `name`."""
+    return getattr(tilting, "cell_name", None) or getattr(tilting, "name", "?")
 
 
 def run_experiment(
@@ -113,11 +137,25 @@ def run_experiment(
 
     ctx = experiment.setup(config)
     raw_results: list[RawResult] = []
-    for tilting_cls, statistic_cls in itertools.product(
+    for tilting_obj, statistic_obj in itertools.product(
         tilting_classes, statistic_classes
     ):
-        tilting = tilting_cls()
-        statistic = statistic_cls()
+        tilting = _instantiate(tilting_obj)
+        statistic = _instantiate(statistic_obj)
+        cell_tilting_name = _cell_name(tilting)
+        cell_statistic_name = getattr(statistic, "name", "?")
+
+        if not _accepts_tilting(statistic, tilting):
+            summary.cells.append(CellSummary(
+                tilting=cell_tilting_name,
+                statistic=cell_statistic_name,
+                cache_path="",
+                status="incompatible",
+                reason=(f"{cell_statistic_name} declines pairing with "
+                        f"{cell_tilting_name}"),
+            ))
+            continue
+
         result = experiment.run_cell(ctx, tilting, statistic)
         raw_fp = str(result.metadata.get("raw_fingerprint", ""))
         path = persist_cell(

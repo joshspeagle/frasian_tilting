@@ -23,6 +23,7 @@ from .._errors import TiltingDomainError  # noqa: F401  (re-export contract)
 from ..models.base import Likelihood, Posterior, Prior
 
 if TYPE_CHECKING:
+    from ..models.base import Model
     from ..statistics.base import TestStatistic
 
 
@@ -74,6 +75,60 @@ class TiltingScheme(Protocol):
     def is_identity(self, eta: float) -> bool: ...
 
     def admissible_range(self, context: TiltingContext) -> tuple[float, float]: ...
+
+    def confidence_interval(self, alpha: float, data: NDArray[np.float64],
+                            model: "Model", prior: Prior,
+                            statistic: "TestStatistic"
+                            ) -> tuple[float, float]:
+        """Compute the (1-α) CI under this tilting and the given statistic.
+
+        The uniform CI interface — single (lo, hi) tuple summary. For
+        cells that may produce multi-region CIs (e.g. dynamic-η Dyn-WALDO
+        at low |Δ|), this returns the convex hull `(min lo, max hi)`. For
+        the actual region list, use `confidence_regions`.
+
+        Cells whose `(scheme, statistic)` combination is unsupported MUST
+        raise `NotImplementedError`.
+        """
+        ...
+
+    def confidence_regions(self, alpha: float, data: NDArray[np.float64],
+                            model: "Model", prior: Prior,
+                            statistic: "TestStatistic"
+                            ) -> list[tuple[float, float]]:
+        """Return the (possibly multiple) region(s) of the (1-α) CI.
+
+        Default behaviour (and what every static-η cell must satisfy):
+        `[confidence_interval(...)]` — a single-element list containing
+        the same tuple. Cells whose CI inversion legitimately produces
+        multiple disjoint regions (e.g. `power_law` + dynamic-η selector
+        at low |Δ|, where the dynamic p-value is multimodal) override
+        this to return the actual list, sorted by lower endpoint.
+
+        Consumers (`coverage`, `width`, `confidence_distribution`) should
+        prefer this method over `confidence_interval` when union-of-regions
+        semantics matter (true coverage, true width, true CD shape).
+        """
+        ...
+
+    def pvalue(self, theta: ArrayLike, data: NDArray[np.float64],
+               model: "Model", prior: Prior,
+               statistic: "TestStatistic") -> NDArray[np.float64]:
+        """Selector-aware p-value at hypothesised θ values.
+
+        Default (no tilting): delegate to `statistic.pvalue(θ, data, model, prior)`.
+        For a non-identity tilting with a fixed-η static selector: evaluate
+        the *tilted* p-value at the selector-resolved η. For a dynamic-η
+        selector: use the per-θ varying η = η*(|Δ_θ|).
+
+        This is the universal entry point that the CD constructor uses to
+        evaluate `p(θ)` on a fine θ-grid for the Schweder–Hjort density
+        construction.
+
+        Cells whose `(scheme, statistic)` combination is unsupported MUST
+        raise `NotImplementedError`.
+        """
+        ...
 
 
 @runtime_checkable

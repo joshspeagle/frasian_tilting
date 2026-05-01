@@ -60,7 +60,7 @@ the WALDO identity element.
 
 - `tilt(eta=eta_identity)` returns the chosen reference.
 - Output is Gaussian with `sigma > 0`.
-- Path is differentiable in `eta` (Step-5 Lipschitz < 1 expected).
+- Path is differentiable in `eta` (`smoothness` Lipschitz < 1 expected).
 - Reduces to a vertical-line interpolation when `mu_a = mu_b`.
 
 ## Literature
@@ -84,6 +84,6 @@ the WALDO identity element.
 ## Status notes
 
 Stub — `/propose-method geodesic_normal` will fill the derivation +
-implementation once the workflow is wired in Step 7. Compare
-empirically against `ot_normal` on the smoothness diagnostic — the
-Step-5 metrics will tell which (if either) wins.
+implementation. Compare empirically against `ot_normal` on the
+`smoothness` diagnostic to see which (if either) wins on the
+Lipschitz / TV / discontinuity metrics.

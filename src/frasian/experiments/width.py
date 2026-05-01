@@ -1,13 +1,18 @@
-"""WidthExperiment: mean CI width on a (theta_true, w) grid.
+"""WidthExperiment: mean CI width (union of regions) on a (theta_true, w) grid.
 
 For each cell (TiltingScheme x TestStatistic) and each (theta_true, w):
   1. Generate `n_reps` samples D ~ N(theta_true, sigma).
-  2. Compute CI for each D and collect the widths.
-  3. Mean width = average; SE = sample standard error.
+  2. Compute the (1-α) CI regions via
+     `tilting.confidence_regions(alpha, [D], model, prior, statistic)`
+     and record `sum(hi - lo for lo, hi in regions)` (union width).
+  3. Mean width = average; SE = sample standard error. Also record
+     mean region count per cell (≥ 1; > 1 indicates multimodal-p
+     regimes such as Dyn-WALDO under conflict).
 
-Equivalent to plotting the dependence of CI width on the scaled
-prior-data conflict `Delta = (1 - w)(mu0 - D)/sigma`, which is what the
-Step-5 smoothness diagnostic operates on.
+This is the "Dynamic-WALDO width" measurement when run on
+`(power_law[dynamic_numerical], waldo)`. Union semantics replace the
+prior convex-hull width to honour the actual CI structure produced by
+multimodal p-values; for single-region cells the two coincide.
 """
 
 from __future__ import annotations
@@ -73,39 +78,46 @@ class WidthExperiment:
         n_w = w_grid.size
         mean_width = np.empty((n_theta, n_w), dtype=np.float64)
         width_se = np.empty_like(mean_width)
+        mean_n_regions = np.empty_like(mean_width)
 
         for j, w in enumerate(w_grid):
             sigma0 = _sigma0_from_w(float(w), self.sigma)
             prior = NormalDistribution(loc=self.mu0, scale=sigma0)
             for i in range(n_theta):
                 widths = np.empty(n_reps, dtype=np.float64)
+                n_regions_arr = np.empty(n_reps, dtype=np.float64)
                 supported = True
                 for k in range(n_reps):
                     D = raw.D[i, k]
                     try:
-                        lo, hi = statistic.confidence_interval(
-                            alpha, np.asarray([D]), model, prior,
+                        regions = tilting.confidence_regions(
+                            alpha, np.asarray([D]), model, prior, statistic,
                         )
                     except NotImplementedError:
                         supported = False
                         break
-                    widths[k] = hi - lo
+                    widths[k] = float(sum(hi - lo for lo, hi in regions))
+                    n_regions_arr[k] = float(len(regions))
                 if not supported:
                     mean_width[i, j] = np.nan
                     width_se[i, j] = np.nan
+                    mean_n_regions[i, j] = np.nan
                 else:
                     mean_width[i, j] = float(widths.mean())
                     width_se[i, j] = float(widths.std(ddof=1) / np.sqrt(n_reps))
+                    mean_n_regions[i, j] = float(n_regions_arr.mean())
 
+        cell_name = getattr(tilting, "cell_name", tilting.name)
         return RawResult(
             experiment=self.name,
-            tilting=tilting.name,
+            tilting=cell_name,
             statistic=statistic.name,
             arrays={
                 "theta_grid": theta_grid,
                 "w_grid": w_grid,
                 "mean_width": mean_width,
                 "width_se": width_se,
+                "mean_n_regions": mean_n_regions,
             },
             metadata={
                 "raw_fingerprint": raw.fingerprint(),
@@ -113,7 +125,8 @@ class WidthExperiment:
                 "n_reps": n_reps,
                 "sigma": self.sigma,
                 "mu0": self.mu0,
-                "eta": tilting.param_space.eta_identity,
+                "selector": getattr(getattr(tilting, "selector", None),
+                                    "name", None),
             },
         )
 

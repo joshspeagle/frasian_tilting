@@ -18,11 +18,12 @@ from pathlib import Path
 import pytest
 
 DEMOS = [
+    "frasian.experiments.illustrations.identity_demo",
     "frasian.experiments.illustrations.wald_demo",
     "frasian.experiments.illustrations.waldo_demo",
     "frasian.experiments.illustrations.power_law_demo",
     "frasian.experiments.illustrations.smoothness_demo",
-    "frasian.experiments.illustrations.dynamic_ci_demo",
+    "frasian.experiments.illustrations.confidence_distribution_demo",
 ]
 
 

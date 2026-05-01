@@ -3,7 +3,7 @@
 Visualises how the tilted Normal posterior interpolates between WALDO
 (eta=0) and Wald (eta=1), and explores the oversharpened regime
 (eta < 0). The visible separation between curves at low `|Delta|` is the
-qualitative signature the Step-5 smoothness diagnostic will quantify.
+qualitative signature the smoothness diagnostic quantifies.
 """
 
 from __future__ import annotations

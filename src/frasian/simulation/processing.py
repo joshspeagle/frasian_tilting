@@ -1,8 +1,8 @@
 """Layer 1: deterministic transforms from `RawSamples` to `ProcessedResult`.
 
-Concrete processors (coverage rates, CI widths, calibration tables) ship
-with the experiments that need them in Step 4. Step 3 only defines the
-type and a smoke processor used by the cache tests.
+Concrete processors (coverage rates, CI widths, calibration tables) live
+with the experiments that need them under `frasian/experiments/`. This
+module defines the type and a smoke processor used by the cache tests.
 """
 
 from __future__ import annotations

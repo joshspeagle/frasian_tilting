@@ -16,9 +16,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from frasian import Config, registry, run_experiment
+from frasian import Config, default_smoothness_tiltings, registry, run_experiment
 from frasian.config import GridSpec
 from frasian.simulation.storage import load_result
+from frasian.statistics.wald import WaldStatistic
+from frasian.statistics.waldo import WaldoStatistic
 
 
 def _smoothness_config() -> Config:
@@ -34,14 +36,19 @@ class TestSmoothnessExperimentEndToEnd:
         experiment = registry.experiments["smoothness"]()
         run_experiment(
             experiment=experiment,
-            tiltings=registry.tiltings.implemented(),
-            statistics=registry.statistics.implemented(),
+            tiltings=default_smoothness_tiltings(),
+            statistics=[WaldStatistic(), WaldoStatistic()],
             config=_smoothness_config(),
             out_dir=tmp_path,
         )
         manifest = json.loads((tmp_path / "manifest.json").read_text())
         assert manifest["experiment"] == "smoothness"
-        assert len(manifest["cells"]) == 2
+        # 2 tiltings × 2 statistics = 4 cells; (power_law, wald) gated out.
+        ok = [c for c in manifest["cells"] if c["status"] == "ok"]
+        skipped = [c for c in manifest["cells"]
+                   if c["status"] == "incompatible"]
+        assert len(ok) == 3
+        assert len(skipped) == 1
         assert "smoothness" in manifest["diagnostics"]
         assert (tmp_path / "figures" / "smoothness_metrics.png").exists()
         assert (tmp_path / "smoothness.csv").exists()
@@ -53,13 +60,15 @@ class TestSmoothnessExperimentEndToEnd:
         experiment = registry.experiments["smoothness"]()
         run_experiment(
             experiment=experiment,
-            tiltings=registry.tiltings.implemented(),
-            statistics=[registry.statistics["waldo"]],
+            tiltings=default_smoothness_tiltings(),
+            statistics=[WaldoStatistic()],
             config=_smoothness_config(),
             out_dir=tmp_path,
         )
         df = pd.read_csv(tmp_path / "smoothness.csv")
-        sub = df[df["statistic"] == "waldo"]
+        # Two waldo rows now: identity (constant η=0) and power_law (the
+        # one that should detect the discontinuity). Filter on power_law.
+        sub = df[(df["statistic"] == "waldo") & (df["tilting"] == "power_law")]
 
         lip = float(sub[sub["metric"] == "lipschitz_eta"]["value"].iloc[0])
         tv = float(sub[sub["metric"] == "total_variation_eta"]["value"].iloc[0])
@@ -75,15 +84,16 @@ class TestSmoothnessExperimentEndToEnd:
         # At least one outlier 2nd-difference at the kink.
         assert disc >= 1, f"discontinuity_count too low: {disc}"
 
-    def test_wald_cell_is_smooth_baseline(self, tmp_path: Path,
-                                              bootstrapped_registry):
-        """The Wald cell must be the smoothness floor: ~0 Lipschitz, ~0 TV,
-        0 discontinuities. Wald's eta-independence means eta* is constant."""
+    def test_identity_wald_cell_is_smooth_baseline(self, tmp_path: Path,
+                                                      bootstrapped_registry):
+        """The (identity, wald) cell is the smoothness floor: ~0 Lipschitz,
+        ~0 TV, 0 discontinuities — η is constant 0 by construction."""
         experiment = registry.experiments["smoothness"]()
+        from frasian.tilting.identity import IdentityTilting
         run_experiment(
             experiment=experiment,
-            tiltings=registry.tiltings.implemented(),
-            statistics=[registry.statistics["wald"]],
+            tiltings=[IdentityTilting()],
+            statistics=[WaldStatistic()],
             config=_smoothness_config(),
             out_dir=tmp_path,
         )
@@ -102,13 +112,16 @@ class TestSmoothnessExperimentEndToEnd:
         experiment = registry.experiments["smoothness"]()
         run_experiment(
             experiment=experiment,
-            tiltings=registry.tiltings.implemented(),
-            statistics=[registry.statistics["waldo"]],
+            tiltings=default_smoothness_tiltings(),
+            statistics=[WaldoStatistic()],
             config=_smoothness_config(),
             out_dir=tmp_path,
         )
         manifest = json.loads((tmp_path / "manifest.json").read_text())
-        cell = manifest["cells"][0]
+        # Pick the power_law cell — identity records constant eta=0.
+        cell = next(c for c in manifest["cells"]
+                     if c["status"] == "ok"
+                     and c["tilting"].startswith("power_law"))
         result = load_result(tmp_path / cell["cache_path"])
         eta = result.arrays["eta_star"]
         finite = eta[np.isfinite(eta)]

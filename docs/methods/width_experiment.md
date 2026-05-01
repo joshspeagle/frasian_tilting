@@ -21,9 +21,20 @@ tables (`CLAUDE.md` "CI Widths" section) live in this experiment.
 For each `(theta_i, w_j)`:
 
   Generate D_{i,j,k} ~ N(theta_i, sigma) for k = 1..n_reps
-  width_{i,j,k}   = upper_{i,j,k} - lower_{i,j,k}    (one CI per D sample)
-  mean_width_{i,j} = mean_k width_{i,j,k}
-  width_se_{i,j}   = std_k(width_{i,j,k}) / sqrt(n_reps)
+  regions_{i,j,k}   = tilting.confidence_regions(alpha, [D_{i,j,k}], model, prior_j, statistic)
+  width_{i,j,k}     = sum(hi - lo for (lo, hi) in regions_{i,j,k})    (union width)
+  n_regions_{i,j,k} = len(regions_{i,j,k})
+  mean_width_{i,j}     = mean_k width_{i,j,k}
+  width_se_{i,j}       = std_k(width_{i,j,k}) / sqrt(n_reps)
+  mean_n_regions_{i,j} = mean_k n_regions_{i,j,k}
+
+**Union semantics**: width is the sum of region widths, not the
+convex-hull `(max hi − min lo)`. For single-region cells (Wald, plain
+WALDO, all static-η `power_law`) the two coincide. For multi-region
+cells (Dyn-WALDO at low |Δ|, where the dynamic p-value is multimodal
+and dips below α between the peaks) union ≤ hull strictly. The cell
+also records `mean_n_regions` (≥ 1; > 1 indicates the multimodal-p
+regime).
 
 ## Derivation
 
@@ -40,7 +51,8 @@ quantity used in the "efficiency" comparisons against Wald.
   `|Delta|`) the width is *less* than Wald, under strong conflict
   (large `|Delta|`) it is *greater*.
 - The minimum mean-width over `eta` for each `(theta_true, w)` is what
-  the optimal tilting solver picks. Step 5 reads this surface.
+  the optimal tilting solver picks; the `smoothness` experiment reads
+  this surface.
 
 ## Failure modes
 
@@ -69,6 +81,16 @@ quantity used in the "efficiency" comparisons against Wald.
 
 ## Status notes
 
-Same Tilting-dimension caveat as `coverage_experiment.md`: every cell
-uses `eta = scheme.param_space.eta_identity`. Step 5 sweeps `eta` to
-study width-vs-eta and the smoothness of the optimum.
+Each cell's CI is computed via `tilting.confidence_regions(...)` (the
+multi-region-aware interface): the tilting owns the η-selector.
+`(identity, waldo)` produces the plain WALDO width;
+`(power_law[dynamic_numerical], waldo)` produces the Dynamic-WALDO
+width (formerly the central column of the legacy `dynamic_ci`). Width
+uses **union semantics** — `sum(hi − lo for lo, hi in regions)` —
+which strictly equals the convex-hull width for single-region cells
+(Wald, plain WALDO, all static-η power_law) and is strictly less for
+multi-region cells (Dyn-WALDO at low |Δ| where the inter-peak gap is
+excluded). The cell also records `mean_n_regions` (≥ 1; > 1 indicates
+the multimodal-p regime). Cells gated incompatible by
+`accepts_tilting` are recorded with `status="incompatible"` and
+skipped.

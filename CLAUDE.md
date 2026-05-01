@@ -70,16 +70,22 @@ imports so static tooling can find every method.
 User-facing call:
 
 ```python
-from frasian import run_experiment, registry
+from frasian import default_cells, run_experiment, registry, Config
 
+tiltings, statistics = default_cells(experiment="coverage")
 summary = run_experiment(
     experiment=registry.experiments["coverage"](),
-    tiltings=registry.tiltings.implemented(),       # `.all()` includes stubs
-    statistics=registry.statistics.implemented(),
+    tiltings=tiltings,                   # [IdentityTilting(), PowerLawTilting(selector=DynamicNumericalEtaSelector(...))]
+    statistics=statistics,               # [WaldStatistic(), WaldoStatistic()]
     config=Config.fast(),                # or Config.default()
     out_dir=Path("results/coverage"),
 )
 ```
+
+`default_cells(experiment="smoothness")` returns the bare-family
+tiltings instead, since the smoothness experiment sweeps the parameter
+itself and would produce duplicate output if the cell carried a
+non-default selector.
 
 The runner persists each cell's `RawResult` through the cache layer (keyed
 on Config fingerprint + git sha + raw fingerprint), runs the experiment's
@@ -100,35 +106,68 @@ restriction explicitly via `models/_dispatch.require_model`).
 
 | Name              | Status        | Notes                                     |
 |-------------------|---------------|-------------------------------------------|
+| `identity`        | implemented   | No-op tilting; identity element of the matrix |
 | `power_law`       | implemented   | Ported Theorem 6 from legacy `tilting.py` |
 | `ot_normal`       | stub          | W2 geodesic between Gaussians             |
 | `geodesic_normal` | stub          | Fisher-Rao geodesic for Gaussians         |
 | `mixture`         | stub          | Convex prior-posterior mixture            |
 | `exp_family`      | stub          | Natural-parameter interpolation           |
 
+Each `TiltingScheme` owns its **selector** (`EtaSelector`) as a
+constructor argument: `FixedEtaSelector` is the static identity,
+`NumericalEtaSelector` is static-with-context (post-selection — see
+caveat below), and `DynamicNumericalEtaSelector` varies η per θ. The
+cell name picks up the selector when non-default, so
+`power_law[dynamic_numerical]` is the **Dynamic-WALDO** cell when
+paired with `waldo`. The `identity` tilting + a uniform
+`tilting.confidence_interval(alpha, data, model, prior, statistic)`
+API let coverage / width / smoothness all share one cell loop.
+
+**Calibration caveat — important.** The framework's calibrated default
+is `DynamicNumericalEtaSelector`: η at each θ depends only on θ (not
+on D), so the WALDO p-value at any fixed η is U[0,1] under H0 and the
+CI achieves exact 1-α coverage. The static `NumericalEtaSelector`
+gives strictly narrower CIs (≤ Wald asymptotically) but is post-
+selection inference and **undercovers by ~2 points at α=0.05** —
+pinned by `tests/regression/test_post_selection_coverage.py`. The
+static selector is exposed via `post_selection_demo_tiltings()` only
+to make the trade-off measurable; never use it for production CI
+estimation.
+
 ## Test Statistics (status)
 
 | Name          | Status        | Notes                                          |
 |---------------|---------------|------------------------------------------------|
-| `wald`        | implemented   | Closed-form CI: D ± z·σ                        |
+| `wald`        | implemented   | Closed-form CI: D ± z·σ; identity-tilting only |
 | `waldo`       | implemented   | p(θ) = Φ(b−a) + Φ(−a−b); numerical CI inversion |
 | `lrt`         | stub          | -2 log Λ; on Normal-location reduces to Wald   |
 | `signed_root` | stub          | sign·√LRT; on Normal-location equals Wald      |
 | `bartlett`    | stub          | LRT/E[LRT]; decorator over base LRT (planned)  |
 
+Each statistic declares which tiltings it accepts via
+`accepts_tilting(tilting)`. Wald accepts only `identity` (it ignores
+the prior, so non-identity cells are degenerate duplicates). Other
+statistics accept any tilting by default. The runner gates incompatible
+cells before `run_cell` and records them in the manifest with
+`status="incompatible"`.
+
 ## Experiments (status)
 
-| Name        | Status        | Output                                              |
-|-------------|---------------|-----------------------------------------------------|
-| `coverage`  | implemented   | Empirical coverage on (θ_true, w) grid              |
-| `width`     | implemented   | Mean CI width on (θ_true, w) grid                   |
-| `smoothness`| implemented   | η*(|Δ|) Lipschitz / TV / discontinuity / spectral   |
-| `dynamic_ci`| implemented   | Coverage / width / region-count for η*(|Δ(θ)|) CIs  |
+| Name                       | Status      | Output                                              |
+|----------------------------|-------------|-----------------------------------------------------|
+| `coverage`                 | implemented | Empirical coverage on (θ_true, w) grid              |
+| `width`                    | implemented | Mean CI width on (θ_true, w) grid                   |
+| `smoothness`               | implemented | η*(|Δ|) Lipschitz / TV / discontinuity / spectral   |
+| `confidence_distribution`  | implemented | CD median / 95-width / W₁-to-Wald / non-monotone fraction |
 
-`coverage` and `width` use `eta = scheme.param_space.eta_identity` for
-every tilting; the Tilting dimension is load-bearing in `smoothness` (which
-sweeps eta and reports the optimum's roughness) and in `dynamic_ci`
-(which uses η = η*(|Δ(θ)|) varying per θ).
+All three experiments dispatch CI computation through
+`tilting.confidence_interval(alpha, data, model, prior, statistic)` —
+the tilting owns its selector and so produces plain WALDO at
+`(identity, waldo)` and Dynamic-WALDO at `(power_law[dynamic_numerical],
+waldo)` from the same loop. The legacy `dynamic_ci` experiment was
+folded into `coverage` / `width` (it was effectively those two
+diagnostics on a different selector); the underlying
+`PowerLawTilting.dynamic_tilted_*` engine still exists.
 
 ## Project Structure
 
@@ -149,6 +188,8 @@ src/frasian/
   tilting/
     base.py                  # TiltingScheme, EtaSelector, TiltingDomainError
     _solvers.py              # ONE brentq_with_doubling
+    eta_selectors.py         # Fixed / Numerical / DynamicNumerical EtaSelectors
+    identity.py              # IdentityTilting (no-op identity element)
     power_law.py             # PowerLawTilting (Theorem 6)
     {ot_normal,geodesic_normal,mixture,exp_family}.py  # planned stubs
 
@@ -159,23 +200,27 @@ src/frasian/
     {lrt,signed_root,bartlett}.py  # planned stubs
 
   cd/
-    base.py                  # ConfidenceDistribution, CDFamily
-    factory.py               # planned: build_cd dispatcher
-    {from_pvalue,from_closed_form,from_tilted}.py  # planned
+    base.py                  # ConfidenceDistribution protocol
+    grid.py                  # GridConfidenceDistribution (concrete)
+    from_pvalue.py           # universal constructor (p-value → density → CDF)
+    from_closed_form.py      # closed-form Wald/WALDO CDs (test fixtures)
+    distances.py             # wasserstein_1, wasserstein_2, total_variation
 
   experiments/
     base.py                  # Experiment, ExperimentContext, RawResult
     coverage.py              # CoverageExperiment
     width.py                 # WidthExperiment
-    smoothness.py            # planned (Step 5)
+    smoothness.py            # SmoothnessExperiment
+    confidence_distribution.py  # ConfidenceDistributionExperiment
     illustrations/           # one demo per registered method
-      {wald,waldo,power_law}_demo.py
+      {identity,wald,waldo,power_law,smoothness,confidence_distribution}_demo.py
 
   diagnostics/
     base.py                  # Diagnostic + DiagnosticTable
     coverage_table.py        # CoverageRateDiagnostic
     width_table.py           # MeanWidthDiagnostic
-    smoothness_metrics.py    # planned (Step 5)
+    smoothness_metrics.py    # SmoothnessDiagnostic
+    cd_summary.py            # CDSummaryDiagnostic
 
   simulation/
     storage.py               # npz + json sidecar I/O
@@ -185,11 +230,8 @@ src/frasian/
     runner.py                # persist_cell helper
 
   learned/
-    base.py                  # LearnedArtifact protocol
+    base.py                  # LearnedArtifact protocol (unused; future hook)
     null.py                  # NullArtifact (for tests)
-    eta_lookup.py            # planned: monotonic η* MLP port
-
-  plotting/                  # planned: shared style + primitives
 
 tests/
   conftest.py                # autouse registry isolation + bootstrapped fixture
@@ -197,8 +239,6 @@ tests/
   regression/                # tight-tolerance baselines (L0/L2)
   experiments/               # end-to-end Experiment runs (L4)
   integration/               # registry + empty-registry checks
-
-experiments/                 # planned: versioned analysis configs (yaml)
 
 docs/
   methods/                   # one .md brief per registered method
@@ -255,13 +295,12 @@ required sections (CI-checked by `tools/check_method_completeness.py`):
 8. Literature
 9. Links
 
-Step 7 wires the `.claude/` subagents (`skeptic`, `literature-reviewer`,
-`deriver`), slash commands (`/propose-method`, `/critique`, `/derive`,
-`/litreview`), and GitHub Actions workflows (`ci.yaml` running L0-L4
-tests + `method-completeness.yaml` running `tools/check_method_completeness.py`
-plus illustration smoke runs) that gate brief / property-test /
-illustration completeness on every PR. See `docs/workflows.md` for the
-full lifecycle.
+The `.claude/` subagents (`skeptic`, `literature-reviewer`, `deriver`),
+slash commands (`/propose-method`, `/critique`, `/derive`, `/litreview`),
+and GitHub Actions workflows (`ci.yaml` running L0-L4 tests +
+`method-completeness.yaml` running `tools/check_method_completeness.py`
+plus illustration smoke runs) gate brief / property-test / illustration
+completeness on every PR. See `docs/workflows.md` for the full lifecycle.
 
 ## Running Things
 
@@ -273,7 +312,6 @@ python -m scripts.run --list
 python -m scripts.run --fast experiment=coverage
 python -m scripts.run --fast experiment=width
 python -m scripts.run --fast experiment=smoothness
-python -m scripts.run --fast experiment=dynamic_ci
 
 # Regenerate figures + CSVs from a persisted results dir
 python -m scripts.figures results/coverage
@@ -311,6 +349,7 @@ clean tree is byte-reproducible.
 | 5    | done   | SmoothnessExperiment quantifying the power-law discontinuity    |
 | 6    | done   | Stubs: OT / geodesic / mixture / exp_family / LRT / SR / BCLRT  |
 | 7    | done   | .claude/ subagents + slash commands + GitHub Actions CI gates   |
+| 8    | done   | Selector-as-tilting-member refactor: IdentityTilting + accepts_tilting + uniform `tilting.confidence_interval`; dynamic_ci subsumed by coverage/width |
 
 ## Key Anti-Patterns to Avoid
 

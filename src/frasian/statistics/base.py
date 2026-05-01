@@ -5,17 +5,26 @@ its asymptotic null distribution, its p-value, and an acceptance region. The
 abstraction is uniform across Wald, WALDO, LRT, signed-root, and Bartlett-
 corrected variants — Bartlett is implemented as a decorator over LRT, not as a
 separate top-level statistic.
+
+Statistics also declare which `TiltingScheme`s they accept via
+`accepts_tilting`. The default is "any tilting"; pure-likelihood statistics
+that ignore the prior (e.g. Wald) override to accept only `IdentityTilting`,
+so the runner can gate non-identity cells out of the cross-product instead
+of producing numerically-degenerate duplicates.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from ..models.base import Model, Prior
+
+if TYPE_CHECKING:
+    from ..tilting.base import TiltingScheme
 
 
 @dataclass(frozen=True)
@@ -65,3 +74,28 @@ class TestStatistic(Protocol):
         natural CI inversion may raise `NotImplementedError`.
         """
         ...
+
+    def accepts_tilting(self, tilting: "TiltingScheme") -> bool:
+        """Declare whether this statistic supports being paired with `tilting`.
+
+        Default: any tilting is acceptable. Statistics that ignore the prior
+        (e.g. Wald) should override to return `True` only for the identity
+        tilting — the runner skips cells where this returns `False` and
+        records them as `incompatible` in the manifest.
+        """
+        return True
+
+
+def accepts_tilting(statistic: "TestStatistic",
+                    tilting: "TiltingScheme") -> bool:
+    """Free-function entry point used by the runner.
+
+    Statistics may opt in by defining `accepts_tilting`; absent the method,
+    we default to `True` (compatible with any tilting). This avoids forcing
+    every concrete statistic to inherit from a common base class — they are
+    `Protocol` implementations.
+    """
+    fn = getattr(statistic, "accepts_tilting", None)
+    if fn is None:
+        return True
+    return bool(fn(tilting))
