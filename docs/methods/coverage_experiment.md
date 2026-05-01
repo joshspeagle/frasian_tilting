@@ -56,8 +56,8 @@ for this level of estimation given `n_reps >= 1000`.)
 - Statistics whose `confidence_interval` raises `NotImplementedError`
   produce `NaN` rows; the diagnostic preserves them rather than masking.
 - Strong-prior corners (`w → 0`) produce CIs that depend acutely on
-  `D`; the local Lipschitz behavior of the WALDO p-value (Step-5 study)
-  shows up here as variability between replicates.
+  `D`; the local Lipschitz behavior of the WALDO p-value (see the
+  `smoothness` experiment) shows up here as variability between replicates.
 
 ## Invariants
 

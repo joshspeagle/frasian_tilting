@@ -147,7 +147,7 @@ class NumericalEtaSelector:
                 else:
                     raise NotImplementedError(
                         f"{type(scheme).__name__} does not implement "
-                        f"`tilted_confidence_interval` (Step 5 bridge)."
+                        f"`tilted_confidence_interval`."
                     )
             except (NotImplementedError, TiltingDomainError, ValueError, RuntimeError):
                 return np.inf

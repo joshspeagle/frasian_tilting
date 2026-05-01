@@ -13,8 +13,8 @@ in the legacy derivations):
 Identity element is `eta = 0` (recovers the WALDO posterior). The motivating
 research observation — the reason this whole framework exists — is that the
 *selection* of eta as a function of |Delta| produces a sharp transition
-between posterior-driven and likelihood-driven behavior. The smoothness
-diagnostic (Step 5) makes that complaint quantitative.
+between posterior-driven and likelihood-driven behavior; the smoothness
+experiment makes that complaint quantitative.
 
 Admissible range is bounded below by the non-negativity of `denom`:
   eta_min = -w/(1-w) + buffer       (variance positive)
@@ -122,8 +122,8 @@ class PowerLawTilting:
         eta_arr = np.asarray(eta, dtype=np.float64)
         if eta_arr.ndim != 0:
             raise NotImplementedError(
-                "tilt() expects scalar eta; vectorized eta lands with "
-                "the smoothness experiment in Step 5."
+                "tilt() expects scalar eta; vectorised eta is consumed "
+                "by the smoothness experiment via repeated scalar calls."
             )
         eta_f = float(eta_arr)
 
@@ -159,14 +159,15 @@ class PowerLawTilting:
         eta_high = 1.0 / (1.0 - w) - _ETA_MIN_BUFFER
         return (eta_low, eta_high)
 
-    # ----- (TiltingScheme, TestStatistic) cross-product specializations -----
+    # ----- (TiltingScheme, TestStatistic) cross-product specialisations -----
     #
-    # The Step-5 SmoothnessExperiment needs `tilted p-value` and `tilted CI`
-    # — quantities that depend on *both* the tilting scheme and the test
-    # statistic. The cleanest factoring (multiple dispatch on (scheme,
-    # statistic) types) is deferred to Step 6 when more cells exist; for
-    # now we dispatch on `statistic.name` inside the scheme. Documented as
-    # a temporary bridge in docs/methods/power_law.md.
+    # The smoothness experiment needs `tilted p-value` and `tilted CI` —
+    # quantities that depend on *both* the tilting scheme and the test
+    # statistic. The cleanest factoring would be multiple dispatch on
+    # (scheme, statistic) types; for now we dispatch on `statistic.name`
+    # inside the scheme. Documented as a temporary bridge in
+    # `docs/methods/power_law.md`. The generalisation lands when a
+    # second non-Wald/WALDO statistic gets implemented.
 
     def tilted_pvalue(self, theta: ArrayLike, D: float, model: object,
                       prior: NormalDistribution, eta: float,

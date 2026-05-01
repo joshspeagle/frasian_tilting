@@ -49,8 +49,8 @@ class SmoothnessExperiment:
 
     def setup(self, config: Config) -> ExperimentContext:
         # |Δ| grid lives at config.delta_grid; default 11 points 0..5 in fast,
-        # 51 points 0..5 in default. The full Step-5 figure uses 401 points,
-        # which is what `--default` (no --fast) gives via Config.default.
+        # 51 points 0..5 in default. The publication-grade figure uses 401
+        # points, which is what `--default` (no --fast) gives via Config.default.
         return ExperimentContext(
             config=config,
             grid={"abs_delta_grid": config.delta_grid.to_array()},

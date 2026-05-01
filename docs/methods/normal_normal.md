@@ -45,9 +45,8 @@ Auxiliary quantities used by downstream methods:
 Standard conjugacy: the Gaussian likelihood is conjugate to the Gaussian
 prior, so the posterior is Gaussian with precision equal to the sum of
 prior and likelihood precisions, and mean equal to the precision-weighted
-average. Detailed steps are duplicated only in the legacy README; the
-*ported* derivation lives here once Step 4 promotes a reference proof
-document.
+average. Detailed steps live in the legacy README; promoting a clean
+ported derivation here is a follow-up doc task.
 
 ## Predicted behavior
 
@@ -63,8 +62,8 @@ document.
   `NormalDistribution` constructor — the only entry point.
 - `sigma0 → 0` makes `w → 0` and `sigma_n → 0`; the WALDO p-value's
   Lipschitz constant scales as `1 / (w * sigma)`, producing the very
-  steep behavior the framework is designed to study (Step-5 smoothness
-  diagnostic).
+  steep behavior the framework is designed to study (see the
+  `smoothness` experiment).
 - Non-conjugate priors raise `NotImplementedError` from `posterior(...)`;
   generic posterior inference is a future extension.
 

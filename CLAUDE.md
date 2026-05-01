@@ -199,23 +199,27 @@ src/frasian/
     {lrt,signed_root,bartlett}.py  # planned stubs
 
   cd/
-    base.py                  # ConfidenceDistribution, CDFamily
-    factory.py               # planned: build_cd dispatcher
-    {from_pvalue,from_closed_form,from_tilted}.py  # planned
+    base.py                  # ConfidenceDistribution protocol
+    grid.py                  # GridConfidenceDistribution (concrete)
+    from_pvalue.py           # universal constructor (p-value → density → CDF)
+    from_closed_form.py      # closed-form Wald/WALDO CDs (test fixtures)
+    distances.py             # wasserstein_1, wasserstein_2, total_variation
 
   experiments/
     base.py                  # Experiment, ExperimentContext, RawResult
     coverage.py              # CoverageExperiment
     width.py                 # WidthExperiment
     smoothness.py            # SmoothnessExperiment
+    confidence_distribution.py  # ConfidenceDistributionExperiment
     illustrations/           # one demo per registered method
-      {identity,wald,waldo,power_law,smoothness}_demo.py
+      {identity,wald,waldo,power_law,smoothness,confidence_distribution}_demo.py
 
   diagnostics/
     base.py                  # Diagnostic + DiagnosticTable
     coverage_table.py        # CoverageRateDiagnostic
     width_table.py           # MeanWidthDiagnostic
     smoothness_metrics.py    # SmoothnessDiagnostic
+    cd_summary.py            # CDSummaryDiagnostic
 
   simulation/
     storage.py               # npz + json sidecar I/O
@@ -225,11 +229,8 @@ src/frasian/
     runner.py                # persist_cell helper
 
   learned/
-    base.py                  # LearnedArtifact protocol
+    base.py                  # LearnedArtifact protocol (unused; future hook)
     null.py                  # NullArtifact (for tests)
-    eta_lookup.py            # planned: monotonic η* MLP port
-
-  plotting/                  # planned: shared style + primitives
 
 tests/
   conftest.py                # autouse registry isolation + bootstrapped fixture
@@ -237,8 +238,6 @@ tests/
   regression/                # tight-tolerance baselines (L0/L2)
   experiments/               # end-to-end Experiment runs (L4)
   integration/               # registry + empty-registry checks
-
-experiments/                 # planned: versioned analysis configs (yaml)
 
 docs/
   methods/                   # one .md brief per registered method
@@ -295,13 +294,12 @@ required sections (CI-checked by `tools/check_method_completeness.py`):
 8. Literature
 9. Links
 
-Step 7 wires the `.claude/` subagents (`skeptic`, `literature-reviewer`,
-`deriver`), slash commands (`/propose-method`, `/critique`, `/derive`,
-`/litreview`), and GitHub Actions workflows (`ci.yaml` running L0-L4
-tests + `method-completeness.yaml` running `tools/check_method_completeness.py`
-plus illustration smoke runs) that gate brief / property-test /
-illustration completeness on every PR. See `docs/workflows.md` for the
-full lifecycle.
+The `.claude/` subagents (`skeptic`, `literature-reviewer`, `deriver`),
+slash commands (`/propose-method`, `/critique`, `/derive`, `/litreview`),
+and GitHub Actions workflows (`ci.yaml` running L0-L4 tests +
+`method-completeness.yaml` running `tools/check_method_completeness.py`
+plus illustration smoke runs) gate brief / property-test / illustration
+completeness on every PR. See `docs/workflows.md` for the full lifecycle.
 
 ## Running Things
 

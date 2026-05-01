@@ -17,7 +17,7 @@ borrowing prior information for shorter CIs in the data-poor regime
 without sacrificing frequentist coverage at any single `theta_true`. It
 is the η = 0 element of the power-law tilting family — the centre of the
 research, and the benchmark every alternative tilting/statistic
-combination must beat on the smoothness diagnostic in Step 5.
+combination must beat on the `smoothness` diagnostic.
 
 ## Definition
 
@@ -41,8 +41,8 @@ under H0, `mu_n - theta` is Gaussian with mean
 addends correspond to the upper and lower tails of the squared form.
 
 A full algebraic derivation is scheduled to live in
-`docs/derivations/theorem_3_waldo_pvalue.md` once the `deriver` agent is
-wired up in the Step-7 workflow integration.
+`docs/derivations/theorem_3_waldo_pvalue.md`; the `deriver` agent is
+already wired up.
 
 ## Predicted behavior
 
@@ -52,7 +52,7 @@ wired up in the Step-7 workflow integration.
   no conflict; *wider* when the prior conflicts strongly with the data.
 - The Lipschitz constant of `p(theta)` scales as `1 / (w * sigma)` —
   small `w` (strong prior) implies steep p-values, the basis for the
-  Step-5 smoothness diagnostic.
+  `smoothness` diagnostic.
 
 ## Failure modes
 
@@ -85,7 +85,6 @@ wired up in the Step-7 workflow integration.
 
 ## Status notes
 
-`acceptance_region` raises `NotImplementedError` until Step 4's
-CoverageExperiment provides the numerical inversion; the dual problem in
-D-space requires solving the WALDO p-value implicit equation, which the
-coverage runner already needs.
+`acceptance_region` numerically inverts the WALDO p-value via
+`brentq_with_doubling` (see `statistics/waldo.py:77`), giving the
+D-space interval at fixed `theta0`.

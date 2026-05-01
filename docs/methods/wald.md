@@ -75,7 +75,8 @@ of the model itself.)
 ## Status notes
 
 The `acceptance_region` returns the D-space interval (`D = theta0 ± z*sigma`).
-LRT / signed-root variants are scheduled stubs in Step 6.
+LRT / signed-root / Bartlett variants are scheduled stubs (see
+`docs/methods/{lrt,signed_root,bartlett}.md`).
 
 `WaldStatistic.accepts_tilting(tilting)` returns `True` only when
 `tilting.name == "identity"` — Wald ignores the prior, so non-identity

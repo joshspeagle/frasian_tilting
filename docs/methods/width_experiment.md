@@ -47,7 +47,8 @@ quantity used in the "efficiency" comparisons against Wald.
   `|Delta|`) the width is *less* than Wald, under strong conflict
   (large `|Delta|`) it is *greater*.
 - The minimum mean-width over `eta` for each `(theta_true, w)` is what
-  the optimal tilting solver picks. Step 5 reads this surface.
+  the optimal tilting solver picks; the `smoothness` experiment reads
+  this surface.
 
 ## Failure modes
 

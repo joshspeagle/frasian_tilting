@@ -42,7 +42,7 @@ sign function reproduces the direction.
   `r.CI == wald.CI`.
 - Under H0, `r` is Uniform on the unit interval after Phi-transform.
 - The added value of `signed_root` (over Wald) appears only in
-  non-Gaussian models — out of scope for Step 6.
+  non-Gaussian models — currently out of scope.
 
 ## Failure modes
 

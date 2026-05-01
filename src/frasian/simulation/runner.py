@@ -1,9 +1,9 @@
 """Wires the cross-product runner to the cache layer.
 
-The Step-1 `_runner.run_experiment` does not yet persist anything; this
-module supplies the `persist_cell` helper that takes one cell's `RawResult`
-plus the inputs that produced it, derives a `CacheKey`, and stores or
-reuses via `cache.get_or_compute`. Step 4's experiments call this helper.
+`persist_cell` takes one cell's `RawResult` plus the inputs that produced
+it, derives a `CacheKey`, and stores or reuses via `cache.get_or_compute`.
+The framework's experiments (`coverage`, `width`, `smoothness`,
+`confidence_distribution`) all route through this helper.
 """
 
 from __future__ import annotations

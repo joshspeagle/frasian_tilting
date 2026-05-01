@@ -114,9 +114,9 @@ from the matrix.)
 ## Status notes
 
 The (TiltingScheme, TestStatistic) cell-evaluator is currently a
-specialization on `statistic.name` inside `PowerLawTilting`. Step 6
-generalizes via multiple dispatch when more cell shapes exist (LRT,
-signed-root).
+specialisation on `statistic.name` inside `PowerLawTilting`. The
+generalisation to multiple dispatch lands when a second non-Wald/WALDO
+statistic gets implemented (LRT, signed-root).
 
 This experiment uses `default_smoothness_tiltings()` (the **bare**
 families, not the selector-baked instances coverage/width use) — η is

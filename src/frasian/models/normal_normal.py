@@ -99,8 +99,9 @@ class NormalNormalModel:
 
     def likelihood(self, data: NDArray[np.float64]) -> GaussianLikelihood:
         # The model treats `data` as a single sufficient statistic D = mean(data)
-        # with variance sigma^2 / n. Step 2 keeps n=1 (D is the observation
-        # itself); Step 4+ generalizes to n>1 via the sufficient-stat path.
+        # with variance sigma^2 / n. The framework currently keeps n=1 (D is
+        # the observation itself); generalising to n>1 via the sufficient-stat
+        # path is a future extension.
         D = float(np.atleast_1d(np.asarray(data, dtype=np.float64)).mean())
         return GaussianLikelihood(D=D, sigma=self.sigma)
 

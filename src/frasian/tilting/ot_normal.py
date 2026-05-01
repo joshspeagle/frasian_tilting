@@ -10,7 +10,7 @@ Mapped to the framework's tilting parameterisation, the candidate identity
 element is `eta = 0` -> posterior, `eta = 1` -> prior (or vice versa,
 TBD by /derive). The motivating hypothesis is that this geodesic
 produces a smoother eta*(|Delta|) curve than power-law tilting; the
-Step-5 SmoothnessExperiment is the gating diagnostic.
+`smoothness` experiment is the gating diagnostic.
 """
 
 from __future__ import annotations

@@ -4,7 +4,7 @@ The legacy `simulations/raw.py` had three experiment-specific generators
 (coverage / distribution / width) hardcoding their own grids. Here we
 expose one generic builder that takes any (theta_grid, model, n_reps)
 and yields a typed `RawSamples`. Experiment-specific factories — which
-choose the grid — land with the experiments themselves in Step 4.
+choose the grid — live with the experiments in `frasian/experiments/`.
 """
 
 from __future__ import annotations
