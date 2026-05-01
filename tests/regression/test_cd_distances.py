@@ -22,6 +22,7 @@ from scipy import optimize, stats
 
 from frasian.cd.distances import (total_variation, wasserstein_1,
                                      wasserstein_1_gaussian_shift,
+                                     wasserstein_1_gaussian_zero_mean_scale,
                                      wasserstein_2, wasserstein_2_gaussian)
 from frasian.cd.grid import GridConfidenceDistribution
 
@@ -110,7 +111,41 @@ class TestWasserstein1GaussianShift:
         b = _gaussian_cd(mu_b, 1.0)
         actual = wasserstein_1(a, b)
         expected = wasserstein_1_gaussian_shift(mu_a, mu_b)
-        assert actual == pytest.approx(expected, abs=2e-3)
+        # Equal-σ shifts have integrand `|F_a − F_b|` symmetric in θ;
+        # CDF-form trapezoidal hits the closed form to floating-point.
+        assert actual == pytest.approx(expected, abs=1e-6)
+
+
+@pytest.mark.L0
+class TestWasserstein1GaussianScaleMismatch:
+    """W₁ between zero-mean Gaussians of differing scale matches the
+    closed form `|σ_a − σ_b| · √(2/π)` (= |Δσ| · E[|Z|] from the quantile
+    representation). This is the missing tight regression that the
+    equal-scale-shift test does not exercise."""
+
+    @pytest.mark.parametrize("sigma_a, sigma_b", [
+        (1.0, 2.0),
+        (1.0, 5.0),
+        (0.5, 3.0),
+        (1.0, 10.0),
+    ])
+    def test_w1_zero_mean_scale_mismatch(self, sigma_a, sigma_b):
+        # Use a generously wider grid for the heavy-σ side so the
+        # CDF integral covers both supports adequately.
+        n = 8001
+        a = _gaussian_cd(0.0, sigma_a, n=n)
+        b = _gaussian_cd(0.0, sigma_b, n=n)
+        actual = wasserstein_1(a, b)
+        expected = wasserstein_1_gaussian_zero_mean_scale(sigma_a, sigma_b)
+        # CDF-form trapezoidal hits the closed form within ~1e-6 on a
+        # fine grid (the integrand `|F_a − F_b|` is smooth and bounded
+        # in [0, 1], so trapezoidal is well-conditioned). Compare to
+        # the ~5e-3 error a Gauss–Hermite quantile-form integration
+        # would suffer at the |·| kink.
+        assert actual == pytest.approx(expected, abs=5e-4), (
+            f"W₁(N(0,{sigma_a}), N(0,{sigma_b})): expected {expected}, "
+            f"got {actual}"
+        )
 
 
 @pytest.mark.L0

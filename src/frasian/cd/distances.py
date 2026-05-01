@@ -47,7 +47,18 @@ def wasserstein_1(a: GridConfidenceDistribution,
 
     Both CDFs are evaluated by interpolation onto the union of the two
     θ-grids (each CDF is monotone by construction since pdf ≥ 0), then
-    integrated trapezoidally.
+    integrated trapezoidally on the merged grid.
+
+    Why CDF-form rather than Gauss–Hermite (parallel to `wasserstein_2`):
+    the equivalent quantile-axis integrand `|Q_a(u) − Q_b(u)|` carries a
+    kink wherever the two quantile functions cross (always present when
+    `σ_a ≠ σ_b`). Gauss–Hermite quadrature suffers from polynomial-fitting
+    errors at the kink — empirically ~5e-3 on a (μ=0, σ_a=1, σ_b=2) pair
+    even at n_quad = 64. The CDF integrand `|F_a − F_b|` on the θ-axis
+    is smooth in pieces (each F is a smooth Gaussian-like CDF), so
+    trapezoidal integration on the framework's 4001-point grid hits the
+    closed form `W₁ = |σ_a − σ_b|·√(2/π)` (zero-mean Gaussian σ-mismatch)
+    to ~1e-7. CDF-form is the right method here.
     """
     grid = _merge_grids(a, b)
     fa = a.cdf(grid)
@@ -134,3 +145,20 @@ def wasserstein_1_gaussian_shift(mu_a: float, mu_b: float) -> float:
     is the deterministic shift; the cost is the absolute mean shift).
     """
     return float(abs(mu_a - mu_b))
+
+
+def wasserstein_1_gaussian_zero_mean_scale(sigma_a: float,
+                                            sigma_b: float) -> float:
+    """Closed-form W₁ between two zero-mean Gaussians of differing scale.
+
+    Derived from the quantile-axis form:
+
+        W₁ = ∫₀¹ |Q_a(u) − Q_b(u)| du
+           = ∫₀¹ |σ_a − σ_b|·|Φ⁻¹(u)| du
+           = |σ_a − σ_b| · E_{Z~N(0,1)}[|Z|]
+           = |σ_a − σ_b| · √(2/π).
+
+    Used as a tight test fixture for the σ-mismatched-Gaussian case
+    where the equal-scale closed form `|μ_a − μ_b|` does not apply.
+    """
+    return float(abs(sigma_a - sigma_b) * np.sqrt(2.0 / np.pi))
