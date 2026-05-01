@@ -9,9 +9,10 @@ the Frasian inference setting. The driving question:
 
 The framework is structured as a **(TiltingScheme × TestStatistic) cross-
 product**. Every cell of the matrix produces a `RawResult` consumed by a
-shared diagnostic suite (coverage, width, smoothness, dynamic-η CIs).
-Adding a new tilting or statistic is a one-file change plus its brief,
-property tests, and demo.
+shared diagnostic suite (coverage, width, smoothness, and the full
+**confidence distribution** — CD-median / 95% width / W₁-to-Wald /
+non-monotonicity flag). Adding a new tilting or statistic is a one-file
+change plus its brief, property tests, and demo.
 
 The legacy implementation that motivated this design lives under
 `legacy/` for reference. See `CLAUDE.md` for the architecture and
@@ -30,19 +31,18 @@ Python 3.11+ recommended; the test matrix runs on 3.11 and 3.12.
 ```python
 from pathlib import Path
 
-from frasian import Config, registry, run_experiment
+from frasian import Config, default_cells, registry, run_experiment
 
-# Bootstrap concrete implementations into the registry
-from frasian._registry_bootstrap import bootstrap
-bootstrap()
-
-# Run any registered experiment over the (Tilting × Statistic) cross-product
+# `default_cells` returns the calibrated (identity, wald), (identity, waldo),
+# (power_law[dynamic_numerical], waldo) triple — the framework's headline
+# Wald / WALDO / Dyn-WALDO comparison.
+tiltings, statistics = default_cells(experiment="confidence_distribution")
 summary = run_experiment(
-    experiment=registry.experiments["smoothness"](),
-    tiltings=registry.tiltings.implemented(),    # skip stubs
-    statistics=registry.statistics.implemented(),
-    config=Config.fast(),                        # ~30s; Config.default() for full
-    out_dir=Path("results/smoothness"),
+    experiment=registry.experiments["confidence_distribution"](),
+    tiltings=tiltings,
+    statistics=statistics,
+    config=Config.fast(),                        # ~30s coverage; ~5min CD
+    out_dir=Path("results/confidence_distribution"),
 )
 
 print(f"ran {len(summary.cells)} cells; manifest at {summary.out_dir}/manifest.json")
@@ -51,23 +51,37 @@ print(f"ran {len(summary.cells)} cells; manifest at {summary.out_dir}/manifest.j
 Or via the CLI:
 
 ```bash
-python -m scripts.run --list                              # discover methods
-python -m scripts.run --fast experiment=coverage          # ~30s
-python -m scripts.run --fast experiment=smoothness        # ~30s
-python -m scripts.run --fast experiment=dynamic_ci        # ~1 min
-python -m scripts.figures results/smoothness              # regenerate figures
+python -m scripts.run --list                                    # discover methods
+python -m scripts.run --fast experiment=coverage                # ~30s
+python -m scripts.run --fast experiment=width                   # ~30s
+python -m scripts.run --fast experiment=smoothness              # ~30s
+python -m scripts.run --fast experiment=confidence_distribution # ~5min (CD per replicate)
+python -m scripts.figures results/coverage                      # regenerate figures
 ```
 
 ## What's registered today
 
-| Kind        | Count | Implemented                                | Stubs |
-|-------------|------:|--------------------------------------------|-------|
-| Models      | 2     | normal_normal, bernoulli                   | —     |
-| Tiltings    | 5     | power_law                                  | ot_normal, geodesic_normal, mixture, exp_family |
-| Statistics  | 5     | wald, waldo                                | lrt, signed_root, bartlett |
-| Experiments | 4     | coverage, width, smoothness, dynamic_ci    | —     |
+| Kind        | Count | Implemented                                                  | Stubs |
+|-------------|------:|--------------------------------------------------------------|-------|
+| Models      | 2     | normal_normal, bernoulli                                     | —     |
+| Tiltings    | 6     | identity, power_law                                          | ot_normal, geodesic_normal, mixture, exp_family |
+| Statistics  | 5     | wald, waldo                                                  | lrt, signed_root, bartlett |
+| Experiments | 4     | coverage, width, smoothness, confidence_distribution         | —     |
 
 `python -m scripts.run --list` for the live status.
+
+The framework's headline cells are:
+
+| Cell                                       | Method      |
+|--------------------------------------------|-------------|
+| `(identity, wald)`                         | Wald        |
+| `(identity, waldo)`                        | WALDO (η=0) |
+| `(power_law[dynamic_numerical], waldo)`    | Dynamic-WALDO (per-θ varying η, calibrated) |
+
+`(power_law[numerical], waldo)` is also exposed via
+`post_selection_demo_tiltings()` to demonstrate the post-selection
+coverage shortfall of the static η\*-opt construction (~93% empirical
+vs nominal 95%); it is not a production estimator.
 
 ## The smoothness diagnostic
 
@@ -77,13 +91,32 @@ whether a tilting scheme produces sharp transitions in `η*(|Δ|)`. On a
 
 |                       | Lipschitz η* | TV(η*) | Discontinuities |
 |-----------------------|-------------:|-------:|----------------:|
-| (power_law, **wald**) | ~0           | ~0     | 0               |
+| (identity, **wald**)  | ~0           | ~0     | 0               |
 | (power_law, **waldo**)| **17.1**     | 2.14   | **11**          |
 
-The Wald row is the smoothness floor (η-independent). The Waldo row
-shows the kink at |Δ|≈0.3 where η* leaves the admissible-range clamp.
-Future tilting schemes (`ot_normal`, `geodesic_normal`, `mixture`,
-`exp_family`) must beat these numbers to justify their existence.
+The `(identity, wald)` row is the smoothness floor (η-independent).
+The `(power_law, waldo)` row shows the kink at |Δ|≈0.3 where η* leaves
+the admissible-range clamp. Future tilting schemes (`ot_normal`,
+`geodesic_normal`, `mixture`, `exp_family`) must beat these numbers
+to justify their existence.
+
+## The confidence distribution
+
+The framework promotes per-α coverage/width to the full **CD** —
+constructed from the cell's `tilting.pvalue(...)` via Schweder–Hjort
+density `c(θ) = ½|dp/dθ|` (renormalised), with the cdf derived as the
+cumulative integral of the non-negative density (always monotone, even
+for multimodal p-values like Dyn-WALDO under conflict). Distance to a
+Wald reference CD is reported as **W₁** (CDF-form trapezoidal — exact
+to ~1e-7 for σ-mismatched Gaussians) with **W₂** available via Gauss–
+Hermite quadrature on `z = Φ⁻¹(u)` (matches Olkin–Pukelsheim closed
+form to ~1e-5).
+
+For Dyn-WALDO, the inversion-based confidence curve C(θ) becomes
+*non-monotone* at conflict — the smoothness pathology surfacing in
+distributional form. The CD experiment reports `nonmonotone_fraction`
+per cell; on `Config.fast()` it lights up to ~100% in heavy-conflict
+corners (large |θ_true|, small w).
 
 ## Adding a new method
 
@@ -105,7 +138,7 @@ cookbook.
 ## Tests
 
 ```bash
-python -m pytest                    # 423 tests + 32 stub-skips, ~1 min
+python -m pytest                    # 541 tests + 32 stub-skips, ~1.5 min
 python -m pytest -m "L0 or L1"      # math primitives + invariants
 python -m pytest -m L4              # end-to-end experiments only
 python tools/check_method_completeness.py    # gate every PR runs
