@@ -48,19 +48,27 @@ def default_tiltings(*, sigma: float = 1.0, mu0: float = 0.0,
     """For coverage / width: tiltings *with their selector baked in*.
 
     Identity + power_law[dynamic_numerical]. The fixed-η=0 power_law
-    cell is omitted as numerically redundant with identity. Future
-    smooth schemes (OT / geodesic / mixture / exp_family) plug in here
-    once their stubs are implemented.
+    cell is omitted as numerically redundant with identity. Smoother
+    geodesic schemes (`ot`, `fisher_rao`, `mixture`) plug in here as
+    they are implemented; `ot[dynamic_numerical]` is the W2-tilted
+    counterpart of Dynamic-WALDO.
     """
     # Imports inside the function body keep `import frasian` side-effect-
     # free: only callers that actually need the cell instances trigger
     # the tilting/statistic module registrations.
     from .tilting.eta_selectors import DynamicNumericalEtaSelector
     from .tilting.identity import IdentityTilting
+    from .tilting.ot import OTTilting
     from .tilting.power_law import PowerLawTilting
     return [
         IdentityTilting(),
         PowerLawTilting(
+            selector=DynamicNumericalEtaSelector(
+                sigma=sigma, mu0=mu0,
+                n_grid=n_grid, coarse_n=coarse_n,
+            ),
+        ),
+        OTTilting(
             selector=DynamicNumericalEtaSelector(
                 sigma=sigma, mu0=mu0,
                 n_grid=n_grid, coarse_n=coarse_n,
@@ -101,8 +109,9 @@ def default_smoothness_tiltings() -> list["TiltingScheme"]:
     pass the bare family instances to avoid duplicate output.
     """
     from .tilting.identity import IdentityTilting
+    from .tilting.ot import OTTilting
     from .tilting.power_law import PowerLawTilting
-    return [IdentityTilting(), PowerLawTilting()]
+    return [IdentityTilting(), PowerLawTilting(), OTTilting()]
 
 
 def default_statistics() -> list["TestStatistic"]:

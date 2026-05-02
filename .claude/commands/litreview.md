@@ -7,7 +7,7 @@ Run the `literature-reviewer` subagent on `$ARGUMENTS`.
 The argument should look like `<method-name> [one-sentence-description]`,
 for example:
 
-  /litreview ot_normal Wasserstein-2 geodesic between Gaussians
+  /litreview fisher_rao Fisher-Rao geodesic between Gaussians
   /litreview bartlett
 
 If only the method name is given, read `docs/methods/<name>.md` to

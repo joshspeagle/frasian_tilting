@@ -8,7 +8,7 @@ The no-op tilting scheme. `tilt(...)` returns the input posterior
 unchanged regardless of η, and `confidence_interval(...)` delegates
 straight to the bare statistic. Provides the canonical "no prior
 reweighting" baseline cell against which every adjusted scheme
-(`power_law`, `ot_normal`, `geodesic_normal`, `mixture`, `exp_family`)
+(`power_law`, `ot`, `fisher_rao`, `mixture`)
 is compared.
 
 ## Motivation

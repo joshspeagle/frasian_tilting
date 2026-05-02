@@ -7,7 +7,7 @@ framework.
 
 The argument should be a snake_case method name plus the *kind*:
 
-  /propose-method ot_normal tilting
+  /propose-method fisher_rao tilting
   /propose-method lrt statistic
   /propose-method dynamic_ci experiment
 
@@ -54,7 +54,7 @@ section.
 
 Generate `src/frasian/<area>/<name>.py` from the closest existing
 stub (e.g. for a tilting, copy the structure of
-`src/frasian/tilting/ot_normal.py`). Adjust the docstring, name, and
+`src/frasian/tilting/fisher_rao.py`). Adjust the docstring, name, and
 status. If `status="implemented"`, emit a TODO marker in each method
 body rather than `NotImplementedError`.
 

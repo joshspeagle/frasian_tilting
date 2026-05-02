@@ -28,10 +28,9 @@ def bootstrap() -> None:
     from .statistics import signed_root as _stat_sr  # noqa: F401
     from .statistics import wald as _stat_wald  # noqa: F401
     from .statistics import waldo as _stat_waldo  # noqa: F401
-    from .tilting import exp_family as _tilt_expf  # noqa: F401
-    from .tilting import geodesic_normal as _tilt_geo  # noqa: F401
+    from .tilting import fisher_rao as _tilt_fr  # noqa: F401
     from .tilting import identity as _tilt_identity  # noqa: F401
     from .tilting import mixture as _tilt_mix  # noqa: F401
-    from .tilting import ot_normal as _tilt_ot  # noqa: F401
+    from .tilting import ot as _tilt_ot  # noqa: F401
     from .tilting import power_law as _tilt_power  # noqa: F401
     _BOOTSTRAPPED = True

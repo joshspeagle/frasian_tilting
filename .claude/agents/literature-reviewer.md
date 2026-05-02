@@ -12,7 +12,7 @@ Your job is twofold:
 
 ## Inputs
 
-- The method's name (e.g. `ot_normal`, `bartlett`).
+- The method's name (e.g. `fisher_rao`, `bartlett`).
 - A one-sentence description (e.g. "Wasserstein-2 geodesic between Gaussians").
 
 If the brief at `docs/methods/<name>.md` already exists, read it first
@@ -29,7 +29,7 @@ to see what is already cited, what claims need backing, and what the
   for Wasserstein-on-Gaussian, etc.
 - **Closely related** (2-5): direct extensions, refinements, or
   comparable schemes. E.g. Costa et al. 2015 Fisher distance for
-  `geodesic_normal`; Cuturi 2013 Sinkhorn for `ot_normal`.
+  `fisher_rao`; McCann 1997 / Villani 2003 for `ot`.
 - **Contrasting** (1-3): papers that propose alternatives the brief
   might want to compare against, or that point out limitations of the
   proposed approach. E.g. for power-law tilting, papers on regret

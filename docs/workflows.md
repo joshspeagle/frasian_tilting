@@ -76,7 +76,7 @@ Four commands in `.claude/commands/` orchestrate the subagents:
 A new method goes from zero to merged via:
 
 ```
-/propose-method ot_normal tilting
+/propose-method ot tilting
 
   ↓ deriver fills Derivation
   ↓ literature-reviewer fills Literature
@@ -85,12 +85,12 @@ A new method goes from zero to merged via:
   ↓ user fixes caveats
 
 # verify locally
-python -m pytest tests/properties/test_ot_normal_invariants.py
+python -m pytest tests/properties/test_ot_invariants.py
 python tools/check_method_completeness.py
-python -m frasian.experiments.illustrations.ot_normal_demo --smoke
+python -m frasian.experiments.illustrations.ot_demo --smoke
 
 # open PR
-git push -u origin feat/ot-normal
+git push -u origin feat/ot
 
   ↓ ci.yaml runs L0-L4 pytest
   ↓ method-completeness.yaml runs the checker + smoke-runs all demos
@@ -101,7 +101,7 @@ A subsequent refinement (e.g. flipping a `pytest.mark.skip` to a
 passing assertion when an invariant becomes provable):
 
 ```
-/critique src/frasian/tilting/ot_normal.py
+/critique src/frasian/tilting/ot.py
 
   ↓ skeptic flags missing edge case at sigma_a → sigma_b
   ↓ user adds the corresponding property test
@@ -145,7 +145,7 @@ The location depends on `<kind>`:
 
 | kind        | path                                          | template |
 |-------------|-----------------------------------------------|----------|
-| tilting     | `src/frasian/tilting/<name>.py`               | `tilting/ot_normal.py` (stub) or `tilting/power_law.py` (impl) |
+| tilting     | `src/frasian/tilting/<name>.py`               | `tilting/fisher_rao.py` (stub), `tilting/ot.py` (impl, with general 1D path), or `tilting/power_law.py` (impl, conjugate-only) |
 | statistic   | `src/frasian/statistics/<name>.py`            | `statistics/lrt.py` (stub) or `statistics/wald.py` (impl) |
 | experiment  | `src/frasian/experiments/<name>.py`           | `experiments/coverage.py` |
 | diagnostic  | `src/frasian/diagnostics/<name>_table.py`     | `diagnostics/coverage_table.py` |

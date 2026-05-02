@@ -104,14 +104,20 @@ restriction explicitly via `models/_dispatch.require_model`).
 
 ## Tilting Schemes (status)
 
-| Name              | Status        | Notes                                     |
-|-------------------|---------------|-------------------------------------------|
-| `identity`        | implemented   | No-op tilting; identity element of the matrix |
-| `power_law`       | implemented   | Ported Theorem 6 from legacy `tilting.py` |
-| `ot_normal`       | stub          | W2 geodesic between Gaussians             |
-| `geodesic_normal` | stub          | Fisher-Rao geodesic for Gaussians         |
-| `mixture`         | stub          | Convex prior-posterior mixture            |
-| `exp_family`      | stub          | Natural-parameter interpolation           |
+| Name         | Status        | Notes                                                                                |
+|--------------|---------------|--------------------------------------------------------------------------------------|
+| `identity`   | implemented   | No-op tilting; identity element of the matrix                                        |
+| `power_law`  | implemented   | e-geodesic / log-linear (geometric mean); Theorem 6 closed form on Normal-Normal     |
+| `ot`         | implemented   | W2 geodesic; general 1D quantile-mixture, Gaussian fast path; posterior↔likelihood   |
+| `mixture`    | stub          | m-geodesic / linear-density (arithmetic mean); dual partner of `power_law`           |
+| `fisher_rao` | stub          | Levi-Civita geodesic (intrinsic Riemannian); Gaussian half-plane closed form planned |
+
+These four cover the canonical geodesic taxonomy: e-/m-geodesics
+(`power_law`/`mixture` — the dually-flat pair under the Fisher
+metric), the Levi-Civita / Fisher-Rao geodesic (`fisher_rao`), and
+the Wasserstein geodesic (`ot`). An `exp_family` natural-parameter
+scheme would be redundant with `power_law` on conjugate exponential
+families and is omitted by design.
 
 Each `TiltingScheme` owns its **selector** (`EtaSelector`) as a
 constructor argument: `FixedEtaSelector` is the static identity,
@@ -190,8 +196,10 @@ src/frasian/
     _solvers.py              # ONE brentq_with_doubling
     eta_selectors.py         # Fixed / Numerical / DynamicNumerical EtaSelectors
     identity.py              # IdentityTilting (no-op identity element)
-    power_law.py             # PowerLawTilting (Theorem 6)
-    {ot_normal,geodesic_normal,mixture,exp_family}.py  # planned stubs
+    power_law.py             # PowerLawTilting (e-geodesic / Theorem 6)
+    ot.py                    # OTTilting (W2 geodesic, general 1D + Gaussian fast path)
+    quantile_mixture.py      # QuantileMixturePath: 1D W2-geodesic Distribution wrapper
+    {fisher_rao,mixture}.py  # planned stubs
 
   statistics/
     base.py                  # TestStatistic + AsymptoticDistribution
@@ -350,6 +358,7 @@ clean tree is byte-reproducible.
 | 6    | done   | Stubs: OT / geodesic / mixture / exp_family / LRT / SR / BCLRT  |
 | 7    | done   | .claude/ subagents + slash commands + GitHub Actions CI gates   |
 | 8    | done   | Selector-as-tilting-member refactor: IdentityTilting + accepts_tilting + uniform `tilting.confidence_interval`; dynamic_ci subsumed by coverage/width |
+| 9    | done   | Geodesic taxonomy refactor: `ot_normal`→`ot` (general 1D W2 + Gaussian fast path implemented); `geodesic_normal`→`fisher_rao` (renamed stub); `exp_family` dropped (redundant with `power_law` on conjugate exp-families); `mixture` reframed as m-geodesic / dual partner of `power_law`'s e-geodesic |
 
 ## Key Anti-Patterns to Avoid
 
