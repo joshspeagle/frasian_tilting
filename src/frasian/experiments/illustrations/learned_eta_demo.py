@@ -11,9 +11,8 @@ Two panels:
             pushes EtaNet inside.
 
 Requires a Phase E checkpoint (format v2) with ValidityNet state.
-Falls back to the legacy v1 path (Panel A only) when only a
-MonotonicEtaArtifact checkpoint is available, since v1 has no
-ValidityNet to plot.
+Trains a smoke checkpoint on the fly when none is available so the
+demo is runnable without prior setup.
 """
 
 from __future__ import annotations

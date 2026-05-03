@@ -1,8 +1,6 @@
 """EtaArtifact — wraps a Phase E checkpoint (EtaNet + ValidityNet + config).
 
-Replaces the Phase D ``MonotonicEtaArtifact`` for ``LearnedDynamic``-
-``EtaSelector``. The Phase E checkpoint has format version 2 and
-contains:
+The Phase E checkpoint has format version 2 and contains:
 
 - ``eta_state_dict`` — trained ``EtaNet`` weights (θ → η).
 - ``validity_state_dict`` — trained ``ValidityNet`` weights
@@ -13,9 +11,6 @@ contains:
   compares these against the inference-time objects to refuse cross-
   experiment use.
 - λ schedule + training metrics + ``final_head_b_accuracy`` etc.
-
-The legacy ``MonotonicEtaArtifact`` and its v1 checkpoints continue
-to coexist until E.4 retires the Phase D path.
 """
 
 from __future__ import annotations
@@ -114,9 +109,9 @@ class EtaArtifact:
         if v != CHECKPOINT_FORMAT_VERSION:
             raise MissingArtifactError(
                 f"EtaArtifact: checkpoint format version {v} != "
-                f"expected {CHECKPOINT_FORMAT_VERSION}; re-train or "
-                f"migrate. (Phase D v1 checkpoints use the legacy "
-                f"MonotonicEtaArtifact path.)"
+                f"expected {CHECKPOINT_FORMAT_VERSION}; re-train via "
+                f"`python -m scripts.train_learned_eta --config "
+                f"<experiment.yaml>`."
             )
         if state["architecture"] != "EtaNet+ValidityNet":
             raise MissingArtifactError(

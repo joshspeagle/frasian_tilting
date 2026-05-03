@@ -368,7 +368,7 @@ class LearnedDynamicEtaSelector:
     so no per-(w, α) cache is needed beyond the artifact load.
     """
 
-    artifact: object  # MonotonicEtaArtifact (legacy v1) or EtaArtifact (Phase E v2)
+    artifact: object  # EtaArtifact (Phase E v2)
     name: str = "learned_dynamic"
     sigma: float = 1.0
     mu0: float = 0.0

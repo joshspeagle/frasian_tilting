@@ -8,8 +8,8 @@
 `EtaSelector` that minimises the **dynamic-procedure loss directly**
 (integrated CI width, by default), rather than the static-per-D
 width that `NumericalEtaSelector` minimises pointwise. The η*(|Δ|; w)
-function is parameterised by a small monotonic neural network
-(`MonotonicEtaNet`), trained end-to-end via `torch.autograd` through
+function is parameterised by a small dual-head neural network
+(`EtaNet` + `ValidityNet`), trained end-to-end via `torch.autograd` through
 the differentiable tilted-WALDO p-value formula and trapezoidal
 integration.
 
@@ -50,9 +50,7 @@ the trained MLP instead of a width-minimising solver.
 The Phase E selector is **per-experiment**: each (model, prior,
 scheme, statistic) configuration trains its own checkpoint, recorded
 via fingerprints in the checkpoint metadata. The selector compares
-fingerprints at inference and refuses cross-experiment use. Legacy
-v1 ("MonotonicEtaArtifact") checkpoints continue to load through the
-same selector; the dispatch is keyed on `checkpoint_format_version`.
+fingerprints at inference and refuses cross-experiment use.
 
 **Architecture: dual-head.** Two MLPs trained jointly:
 
@@ -331,29 +329,29 @@ verifies in `tests/properties/test_loss_diff.py`.
 
 - Selector: `src/frasian/tilting/eta_selectors.py:LearnedDynamicEtaSelector`
 - Phase E artifact: `src/frasian/learned/eta_artifact.py:EtaArtifact`
-- Legacy v1 artifact: `src/frasian/learned/monotonic_eta.py:MonotonicEtaArtifact` (removed in E.4)
 - Architecture: `src/frasian/learned/training/architecture.py`
-  (`EtaNet`, `ValidityNet`; legacy `MonotonicEtaNet` kept until E.4)
+  (`EtaNet`, `ValidityNet`)
 - Validity helpers: `src/frasian/learned/training/validity.py`
   (`is_pair_valid`, `validity_mask`, `compute_pvalues_per_sample`)
 - Losses: `src/frasian/learned/training/losses.py`
-  (`boundary_penalty_from_validity` for the dual-head Phase E loop)
+  (`boundary_penalty_from_validity` + width losses)
 - Experiment config: `src/frasian/learned/training/sampling.py`
   (`ExperimentConfig`, `ThetaDistribution`,
   `UniformThetaDistribution`, `lhs_1d`)
 - Torch ports: `src/frasian/learned/training/pvalue_torch.py`,
               `src/frasian/learned/training/cd_torch.py`
-- Training pipeline (Phase E): `src/frasian/learned/training/train.py:fit_eta_artifact`
-- Training pipeline (legacy): `src/frasian/learned/training/train.py:fit_monotonic_eta_artifact`
-- CLI: `scripts/train_learned_eta.py`
-  (Phase E: `--config <yaml>`; legacy: `--legacy --scheme <name>`)
+- Training pipeline: `src/frasian/learned/training/train.py:fit_eta_artifact`
+- CLI: `scripts/train_learned_eta.py` (`--config <yaml>`)
 - Experiment configs: `experiments/canonical_normal_normal_powerlaw.yaml`,
                       `experiments/canonical_normal_normal_ot.yaml`
-- Property tests: `tests/properties/test_dual_head_invariants.py`
+- Property tests: `tests/properties/test_dual_head_invariants.py`,
+                  `tests/properties/test_learned_eta_invariants.py`
 - Regression tests: `tests/regression/test_torch_pvalue_matches_numpy.py`,
                     `tests/regression/test_torch_cd_matches_numpy.py`,
                     `tests/regression/test_learned_eta_calibration.py`,
-                    `tests/regression/test_learned_eta_narrowness.py`
+                    `tests/regression/test_learned_eta_narrowness.py`,
+                    `tests/regression/test_learned_eta_selector_smoke.py`,
+                    `tests/regression/test_scheme_improper_returns_nan.py`
 - Illustration: `src/frasian/experiments/illustrations/learned_eta_demo.py`
 
 ## Empirical headline numbers
@@ -388,7 +386,7 @@ The default selector in `default_tiltings()` is gated by the env var
 `FRASIAN_DEFAULT_DYNAMIC_ETA`:
 - `numerical` (default for backwards compat): `DynamicNumericalEtaSelector`.
 - `learned`: `LearnedDynamicEtaSelector` reading the trained
-  `MonotonicEtaArtifact` from `artifacts/learned_eta_<scheme>_v0_smoke.pt`.
+  `EtaArtifact` from `artifacts/learned_eta_<config_name>_v0_smoke.pt`.
 
 To switch globally:
 ```
