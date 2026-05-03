@@ -46,43 +46,60 @@ def _resolve_dynamic_eta_mode() -> str:
     """Read FRASIAN_DEFAULT_DYNAMIC_ETA env var.
 
     Values:
-      - "numerical" (default): the legacy `DynamicNumericalEtaSelector`
-        wrapping `NumericalEtaSelector`. Calibrated by construction
-        but inflates CI width at conflict (kinky η*(|Δ|) curve).
+      - "numerical" (default): `DynamicNumericalEtaSelector` wrapping
+        `NumericalEtaSelector`. Calibrated by construction but
+        inflates CI width at conflict (kinky η*(|Δ|) curve).
       - "learned": `LearnedDynamicEtaSelector` reading the trained
-        `MonotonicEtaArtifact` at `artifacts/learned_eta_<scheme>_v1.pt`.
-        Calibrated AND narrow (the headline empirical claim).
+        Phase E `EtaArtifact` at the canonical YAML's smoke /
+        production path. Calibrated AND narrow (the headline claim).
 
-    Default is `numerical` until the headline narrowness regression
-    passes empirically (see `tests/regression/test_learned_eta_narrowness.py`).
+    Default is `numerical`.
     """
     import os
     return os.environ.get("FRASIAN_DEFAULT_DYNAMIC_ETA", "numerical").lower()
 
 
-def _make_learned_selector(scheme_name: str):
-    """Build a `LearnedDynamicEtaSelector` pointing at the v1 checkpoint.
+_PHASE_E_CHECKPOINT_FOR_SCHEME = {
+    "power_law": "canonical_normal_normal_powerlaw",
+    "ot": "canonical_normal_normal_ot",
+}
 
-    Raises a clear error if the artifact file is missing — train via
-    `python -m scripts.train_learned_eta` first.
+
+def _make_learned_selector(scheme_name: str):
+    """Build a `LearnedDynamicEtaSelector` for a Phase E checkpoint.
+
+    Looks up the YAML config name for ``scheme_name`` and prefers the
+    production checkpoint; falls back to the smoke checkpoint. Raises
+    a clear error when neither exists — train via
+    ``python -m scripts.train_learned_eta --config <yaml>``.
     """
     from pathlib import Path
-    from .learned.monotonic_eta import MonotonicEtaArtifact
+    from .learned.eta_artifact import EtaArtifact
     from .tilting.eta_selectors import LearnedDynamicEtaSelector
 
+    config_name = _PHASE_E_CHECKPOINT_FOR_SCHEME.get(scheme_name)
+    if config_name is None:
+        raise ValueError(
+            f"No Phase E experiment config registered for scheme "
+            f"{scheme_name!r}. Add an entry to "
+            f"`_PHASE_E_CHECKPOINT_FOR_SCHEME` and a YAML under "
+            f"`experiments/`."
+        )
     candidates = [
-        Path(f"artifacts/learned_eta_{scheme_name}_v1.pt"),
-        Path(f"artifacts/learned_eta_{scheme_name}_v0_smoke.pt"),
+        Path(f"artifacts/learned_eta_{config_name}_v1.pt"),
+        Path(f"artifacts/learned_eta_{config_name}_v0_smoke.pt"),
     ]
     chosen = next((c for c in candidates if c.exists()), None)
     if chosen is None:
         raise FileNotFoundError(
-            f"FRASIAN_DEFAULT_DYNAMIC_ETA=learned but no checkpoint found "
-            f"for scheme {scheme_name!r} at any of {candidates}. "
-            f"Train one via `python -m scripts.train_learned_eta "
-            f"--scheme {scheme_name} --out {candidates[0]}`."
+            f"FRASIAN_DEFAULT_DYNAMIC_ETA=learned but no Phase E "
+            f"checkpoint found for scheme {scheme_name!r} at any of "
+            f"{candidates}. Train one via `python -m "
+            f"scripts.train_learned_eta --config "
+            f"experiments/{config_name}.yaml --out "
+            f"{candidates[0]}`."
         )
-    artifact = MonotonicEtaArtifact(artifact_path=chosen)
+    artifact = EtaArtifact(artifact_path=chosen)
     return LearnedDynamicEtaSelector(artifact=artifact)
 
 

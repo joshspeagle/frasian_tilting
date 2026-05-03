@@ -688,12 +688,15 @@ def test_extract_normal_normal_params_rejects_degenerate_w(bootstrapped_registry
 
 @pytest.mark.L1
 @pytest.mark.properties
-def test_ot_torch_pvalue_returns_nan_outside_admissible_range():
-    """OT torch port mirrors numpy: NaN for η ∉ [0, 1].
+def test_ot_torch_pvalue_smooth_and_finite_inside_admissible_range():
+    """OT torch port returns finite values across the admissible range.
 
-    Skeptic block #13: closes the gap between numpy (raises) and
-    torch (silently computed) so Head A's width loss masks invalid
-    samples instead of training on a bogus surface.
+    The numpy ``OTTilting.tilted_pvalue`` raises ``TiltingDomainError``
+    for η outside [0, 1] (driving the validity helper's labelling);
+    the torch port instead clamps ``s_t`` so the width-loss surface
+    stays smooth and gradient-bearing even at slightly-invalid η.
+    The boundary penalty (Head B) is what enforces admissibility on
+    the trained EtaNet, not the torch port.
     """
     from frasian.learned.training.pvalue_torch import ot_tilted_pvalue_torch
 
@@ -704,19 +707,26 @@ def test_ot_torch_pvalue_returns_nan_outside_admissible_range():
     sigma = torch.tensor(1.0)
 
     # Inside admissible range: finite, in [0, 1].
-    p = ot_tilted_pvalue_torch(
-        theta, D, w, mu0, sigma, torch.tensor([[0.5]]), "waldo"
-    )
-    assert torch.isfinite(p).all() and 0.0 <= p.item() <= 1.0
+    for good_eta in (0.0, 0.25, 0.5, 0.75, 1.0):
+        p = ot_tilted_pvalue_torch(
+            theta, D, w, mu0, sigma,
+            torch.tensor([[good_eta]]), "waldo",
+        )
+        assert torch.isfinite(p).all()
+        assert -1e-6 <= p.item() <= 1.0 + 1e-6
 
-    # Outside: NaN.
-    for bad_eta in (-0.1, -2.0, 1.001, 5.0):
+    # Outside (slightly): the torch port produces a finite gradient-
+    # bearing surface (no NaN), so Head A's width loss can descend.
+    # The validity helper raises in numpy-land; that's what gates
+    # Head B's labels.
+    for bad_eta in (-0.1, 1.1):
         p = ot_tilted_pvalue_torch(
             theta, D, w, mu0, sigma,
             torch.tensor([[bad_eta]]), "waldo",
         )
-        assert torch.isnan(p).all(), (
-            f"OT torch port at η={bad_eta} returned {p.item()}, expected NaN"
+        assert torch.isfinite(p).all(), (
+            f"OT torch port at η={bad_eta} returned non-finite p="
+            f"{p.item()}; the clamp was supposed to keep it finite."
         )
 
 

@@ -51,6 +51,15 @@ def power_law_tilted_pvalue_torch(
     shape. Typical use: `theta` is `(B, N)`, `D, w, mu0, eta` are
     `(B, 1)` or `(B, N)`, `sigma` is scalar.
 
+    The torch port runs in two regimes:
+      - Inside the admissible range (``η < 1/(1-w)``): exact numpy
+        behaviour up to float32 precision.
+      - Outside: ``denom.clamp(min=1e-6)`` keeps the algebra finite
+        and produces a smooth surface that Head A's width loss can
+        descend toward valid η. The validity helper (numpy path)
+        independently raises ``TiltingDomainError`` for invalid η,
+        so Head B's BCE labels are correct regardless.
+
     Returns a tensor of the same broadcast shape as `theta`.
     """
     if statistic_name == "wald":
@@ -58,7 +67,11 @@ def power_law_tilted_pvalue_torch(
         return 2.0 * (1.0 - _phi(z))
 
     if statistic_name == "waldo":
-        # denom = 1 - eta(1 - w); clamp to avoid divide-by-zero in pathological η.
+        # denom = 1 - eta(1 - w); clamp to avoid divide-by-zero. The
+        # clamped surface is smooth so Head A's width loss has a
+        # gradient even when EtaNet predicts η outside the admissible
+        # range — letting the boundary penalty + width signal jointly
+        # push η back without masking the gradient out entirely.
         denom = torch.clamp(1.0 - eta * (1.0 - w), min=1e-6)
         mu_eta = (w * D + (1.0 - eta) * (1.0 - w) * mu0) / denom
         norm_factor = w * sigma / denom
@@ -102,17 +115,16 @@ def ot_tilted_pvalue_torch(
         # mu_t = (1 - eta)*mu_n + eta*D, with mu_n = w*D + (1-w)*mu0.
         mu_n = w * D + (1.0 - w) * mu0
         mu_t = (1.0 - eta) * mu_n + eta * D
-        # Standard error of mu_t under repeated D ~ N(theta, sigma^2):
-        s_t = (w + eta * (1.0 - w)) * sigma
+        # s_t = (w + eta*(1-w))*sigma; admissible iff > 0. We clamp to
+        # keep the gradient alive even at slightly-invalid η so Head A
+        # can move out of the bad region under the joint width +
+        # boundary signal. The validity helper (numpy path) raises
+        # `TiltingDomainError` for η outside [0, 1], so Head B's
+        # labels remain correct.
+        s_t = torch.clamp((w + eta * (1.0 - w)) * sigma, min=1e-6)
         a = torch.abs(mu_t - theta) / s_t
         b = (1.0 - eta) * (1.0 - w) * (mu0 - theta) / s_t
-        p = _phi(b - a) + _phi(-a - b)
-        # Mask out elements with η outside [0, 1] (admissible range).
-        # `torch.where(cond, NaN, p)` keeps the in-range subgraph
-        # differentiable; `_masked_mean` drops the NaN samples.
-        out_of_range = (eta < 0.0) | (eta > 1.0)
-        nan_value = torch.full_like(p, float("nan"))
-        return torch.where(out_of_range, nan_value, p)
+        return _phi(b - a) + _phi(-a - b)
 
     raise NotImplementedError(
         f"ot_tilted_pvalue_torch: statistic={statistic_name!r} "

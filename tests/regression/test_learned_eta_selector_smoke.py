@@ -1,20 +1,20 @@
-"""Smoke test: LearnedDynamicEtaSelector wires through end-to-end.
+"""Smoke test: Phase E LearnedDynamicEtaSelector wires through end-to-end.
 
-Uses a stub artifact (no torch required) that mimics the
-`MonotonicEtaArtifact` predict contract: takes a `(N, 2)` `[w, |Δ'|]`
-matrix and returns `(N,)` `η'` values. The stub returns a constant
-η' so the selector's η lookup is deterministic.
+Uses a stub artifact (no torch required) that mimics the Phase E
+``EtaArtifact`` predict contract: takes a (N,) θ array and returns a
+(N,) η array. The stub returns a constant η so the selector's η
+lookup is deterministic.
 
-The test verifies:
-  1. `LearnedDynamicEtaSelector + StubArtifact` is constructible.
-  2. `select_grid` returns a `(N,)` array of η values in the
-     scheme's admissible range.
-  3. Wiring through `(power_law[learned_dynamic], waldo).confidence_interval`
-     produces a non-empty CI without raising.
-  4. Scheme-mismatch raises `MissingArtifactError`.
-  5. Alpha-mode-mismatch raises `MissingArtifactError`.
+Verifies:
+  1. ``LearnedDynamicEtaSelector + StubEtaArtifact`` is constructible.
+  2. ``select_grid`` returns a ``(N,)`` array of η values.
+  3. ``(power_law[learned], waldo).confidence_regions`` produces a
+     non-empty CI without raising.
+  4. Scheme-mismatch raises ``MissingArtifactError``.
+  5. Cross-experiment fingerprint mismatch raises.
+  6. α-marginalised checkpoint accepts any α.
 
-Does NOT require `torch` — the stub artifact stays in numpy-land.
+Does NOT require ``torch`` — the stub stays in numpy-land.
 """
 
 from __future__ import annotations
@@ -29,7 +29,6 @@ import pytest
 from numpy.typing import NDArray
 
 from frasian._errors import MissingArtifactError
-from frasian.learned.transforms import eta_transform_powerlaw
 from frasian.models.distributions import NormalDistribution
 from frasian.models.normal_normal import NormalNormalModel
 from frasian.statistics.waldo import WaldoStatistic
@@ -38,17 +37,21 @@ from frasian.tilting.power_law import PowerLawTilting
 
 
 @dataclass
-class _StubArtifact:
-    """Minimal artifact returning constant η' for testing.
+class _StubEtaArtifact:
+    """Minimal Phase E artifact: ``predict_eta(theta)`` returns a constant.
 
-    Implements the same predict contract as `MonotonicEtaArtifact`
-    without importing torch.
+    Implements the same surface as ``EtaArtifact`` without importing
+    torch. Used to test the selector's wiring + dispatch.
     """
 
-    eta_value: float = 0.0  # in original η space
-    scheme: str = "power_law"
-    alpha_mode: str = "marginalised"
-    name: str = "stub"
+    eta_value: float = 0.0
+    scheme_name: str = "power_law"
+    statistic_name: str = "waldo"
+    alpha: float | None = None
+    sigma: float = 1.0
+    sigma0: float = 1.0
+    mu0: float = 0.0
+    name: str = "stub_phase_e"
     version: str = "v0"
     artifact_path: Path = Path("/dev/null")
     _loaded: bool = field(default=False, init=False, repr=False)
@@ -56,15 +59,13 @@ class _StubArtifact:
     def load(self) -> None:
         self._loaded = True
 
-    def predict(self, x: NDArray[np.float64]) -> NDArray[np.float64]:
+    def predict_eta(
+        self, theta: NDArray[np.float64],
+    ) -> NDArray[np.float64]:
         if not self._loaded:
             raise MissingArtifactError(f"{self.name} not loaded")
-        x_arr = np.asarray(x, dtype=np.float64)
-        assert x_arr.ndim == 2 and x_arr.shape[1] == 2, x_arr.shape
-        # Return η' corresponding to the requested η in original space.
-        # For power_law: η' = η(1-w) + w; w is the first column of x.
-        w = x_arr[:, 0]
-        return eta_transform_powerlaw(np.full(len(x_arr), self.eta_value), w)
+        theta_arr = np.asarray(theta, dtype=np.float64)
+        return np.full(theta_arr.shape, self.eta_value)
 
     def fingerprint(self) -> str:
         h = hashlib.sha256(
@@ -74,34 +75,48 @@ class _StubArtifact:
 
     @property
     def metadata(self) -> dict[str, Any]:
-        return {"scheme": self.scheme, "alpha_mode": self.alpha_mode}
+        return {
+            "checkpoint_format_version": 2,
+            "experiment_config": {
+                "scheme_name": self.scheme_name,
+                "statistic_name": self.statistic_name,
+                "model_fingerprint": ["normal_normal", self.sigma],
+                "prior_fingerprint": ["normal", self.mu0, self.sigma0],
+            },
+            "alpha": self.alpha,
+        }
 
 
 @pytest.mark.L2
 class TestLearnedDynamicEtaSelectorSmoke:
     def test_select_grid_returns_constant_eta(self):
-        """Stub artifact returning η=0 ⇒ select_grid returns 0 everywhere."""
-        artifact = _StubArtifact(eta_value=0.0)
-        selector = LearnedDynamicEtaSelector(artifact=artifact)
+        """Stub returning η=0 ⇒ select_grid returns 0 everywhere."""
+        artifact = _StubEtaArtifact(eta_value=0.0)
+        selector = LearnedDynamicEtaSelector(
+            artifact=artifact, sigma=1.0, mu0=0.0,
+        )
         scheme = PowerLawTilting()
 
         ad_grid = np.linspace(0.0, 5.0, 11)
         eta = selector.select_grid(
-            ad_grid, scheme, statistic=WaldoStatistic(), w=0.5, alpha=0.05,
+            ad_grid, scheme,
+            statistic=WaldoStatistic(),
+            w=0.5, alpha=0.05,
         )
         assert eta.shape == (11,)
         np.testing.assert_allclose(eta, 0.0, atol=1e-12)
 
     def test_end_to_end_confidence_interval(self):
-        """Wire through (power_law[learned], waldo).confidence_interval."""
-        artifact = _StubArtifact(eta_value=0.0)
-        selector = LearnedDynamicEtaSelector(artifact=artifact)
+        """At η=0 (constant), the dynamic CI matches bare WALDO."""
+        artifact = _StubEtaArtifact(eta_value=0.0)
+        selector = LearnedDynamicEtaSelector(
+            artifact=artifact, sigma=1.0, mu0=0.0,
+        )
         scheme = PowerLawTilting(selector=selector)
 
-        sigma, mu0, sigma0 = 1.0, 0.0, 1.0
         D = 1.5
-        model = NormalNormalModel(sigma=sigma)
-        prior = NormalDistribution(loc=mu0, scale=sigma0)
+        model = NormalNormalModel(sigma=1.0)
+        prior = NormalDistribution(loc=0.0, scale=1.0)
 
         regions = scheme.confidence_regions(
             0.05, np.asarray([D]), model, prior, WaldoStatistic(),
@@ -109,7 +124,6 @@ class TestLearnedDynamicEtaSelectorSmoke:
         assert len(regions) >= 1
         for lo, hi in regions:
             assert hi > lo, f"empty region ({lo}, {hi})"
-        # At eta=0 (constant), the dynamic CI should match bare WALDO.
         bare_lo, bare_hi = WaldoStatistic().confidence_interval(
             0.05, np.asarray([D]), model, prior,
         )
@@ -121,7 +135,7 @@ class TestLearnedDynamicEtaSelectorSmoke:
     def test_scheme_mismatch_raises(self):
         """Artifact trained for scheme X must not be used with scheme Y."""
         from frasian.tilting.ot import OTTilting
-        artifact = _StubArtifact(scheme="ot")
+        artifact = _StubEtaArtifact(scheme_name="ot")
         selector = LearnedDynamicEtaSelector(artifact=artifact)
         scheme = PowerLawTilting()
 
@@ -131,22 +145,29 @@ class TestLearnedDynamicEtaSelectorSmoke:
                 statistic=WaldoStatistic(), w=0.5, alpha=0.05,
             )
 
-    def test_alpha_fixed_mismatch_raises(self):
-        """fixed_α artifact rejects a different inference α."""
-        artifact = _StubArtifact(alpha_mode="fixed_0.05")
-        selector = LearnedDynamicEtaSelector(artifact=artifact)
+    def test_cross_experiment_fingerprint_mismatch_raises(self):
+        """Strict tuple-equal compare on prior + model fingerprints."""
+        artifact = _StubEtaArtifact(sigma=1.0, sigma0=1.0, mu0=0.0)
+        selector = LearnedDynamicEtaSelector(
+            artifact=artifact, sigma=1.0, mu0=0.0,
+        )
         scheme = PowerLawTilting()
 
-        with pytest.raises(MissingArtifactError, match="alpha"):
+        # Different prior loc — same w, but different fingerprint.
+        with pytest.raises(MissingArtifactError, match="trained with prior"):
             selector.select_grid(
                 np.asarray([0.5, 1.0]), scheme,
-                statistic=WaldoStatistic(), w=0.5, alpha=0.10,
+                statistic=WaldoStatistic(), w=0.5, alpha=0.05,
+                model_fingerprint=("normal_normal", 1.0),
+                prior_fingerprint=("normal", 1.0, 1.0),
             )
 
     def test_alpha_marginalised_works_at_any_alpha(self):
-        """Marginalised artifact accepts any α at inference."""
-        artifact = _StubArtifact(alpha_mode="marginalised", eta_value=0.0)
-        selector = LearnedDynamicEtaSelector(artifact=artifact)
+        """Marginalised checkpoint (alpha=None) accepts any α."""
+        artifact = _StubEtaArtifact(alpha=None, eta_value=0.0)
+        selector = LearnedDynamicEtaSelector(
+            artifact=artifact, sigma=1.0, mu0=0.0,
+        )
         scheme = PowerLawTilting()
 
         for alpha in (0.01, 0.05, 0.10, 0.20):

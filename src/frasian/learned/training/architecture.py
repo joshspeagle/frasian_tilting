@@ -1,12 +1,4 @@
-"""Two-head architecture for the learned-η selector (Phase E rewrite).
-
-The Phase E rewrite replaces the Normal-Normal-specific
-``MonotonicEtaNet`` (input ``(w, |Δ'|)``, monotone-in-|Δ'| MLP with
-bounded sigmoid output) with a *model-agnostic* dual-head design.
-
-``MonotonicEtaNet`` itself is kept here as a transitional shim while
-``train.py`` (rewritten in E.2) still imports it; the shim is removed
-in the same commit that lands the new training loop.
+"""Two-head architecture for the Phase E learned-η selector.
 
 - ``EtaNet``: smooth GELU-MLP from θ ∈ R^p to a raw real η. No
   monotonicity prior, no bounded output. Smoothness comes from
@@ -27,104 +19,11 @@ require a refactor.
 
 from __future__ import annotations
 
-import math
 from typing import Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-
-_UNIFORM_MEAN = 0.5
-_UNIFORM_STD = 1.0 / math.sqrt(12.0)
-
-
-def _standardise_uniform(x: torch.Tensor) -> torch.Tensor:
-    return (x - _UNIFORM_MEAN) / _UNIFORM_STD
-
-
-class MonotonicEtaNet(nn.Module):
-    """LEGACY (Phase D). Removed in E.2 when train.py is rewritten.
-
-    See git history for the original docstring; kept here only so the
-    pre-E.2 ``train.py`` and ``LearnedDynamicEtaSelector`` continue to
-    import this module without breaking during the E.1 commit. Do not
-    use in new code.
-    """
-
-    def __init__(
-        self,
-        shared_sizes: Tuple[int, ...] = (64, 64),
-        mono_sizes: Tuple[int, ...] = (64, 64),
-    ):
-        super().__init__()
-        self.shared_sizes = tuple(shared_sizes)
-        self.mono_sizes = tuple(mono_sizes)
-
-        self.shared_layers = nn.ModuleList()
-        in_features = 1
-        for hidden_size in shared_sizes:
-            self.shared_layers.append(nn.Linear(in_features, hidden_size))
-            in_features = hidden_size
-        shared_out = in_features
-
-        self.mono_layers = nn.ModuleList()
-        in_features = 1
-        for hidden_size in mono_sizes:
-            self.mono_layers.append(nn.Linear(in_features, hidden_size))
-            in_features = hidden_size
-        mono_out = in_features
-
-        self.output_base = nn.Linear(shared_out, 1)
-        self.output_scale = nn.Linear(shared_out, 1)
-        self.output_mono = nn.Linear(mono_out, 1)
-
-        self._init_weights_legacy()
-
-    def _init_weights_legacy(self) -> None:
-        for layer in self.shared_layers:
-            nn.init.kaiming_normal_(layer.weight, nonlinearity="relu")
-            nn.init.zeros_(layer.bias)
-        for layer in self.mono_layers:
-            nn.init.kaiming_normal_(layer.weight, nonlinearity="relu")
-            layer.weight.data.abs_()
-            nn.init.zeros_(layer.bias)
-        nn.init.xavier_normal_(self.output_base.weight)
-        nn.init.xavier_normal_(self.output_scale.weight)
-        nn.init.xavier_normal_(self.output_mono.weight)
-        self.output_mono.weight.data.abs_()
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if x.dim() != 2 or x.size(-1) != 2:
-            raise ValueError(
-                f"MonotonicEtaNet expects (N, 2) input [w, Δ']; got {tuple(x.shape)}"
-            )
-        x_std = _standardise_uniform(x)
-        w = x_std[:, 0:1]
-        delta_prime = x_std[:, 1:2]
-
-        h_shared = w
-        for layer in self.shared_layers:
-            h_shared = F.gelu(layer(h_shared))
-
-        h_mono = delta_prime
-        for layer in self.mono_layers:
-            h_mono = F.relu(F.linear(h_mono, layer.weight.abs(), layer.bias))
-
-        base = self.output_base(h_shared)
-        scale = F.softplus(self.output_scale(h_shared))
-        mono = F.linear(
-            h_mono, self.output_mono.weight.abs(), self.output_mono.bias
-        )
-
-        z = base + scale * mono
-        return 0.01 + 0.98 * torch.sigmoid(z)
-
-    def architecture_kwargs(self) -> dict:
-        return {
-            "shared_sizes": self.shared_sizes,
-            "mono_sizes": self.mono_sizes,
-        }
 
 
 def _build_mlp(

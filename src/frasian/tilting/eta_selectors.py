@@ -48,10 +48,6 @@ from dataclasses import dataclass, field
 import numpy as np
 from scipy import optimize
 
-from ..learned.transforms import (
-    delta_transform as _delta_transform,
-    eta_inverse as _eta_inverse,
-)
 from ..models.distributions import NormalDistribution
 from ..models.normal_normal import NormalNormalModel
 from ..statistics.base import TestStatistic
@@ -378,22 +374,28 @@ class LearnedDynamicEtaSelector:
     mu0: float = 0.0
     is_dynamic: bool = True
     _loaded: bool = field(default=False, init=False, repr=False, compare=False)
-    _is_phase_e: bool = field(default=False, init=False, repr=False, compare=False)
+    _is_phase_e: bool = field(default=True, init=False, repr=False, compare=False)
 
     def _ensure_loaded(self) -> None:
         if not self._loaded:
             self.artifact.load()
             self._loaded = True
-            # Detect whether the artifact is a Phase E (v2) or legacy
-            # (v1) checkpoint by looking at format version. Phase E
-            # checkpoints have ``experiment_config`` and use raw θ
-            # input; legacy v1 has ``training_distribution`` and uses
-            # (w, |Δ'|) input.
+            # E.4 retired the legacy v1 checkpoint format; only Phase E
+            # (format v2) is supported. Verify here so a stale v1
+            # checkpoint produces a clear error rather than a confusing
+            # downstream failure.
+            from .._errors import MissingArtifactError
             meta = self.artifact.metadata
-            self._is_phase_e = (
-                meta.get("checkpoint_format_version", 1) == 2
-                and "experiment_config" in meta
-            )
+            v = meta.get("checkpoint_format_version", None)
+            if v != 2 or "experiment_config" not in meta:
+                raise MissingArtifactError(
+                    f"{self.artifact.name}: expected Phase E (v2) "
+                    f"checkpoint with `experiment_config`; got "
+                    f"format_version={v!r}. Legacy v1 was removed in "
+                    f"E.4 — re-train via "
+                    f"`python -m scripts.train_learned_eta --config "
+                    f"<experiment.yaml>`."
+                )
 
     def _check_scheme(self, scheme: TiltingScheme) -> None:
         from .._errors import MissingArtifactError
@@ -403,16 +405,7 @@ class LearnedDynamicEtaSelector:
                 f"call .load() before _check_scheme()."
             )
         meta = self.artifact.metadata
-        if self._is_phase_e:
-            trained_scheme = meta["experiment_config"]["scheme_name"]
-        else:
-            trained_scheme = meta.get("scheme")
-        if trained_scheme is None:
-            raise MissingArtifactError(
-                f"{self.artifact.name} metadata missing scheme name; "
-                f"cannot verify scheme compatibility. Re-train with the "
-                f"current trainer or fix the checkpoint metadata."
-            )
+        trained_scheme = meta["experiment_config"]["scheme_name"]
         if scheme.name != trained_scheme:
             raise MissingArtifactError(
                 f"{self.artifact.name} trained for scheme={trained_scheme!r}, "
@@ -428,42 +421,18 @@ class LearnedDynamicEtaSelector:
                 f"call .load() before _check_alpha()."
             )
         meta = self.artifact.metadata
-        if self._is_phase_e:
-            # Phase E checkpoints record `alpha` (None for marginalised
-            # losses, fixed value for static_width).
-            stored = meta.get("alpha")
-            if stored is None:
-                return
-            trained_alpha = float(stored)
-            if abs(alpha - trained_alpha) > 1e-9:
-                raise MissingArtifactError(
-                    f"{self.artifact.name} trained at alpha={trained_alpha}, "
-                    f"but inference alpha={alpha}; retrain or use a "
-                    f"marginalised checkpoint."
-                )
+        # Phase E records `alpha` (None for marginalised losses, fixed
+        # value for static_width).
+        stored = meta.get("alpha")
+        if stored is None:
             return
-        # Legacy (v1).
-        mode = meta.get("alpha_mode")
-        if mode is None:
+        trained_alpha = float(stored)
+        if abs(alpha - trained_alpha) > 1e-9:
             raise MissingArtifactError(
-                f"{self.artifact.name} metadata missing 'alpha_mode' key; "
-                f"cannot verify alpha compatibility."
+                f"{self.artifact.name} trained at alpha={trained_alpha}, "
+                f"but inference alpha={alpha}; retrain or use a "
+                f"marginalised checkpoint."
             )
-        if mode == "marginalised":
-            return
-        if isinstance(mode, str) and mode.startswith("fixed_"):
-            trained_alpha = float(mode[len("fixed_"):])
-            if abs(alpha - trained_alpha) > 1e-9:
-                raise MissingArtifactError(
-                    f"{self.artifact.name} trained at alpha={trained_alpha}, "
-                    f"but inference alpha={alpha}; retrain or use the "
-                    f"marginalised artifact."
-                )
-            return
-        raise MissingArtifactError(
-            f"{self.artifact.name} has unrecognised alpha_mode={mode!r}; "
-            f"expected 'marginalised' or 'fixed_<alpha>'."
-        )
 
     def _check_experiment(
         self,
@@ -546,17 +515,15 @@ class LearnedDynamicEtaSelector:
                     *, statistic: TestStatistic, w: float, alpha: float,
                     model_fingerprint: tuple | None = None,
                     prior_fingerprint: tuple | None = None):
-        """Per-θ η* lookup via the trained MLP.
+        """Per-θ η* lookup via the trained Phase E EtaNet.
 
-        Phase E (v2): converts ``abs_delta_grid`` back to θ using the
-        trained config's μ₀ and σ, then calls ``EtaArtifact.predict_eta``.
-        Legacy (v1): builds a ``(N, 2)`` ``[w, |Δ'|]`` feature matrix,
-        calls ``MonotonicEtaArtifact.predict``, then ``eta_inverse`` to
-        recover η on the natural scale.
+        Converts ``abs_delta_grid`` back to θ using the trained
+        config's μ₀ and σ (averaging the two θ branches for symmetric
+        Normal-Normal training), then calls ``EtaArtifact.predict_eta``.
 
-        ``model_fingerprint`` and ``prior_fingerprint`` (Phase E only)
-        are plumbed through ``dynamic_ci_scan`` for strict cross-
-        experiment validation; legacy v1 ignores them.
+        ``model_fingerprint`` and ``prior_fingerprint`` are plumbed
+        through ``dynamic_ci_scan`` for strict cross-experiment
+        validation.
         """
         self._ensure_loaded()
         self._check_scheme(scheme)
@@ -623,8 +590,8 @@ class LearnedDynamicEtaSelector:
                 eta = np.clip(eta, lo_safe, hi_safe)
             return eta
 
-        # Legacy v1.
-        delta_prime = _delta_transform(ad)
-        x = np.column_stack([np.full_like(delta_prime, float(w)), delta_prime])
-        eta_prime = self.artifact.predict(x)
-        return _eta_inverse(scheme.name, eta_prime, w)
+        from .._errors import MissingArtifactError
+        raise MissingArtifactError(
+            f"{self.artifact.name}: only Phase E (v2) checkpoints are "
+            f"supported; legacy v1 was removed in E.4."
+        )
