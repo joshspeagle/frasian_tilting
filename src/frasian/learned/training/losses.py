@@ -1,9 +1,10 @@
 """Differentiable training losses for the learned dynamic-η selector.
 
 All losses operate on a `(B, N)` p-value tensor (one row per batch
-element, one column per θ-grid point) and a `(N,)` θ-grid. They
-return a scalar — the mean batch loss — that is end-to-end
-differentiable in the η_φ parameters that produced `p_theta`.
+element, one column per θ-grid point) and a `(N,)` or `(B, N)` θ-grid.
+They return a scalar — the mean over *valid* batch samples — that is
+end-to-end differentiable in the η_φ parameters that produced
+`p_theta`.
 
 The three losses (default → alternative → α-conditioned):
 
@@ -20,9 +21,13 @@ The three losses (default → alternative → α-conditioned):
    training in α-conditioned mode.
 
 All three are end-to-end differentiable (no argmax, no brentq).
-Numerical safety: the p-value lives in `[0, 1]` exactly (the torch
-tilted_pvalue formulas guarantee this), and the trapezoidal rule
-`torch.trapezoid` is differentiable.
+
+**Reactive NaN guard.** When the torch p-value formula drifts numerically
+(possible at extreme `(w, eta)` combinations as we extend support to
+non-Normal-Normal models), individual samples can yield NaN/Inf
+trapezoidal-integral values. Each loss now masks those samples out of
+the batch mean rather than letting one NaN contaminate the gradient.
+If the entire batch is invalid, the loss raises `RuntimeError`.
 """
 
 from __future__ import annotations
@@ -30,6 +35,26 @@ from __future__ import annotations
 import torch
 
 from .cd_torch import cd_density_torch
+
+
+def _masked_mean(per_sample: torch.Tensor) -> torch.Tensor:
+    """Mean over `per_sample` rows that are finite. Raises on all-bad batch."""
+    valid = torch.isfinite(per_sample)
+    n_valid = int(valid.sum().item())
+    if n_valid == 0:
+        raise RuntimeError(
+            "loss: every sample in the batch produced a non-finite "
+            "per-sample loss (NaN/Inf). Likely cause: η_φ ventured "
+            "outside the admissible range; check the per-scheme "
+            "transform / admissible_range registry."
+        )
+    if n_valid < per_sample.numel():
+        # Replace NaN/Inf with 0 so gradients are well-defined; mask
+        # via division by n_valid below.
+        per_sample = torch.where(
+            valid, per_sample, torch.zeros_like(per_sample)
+        )
+    return per_sample.sum() / n_valid
 
 
 def integrated_pvalue_loss(
@@ -51,7 +76,7 @@ def integrated_pvalue_loss(
             f"p_theta must be (B, N); got shape {tuple(p_theta.shape)}"
         )
     width_per_sample = torch.trapezoid(p_theta, theta_grid, dim=-1)  # (B,)
-    return width_per_sample.mean()
+    return _masked_mean(width_per_sample)
 
 
 def cd_variance_loss(
@@ -77,7 +102,7 @@ def cd_variance_loss(
     centred = theta_b - mean_per_sample.unsqueeze(-1)
     var_per_sample = torch.trapezoid(pdf * centred * centred,
                                        theta_grid, dim=-1)
-    return var_per_sample.mean()
+    return _masked_mean(var_per_sample)
 
 
 def static_width_loss(
@@ -115,4 +140,4 @@ def static_width_loss(
         raise ValueError(f"alpha must be in (0, 1); got {alpha}")
     indicator = torch.sigmoid(sharpness * (p_theta - alpha))   # (B, N)
     width_per_sample = torch.trapezoid(indicator, theta_grid, dim=-1)
-    return width_per_sample.mean()
+    return _masked_mean(width_per_sample)
