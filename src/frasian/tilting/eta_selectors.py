@@ -334,10 +334,12 @@ class LearnedDynamicEtaSelector:
     direct neural-network lookup. The artifact's MLP is trained to
     minimise the **dynamic-procedure** loss directly (e.g. integrated
     CI width `∫ p_dyn(θ; D, η) dθ`), instead of the static-per-D
-    width that `NumericalEtaSelector` minimises pointwise. The
-    learned η*(|Δ|; w) curve is smooth and monotone by architectural
-    construction (positive-weight ReLU pathway), avoiding the
-    lower-clamp kink that inflates dynamic-CI widths at conflict.
+    width that `NumericalEtaSelector` minimises pointwise. Phase E
+    `EtaNet` is a smooth GELU-MLP on θ — no monotonicity prior, no
+    bounded sigmoid; admissibility is enforced by the boundary
+    penalty during training, not by architecture. The result is a
+    smooth η(θ) curve that avoids the lower-clamp kink that inflates
+    dynamic-CI widths at conflict.
 
     Calibration is preserved by the same argument as
     `DynamicNumericalEtaSelector`: η depends only on θ (and `w`),

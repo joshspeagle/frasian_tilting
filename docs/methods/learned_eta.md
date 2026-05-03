@@ -41,8 +41,12 @@ the η-function is unconstrained within that family.
 
 ## Definition
 
-The learner produces an `EtaArtifact(LearnedArtifact)` (Phase E,
-checkpoint format v2). At inference, `LearnedDynamicEtaSelector`
+The learner produces an `EtaArtifact` (Phase E, checkpoint format
+v2). It is a thin checkpoint wrapper — not a structural
+`LearnedArtifact` Protocol implementation; the dual-head design
+exposes `predict_eta(theta)` and `predict_validity(theta, eta)`
+rather than the single `predict(x)` that `LearnedArtifact`
+specifies. At inference, `LearnedDynamicEtaSelector`
 plugs into the same `tilting.confidence_regions` pipeline via
 `select_grid` as `DynamicNumericalEtaSelector` does, but reads η from
 the trained MLP instead of a width-minimising solver.

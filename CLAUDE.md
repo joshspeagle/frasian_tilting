@@ -241,26 +241,35 @@ src/frasian/
   _runner.py                 # cross-product runner + manifest writer
   _errors.py                 # FrasianError, EmptyRegistryError, etc.
 
+  _default_cells.py          # default (tiltings, statistics) cell list, env-var dispatch
+
   models/
-    base.py                  # Model, Prior, Posterior, Likelihood protocols
-    distributions.py         # NormalDistribution, GaussianLikelihood
+    base.py                  # Model, Prior, Posterior, Likelihood protocols (incl. fingerprint())
+    _dispatch.py             # require_model decorator (Normal-only gating)
+    distributions.py         # NormalDistribution, BetaDistribution, Gaussian/Bernoulli likelihoods
     normal_normal.py         # NormalNormalModel + math primitives
+    bernoulli.py             # BernoulliModel + Beta-conjugate posterior
 
   tilting/
     base.py                  # TiltingScheme, EtaSelector, TiltingDomainError
     _solvers.py              # ONE brentq_with_doubling
-    eta_selectors.py         # Fixed / Numerical / DynamicNumerical EtaSelectors
+    _admissible.py           # numerical_admissible_range probe (cached debug helper)
+    _dynamic.py              # shared dynamic-η-per-θ CI scan (used by power_law/ot)
+    eta_selectors.py         # Fixed / Numerical / DynamicNumerical / LearnedDynamic
     identity.py              # IdentityTilting (no-op identity element)
     power_law.py             # PowerLawTilting (e-geodesic / Theorem 6)
     ot.py                    # OTTilting (W2 geodesic, general 1D + Gaussian fast path)
     quantile_mixture.py      # QuantileMixturePath: 1D W2-geodesic Distribution wrapper
-    {fisher_rao,mixture}.py  # planned stubs
+    fisher_rao.py            # planned stub
+    mixture.py               # planned stub
 
   statistics/
     base.py                  # TestStatistic + AsymptoticDistribution
     wald.py                  # WaldStatistic
     waldo.py                 # WaldoStatistic
-    {lrt,signed_root,bartlett}.py  # planned stubs
+    lrt.py                   # planned stub
+    signed_root.py           # planned stub
+    bartlett.py              # planned stub
 
   cd/
     base.py                  # ConfidenceDistribution protocol
@@ -276,7 +285,9 @@ src/frasian/
     smoothness.py            # SmoothnessExperiment
     confidence_distribution.py  # ConfidenceDistributionExperiment
     illustrations/           # one demo per registered method
-      {identity,wald,waldo,power_law,smoothness,confidence_distribution}_demo.py
+      identity_demo.py, wald_demo.py, waldo_demo.py,
+      power_law_demo.py, ot_demo.py, learned_eta_demo.py,
+      smoothness_demo.py, confidence_distribution_demo.py
 
   diagnostics/
     base.py                  # Diagnostic + DiagnosticTable
@@ -293,8 +304,18 @@ src/frasian/
     runner.py                # persist_cell helper
 
   learned/
-    base.py                  # LearnedArtifact protocol (unused; future hook)
+    base.py                  # LearnedArtifact protocol
     null.py                  # NullArtifact (for tests)
+    eta_artifact.py          # Phase E EtaArtifact (loads dual-head v2 checkpoint)
+    training/
+      __init__.py            # public surface: EtaNet, ValidityNet, fit_eta_artifact, ...
+      architecture.py        # EtaNet (θ → η) + ValidityNet ((θ, η) → logit), GELU MLPs
+      losses.py              # integrated_p / cd_variance / static_width + boundary_penalty_from_validity
+      validity.py            # is_pair_valid, validity_mask, compute_pvalues_per_sample
+      sampling.py            # ExperimentConfig, ThetaDistribution, UniformThetaDistribution, lhs_1d
+      pvalue_torch.py        # torch ports of tilted_pvalue per scheme (autograd path)
+      cd_torch.py            # torch port of CD density (for cd_variance loss)
+      train.py               # fit_eta_artifact: dual-head training loop
 
 tests/
   conftest.py                # autouse registry isolation + bootstrapped fixture
@@ -312,6 +333,13 @@ docs/
 scripts/
   run.py                     # python -m scripts.run [--list] [--fast] experiment=<name>
   figures.py                 # python -m scripts.figures <results_dir>
+  train_learned_eta.py       # train Phase E EtaNet+ValidityNet from an experiment YAML
+
+experiments/
+  canonical_normal_normal_powerlaw.yaml  # Phase E ExperimentConfig fixture
+  canonical_normal_normal_ot.yaml        # Phase E ExperimentConfig fixture
+
+artifacts/                   # trained Phase E v0_smoke checkpoints (committed); v1 not committed
 
 tools/
   check_method_completeness.py  # verify brief + tests + illustration per method
@@ -380,7 +408,7 @@ python -m scripts.run --fast experiment=smoothness
 python -m scripts.figures results/coverage
 
 # Run the test suite
-python -m pytest                    # all 406 passing + 32 stub-skipped
+python -m pytest                    # ~1042 passing + 23 stub-skipped
 python -m pytest -m L0              # math primitives only
 python -m pytest -m "L0 or L1"      # core + properties
 python -m pytest -m L4              # end-to-end
@@ -414,6 +442,7 @@ clean tree is byte-reproducible.
 | 7    | done   | .claude/ subagents + slash commands + GitHub Actions CI gates   |
 | 8    | done   | Selector-as-tilting-member refactor: IdentityTilting + accepts_tilting + uniform `tilting.confidence_interval`; dynamic_ci subsumed by coverage/width |
 | 9    | done   | Geodesic taxonomy refactor: `ot_normal`→`ot` (general 1D W2 + Gaussian fast path implemented); `geodesic_normal`→`fisher_rao` (renamed stub); `exp_family` dropped (redundant with `power_law` on conjugate exp-families); `mixture` reframed as m-geodesic / dual partner of `power_law`'s e-geodesic |
+| 10   | done   | Phase E learned-η rewrite: model-agnostic dual-head selector (`EtaNet` + `ValidityNet`) trained per-experiment; replaces Phase D `MonotonicEtaNet` (deleted). `EtaNet`: smooth GELU-MLP from raw θ → η, no monotonicity prior, no bounded sigmoid. `ValidityNet`: learns `P(valid \| θ, η)` from observed `(θ, η, valid)` triples; provides `-log P(valid)` boundary penalty for Head A. Per-experiment fingerprints (`Prior.fingerprint()`/`Model.fingerprint()`) + strict cross-experiment refusal. New `ExperimentConfig` YAML schema. Smoke fixtures `learned_eta_canonical_normal_normal_<scheme>_v0_smoke.pt` committed for `power_law` and `ot`. |
 
 ## Key Anti-Patterns to Avoid
 
