@@ -149,5 +149,14 @@ if __name__ == "__main__":
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args()
+    # The learned-η illustration requires torch (for loading the artifact).
+    # When the [ml] extra isn't installed (default in CI), skip cleanly so
+    # the illustration sweep doesn't fail.
+    try:
+        import torch  # noqa: F401
+    except ImportError:
+        print("learned_eta_demo: torch not available "
+              "(install via `pip install -e \".[ml]\"`); skipping.")
+        raise SystemExit(0)
     path = main(smoke=args.smoke, out=args.out)
     print(f"wrote {path}")

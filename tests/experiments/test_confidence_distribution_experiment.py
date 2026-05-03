@@ -52,14 +52,17 @@ class TestConfidenceDistributionExperimentEndToEnd:
         )
         manifest = json.loads((tmp_path / "manifest.json").read_text())
         assert manifest["experiment"] == "confidence_distribution"
-        # 4 cells in cross product; (power_law[dyn], wald) gated incompatible.
+        # 6 cells in the cross product (3 tiltings × 2 statistics);
+        # the two (wald × non-identity) cells gate out as incompatible.
         ok = [c for c in manifest["cells"] if c["status"] == "ok"]
         skipped = [c for c in manifest["cells"]
                     if c["status"] == "incompatible"]
-        assert len(ok) == 3
-        assert len(skipped) == 1
-        assert skipped[0]["statistic"] == "wald"
-        assert skipped[0]["tilting"].startswith("power_law")
+        assert len(ok) == 4
+        assert len(skipped) == 2
+        for sk in skipped:
+            assert sk["statistic"] == "wald"
+            assert (sk["tilting"].startswith("power_law")
+                    or sk["tilting"].startswith("ot"))
         assert "cd_summary" in manifest["diagnostics"]
         # Diagnostic outputs.
         assert (tmp_path / "figures" / "cd_summary.png").exists()
