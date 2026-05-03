@@ -96,13 +96,16 @@ def ot_tilted_pvalue_torch(
 ) -> torch.Tensor:
     """Torch port of `OTTilting.tilted_pvalue` for (ot, waldo|wald).
 
-    Mirrors the numpy `OTTilting.tilted_pvalue` admissible-range
-    enforcement (η ∈ [0, 1]). Outside the admissible range the torch
-    port emits NaN per element so the loss masks downstream
-    (``_masked_mean``) drop those samples instead of training Head A
-    on a meaningless surface. This closes the gap between numpy
-    (raises) and torch (silently computed) behaviours flagged in
-    the E.2 skeptic review.
+    Like ``power_law_tilted_pvalue_torch``, the torch surface stays
+    smooth and gradient-bearing for invalid η via
+    ``s_t.clamp(min=1e-6)`` rather than NaN-masking — Head A's
+    width loss can descend toward valid η even when EtaNet drifts
+    outside [0, 1]. The numpy ``OTTilting.tilted_pvalue`` raises
+    ``TiltingDomainError`` for invalid η, so the validity helper
+    (numpy-driven) labels Head B's BCE correctly regardless of
+    what the torch port returns. An earlier round NaN-masked here
+    too, which broke OT training entirely (every aux sample masked
+    out of the boundary-penalty signal).
 
     See `power_law_tilted_pvalue_torch` for input/output shape
     conventions; signatures match for registry uniformity.

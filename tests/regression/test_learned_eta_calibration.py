@@ -31,29 +31,39 @@ from frasian.tilting.eta_selectors import LearnedDynamicEtaSelector
 from frasian.tilting.power_law import PowerLawTilting
 
 
-_CHECKPOINT_CANDIDATES = [
-    Path("artifacts/learned_eta_canonical_normal_normal_powerlaw_v1.pt"),
-    Path("artifacts/learned_eta_canonical_normal_normal_powerlaw_v0_smoke.pt"),
-]
+_CHECKPOINT_CANDIDATES = {
+    "powerlaw": [
+        Path("artifacts/learned_eta_canonical_normal_normal_powerlaw_v1.pt"),
+        Path("artifacts/learned_eta_canonical_normal_normal_powerlaw_v0_smoke.pt"),
+    ],
+    "ot": [
+        Path("artifacts/learned_eta_canonical_normal_normal_ot_v1.pt"),
+        Path("artifacts/learned_eta_canonical_normal_normal_ot_v0_smoke.pt"),
+    ],
+}
 
 
-def _checkpoint_path() -> Path:
-    for c in _CHECKPOINT_CANDIDATES:
+def _checkpoint_path(scheme_label: str) -> Path:
+    for c in _CHECKPOINT_CANDIDATES[scheme_label]:
         if c.exists():
             return c
-    pytest.skip("no Phase E learned-eta checkpoint available; train one first")
+    pytest.skip(
+        f"no Phase E {scheme_label} learned-eta checkpoint available; "
+        f"train one first"
+    )
 
 
 @pytest.mark.L3
 @pytest.mark.slow
+@pytest.mark.parametrize("scheme_label", ["powerlaw", "ot"])
 @pytest.mark.parametrize("theta_true", [-2.0, 0.0, 2.0])
-def test_calibration_at_alpha_05(theta_true):
-    """At α=0.05 and the trained w (=0.5 for canonical configs),
-    empirical coverage matches nominal 0.95 within 3·MC_SE."""
+def test_calibration_at_alpha_05(scheme_label, theta_true):
+    """At α=0.05 and the trained w, empirical coverage matches nominal
+    0.95 within 3·MC_SE for both power_law and ot smoke checkpoints."""
     alpha = 0.05
     n_reps = 300
 
-    artifact = EtaArtifact(artifact_path=_checkpoint_path())
+    artifact = EtaArtifact(artifact_path=_checkpoint_path(scheme_label))
     artifact.load()
     cfg = artifact.metadata["experiment_config"]
     sigma = float(cfg["model_fingerprint"][1])
@@ -63,11 +73,15 @@ def test_calibration_at_alpha_05(theta_true):
     selector = LearnedDynamicEtaSelector(
         artifact=artifact, sigma=sigma, mu0=mu0,
     )
-    scheme = PowerLawTilting(selector=selector)
+    if scheme_label == "powerlaw":
+        scheme = PowerLawTilting(selector=selector)
+    else:
+        from frasian.tilting.ot import OTTilting
+        scheme = OTTilting(selector=selector)
     prior = NormalDistribution(loc=mu0, scale=sigma0)
     model = NormalNormalModel(sigma=sigma)
 
-    rng = np.random.default_rng(seed=42 + int(theta_true))
+    rng = np.random.default_rng(seed=42 + int(theta_true) + hash(scheme_label) % 50)
     covered = 0
     for _ in range(n_reps):
         D = rng.normal(theta_true, sigma)
@@ -84,13 +98,14 @@ def test_calibration_at_alpha_05(theta_true):
     assert abs(coverage - target) < 3.0 * se, (
         f"coverage {coverage:.3f} differs from {target} by "
         f"{abs(coverage-target):.3f} > 3*SE={3*se:.3f} "
-        f"at θ_true={theta_true}"
+        f"at θ_true={theta_true} ({scheme_label})"
     )
 
 
 @pytest.mark.L3
 @pytest.mark.slow
-def test_eta_pred_valid_rate_in_checkpoint():
+@pytest.mark.parametrize("scheme_label", ["powerlaw", "ot"])
+def test_eta_pred_valid_rate_in_checkpoint(scheme_label):
     """The per-checkpoint ``final_eta_pred_valid_rate`` is high.
 
     Replaces the legacy ``calibration_report`` in-checkpoint check.
@@ -98,12 +113,12 @@ def test_eta_pred_valid_rate_in_checkpoint():
     A low rate signals an undertrained checkpoint that will trip
     the runtime safety clamp.
     """
-    artifact = EtaArtifact(artifact_path=_checkpoint_path())
+    artifact = EtaArtifact(artifact_path=_checkpoint_path(scheme_label))
     artifact.load()
     rate = float(artifact.metadata["final_eta_pred_valid_rate"])
     # 0.95 is a soft floor — production checkpoints should be ≥0.99.
     assert rate >= 0.95, (
-        f"final_eta_pred_valid_rate={rate:.3f} < 0.95 — checkpoint is "
-        f"undertrained; the runtime clamp will fire and calibration "
-        f"may fail. Train longer."
+        f"final_eta_pred_valid_rate={rate:.3f} < 0.95 for "
+        f"{scheme_label} — checkpoint is undertrained; the runtime "
+        f"clamp will fire and calibration may fail. Train longer."
     )

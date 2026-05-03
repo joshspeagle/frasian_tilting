@@ -158,29 +158,38 @@ static selector is exposed via `post_selection_demo_tiltings()` only
 to make the trade-off measurable; never use it for production CI
 estimation.
 
-**Calibrated AND narrow: `LearnedDynamicEtaSelector`.** The legacy
-dynamic selector is calibrated but inflates width by ~30 % at the
-conflict band (|Δ|≥2) because the inner `NumericalEtaSelector` slams
-η to the lower clamp at small |Δ|. A monotonic-MLP-trained selector
-(`src/frasian/learned/monotonic_eta.py` + `learned/training/`)
-minimises the dynamic-procedure loss directly (integrated CI width by
-default, CD variance and α-fixed static width also available), giving
-a smooth η*(|Δ|; w) curve. Trained checkpoints live in
-`artifacts/learned_eta_<scheme>_v0_smoke.pt`. Activate via env var:
+**Calibrated AND narrow: `LearnedDynamicEtaSelector`.** The
+`numerical` dynamic selector is calibrated but inflates width by
+~30 % at the conflict band (|Δ|≥2) because the inner
+`NumericalEtaSelector` slams η to the lower clamp at small |Δ|.
+The Phase E **dual-head** learned selector (`EtaNet` + `ValidityNet`,
+in `src/frasian/learned/eta_artifact.py` + `learned/training/`)
+trains a smooth GELU-MLP on θ directly — no monotonicity prior, no
+bounded sigmoid, no `(w, |Δ|)` features. Validity is enforced via
+a `-log P(valid | θ, η)` boundary penalty driven by Head B
+(`ValidityNet`), which learns the admissible region from observed
+`(θ, η, valid)` triples during training. Per-experiment: each
+checkpoint is trained for one `(model, prior, scheme)` and the
+selector refuses cross-experiment use via tuple-equal fingerprint
+compare. Smoke fixtures live in
+`artifacts/learned_eta_<config_name>_v0_smoke.pt`; production v1
+checkpoints are not committed (re-train via
+`scripts.train_learned_eta --config experiments/<config>.yaml`).
+Activate via env var:
 
 ```
 export FRASIAN_DEFAULT_DYNAMIC_ETA=learned   # vs default "numerical"
 ```
 
-Headline empirical result on the canonical sandbox (w=0.5):
+Headline empirical result on the canonical sandbox (w=0.5,
+n_reps=200, α=0.05; v0_smoke checkpoint):
 
 ```
-                            θ=0    θ=±2   θ=±3   θ=±4
-Wald                        3.92   3.92   3.92   3.92
-bare WALDO                  3.36   3.76   4.29   4.87
-power_law[dynamic_num.]     3.38   3.88   4.60   5.28   ← legacy: inflates at conflict
-power_law[learned]          3.81   3.86   3.89   3.88   ← calibrated AND ≤ Wald
-ot[learned]                 3.79   3.85   3.89   3.92
+                            θ=0    θ=1    θ=2    θ=3    θ=4
+Wald                        3.92   3.92   3.92   3.92   3.92
+bare WALDO                  3.32   3.44   3.75   4.24   4.85
+power_law[numerical]        3.35   3.50   3.92   4.53   5.23   ← legacy: inflates
+power_law[learned]          3.67   3.67   3.67   3.71   3.80   ← calibrated AND ≤ Wald
 ```
 
 All learned cells calibrated within MC noise at α∈{0.05, 0.10, 0.20}.

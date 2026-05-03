@@ -374,16 +374,12 @@ class LearnedDynamicEtaSelector:
     mu0: float = 0.0
     is_dynamic: bool = True
     _loaded: bool = field(default=False, init=False, repr=False, compare=False)
-    _is_phase_e: bool = field(default=True, init=False, repr=False, compare=False)
 
     def _ensure_loaded(self) -> None:
         if not self._loaded:
             self.artifact.load()
             self._loaded = True
-            # E.4 retired the legacy v1 checkpoint format; only Phase E
-            # (format v2) is supported. Verify here so a stale v1
-            # checkpoint produces a clear error rather than a confusing
-            # downstream failure.
+            # Only Phase E (format v2) checkpoints are supported.
             from .._errors import MissingArtifactError
             meta = self.artifact.metadata
             v = meta.get("checkpoint_format_version", None)
@@ -391,8 +387,7 @@ class LearnedDynamicEtaSelector:
                 raise MissingArtifactError(
                     f"{self.artifact.name}: expected Phase E (v2) "
                     f"checkpoint with `experiment_config`; got "
-                    f"format_version={v!r}. Legacy v1 was removed in "
-                    f"E.4 — re-train via "
+                    f"format_version={v!r}. Re-train via "
                     f"`python -m scripts.train_learned_eta --config "
                     f"<experiment.yaml>`."
                 )
@@ -531,67 +526,59 @@ class LearnedDynamicEtaSelector:
 
         ad = np.asarray(abs_delta_grid, dtype=np.float64)
 
-        if self._is_phase_e:
-            # Phase E: invert |Δ| → θ using trained (μ₀, σ).
-            self._check_experiment(
-                w,
-                model_fingerprint=model_fingerprint,
-                prior_fingerprint=prior_fingerprint,
-            )
-            meta = self.artifact.metadata["experiment_config"]
-            mu0 = float(meta["prior_fingerprint"][1])
-            sigma = float(meta["model_fingerprint"][1])
-            # |Δ| = (1-w)|μ₀ - θ|/σ has two θ-branches:
-            #   θ_lo = μ₀ - σ·|Δ|/(1-w)  (θ < μ₀)
-            #   θ_hi = μ₀ + σ·|Δ|/(1-w)  (θ > μ₀)
-            # The downstream `dynamic_ci_scan` indexes η by |Δ|, so we
-            # need η as a function of |Δ| — but EtaNet is θ-indexed.
-            # For Normal-Normal training (symmetric θ-distribution
-            # about μ₀), the optimal η(θ) is approximately symmetric;
-            # we average the two branches to get a symmetric η(|Δ|),
-            # which is what the contract demands. Bias is bounded by
-            # the deviation of the trained η(θ) from symmetry.
-            offset = sigma * ad / max(1.0 - w, 1e-12)
-            theta_lo = mu0 - offset
-            theta_hi = mu0 + offset
-            eta_lo = self.artifact.predict_eta(theta_lo)
-            eta_hi = self.artifact.predict_eta(theta_hi)
-            eta = 0.5 * (eta_lo + eta_hi)
-
-            # Phase E removed the architectural sigmoid clamp on η,
-            # relying on the boundary penalty during training to keep
-            # predictions inside the admissible range. A poorly-
-            # trained checkpoint can still drift past the boundary at
-            # extreme conflict; rather than crash mid-CI, clamp here
-            # with a warning. The fingerprint check on _check_experiment
-            # already refuses cross-experiment use, so this is a safety
-            # net for "this checkpoint hasn't trained enough", not for
-            # "this checkpoint is for the wrong experiment".
-            ctx = TiltingContext(w=w, abs_delta=0.0, alpha=alpha)
-            try:
-                lo, hi = scheme.admissible_range(ctx)
-            except Exception:
-                lo, hi = -np.inf, np.inf
-            margin = 1e-6 * max(1.0, abs(hi - lo) if np.isfinite(hi - lo) else 1.0)
-            lo_safe = lo + margin if np.isfinite(lo) else -np.inf
-            hi_safe = hi - margin if np.isfinite(hi) else np.inf
-            out_of_range = (eta < lo_safe) | (eta > hi_safe)
-            if out_of_range.any():
-                import warnings
-                frac = float(out_of_range.mean())
-                warnings.warn(
-                    f"{self.artifact.name}: {100*frac:.1f}% of predicted "
-                    f"η values fell outside the admissible range "
-                    f"({lo_safe:.4g}, {hi_safe:.4g}); clamping. This "
-                    f"signals the checkpoint is undertrained at the "
-                    f"conflict band — consider a longer training run.",
-                    RuntimeWarning,
-                )
-                eta = np.clip(eta, lo_safe, hi_safe)
-            return eta
-
-        from .._errors import MissingArtifactError
-        raise MissingArtifactError(
-            f"{self.artifact.name}: only Phase E (v2) checkpoints are "
-            f"supported; legacy v1 was removed in E.4."
+        # Phase E: invert |Δ| → θ using trained (μ₀, σ).
+        self._check_experiment(
+            w,
+            model_fingerprint=model_fingerprint,
+            prior_fingerprint=prior_fingerprint,
         )
+        meta = self.artifact.metadata["experiment_config"]
+        mu0 = float(meta["prior_fingerprint"][1])
+        sigma = float(meta["model_fingerprint"][1])
+        # |Δ| = (1-w)|μ₀ - θ|/σ has two θ-branches:
+        #   θ_lo = μ₀ - σ·|Δ|/(1-w)  (θ < μ₀)
+        #   θ_hi = μ₀ + σ·|Δ|/(1-w)  (θ > μ₀)
+        # The downstream `dynamic_ci_scan` indexes η by |Δ|, so we
+        # need η as a function of |Δ| — but EtaNet is θ-indexed.
+        # For Normal-Normal training (symmetric θ-distribution
+        # about μ₀), the optimal η(θ) is approximately symmetric;
+        # we average the two branches to get a symmetric η(|Δ|),
+        # which is what the contract demands. Bias is bounded by
+        # the deviation of the trained η(θ) from symmetry.
+        offset = sigma * ad / max(1.0 - w, 1e-12)
+        theta_lo = mu0 - offset
+        theta_hi = mu0 + offset
+        eta_lo = self.artifact.predict_eta(theta_lo)
+        eta_hi = self.artifact.predict_eta(theta_hi)
+        eta = 0.5 * (eta_lo + eta_hi)
+
+        # Phase E has no architectural clamp on η — the boundary
+        # penalty during training keeps predictions inside the
+        # admissible range. A poorly-trained checkpoint can still
+        # drift past the boundary at extreme conflict; rather than
+        # crash mid-CI, clamp here with a RuntimeWarning. The
+        # fingerprint check above already refuses cross-experiment
+        # use; this safety net is for "this checkpoint hasn't
+        # trained enough", not for "this checkpoint is wrong".
+        ctx = TiltingContext(w=w, abs_delta=0.0, alpha=alpha)
+        try:
+            lo, hi = scheme.admissible_range(ctx)
+        except Exception:
+            lo, hi = -np.inf, np.inf
+        margin = 1e-6 * max(1.0, abs(hi - lo) if np.isfinite(hi - lo) else 1.0)
+        lo_safe = lo + margin if np.isfinite(lo) else -np.inf
+        hi_safe = hi - margin if np.isfinite(hi) else np.inf
+        out_of_range = (eta < lo_safe) | (eta > hi_safe)
+        if out_of_range.any():
+            import warnings
+            frac = float(out_of_range.mean())
+            warnings.warn(
+                f"{self.artifact.name}: {100*frac:.1f}% of predicted "
+                f"η values fell outside the admissible range "
+                f"({lo_safe:.4g}, {hi_safe:.4g}); clamping. This "
+                f"signals the checkpoint is undertrained at the "
+                f"conflict band — consider a longer training run.",
+                RuntimeWarning,
+            )
+            eta = np.clip(eta, lo_safe, hi_safe)
+        return eta

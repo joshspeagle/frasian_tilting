@@ -160,14 +160,23 @@ verifies in `tests/properties/test_loss_diff.py`.
 
 ## Predicted behavior
 
-- **η*(|Δ|; w) curve is smooth and monotone in |Δ|** by architectural
-  construction (`∂η*/∂|Δ| ≥ 0`). No clamp slam, no kinks.
-- **Calibration at nominal level** at every (θ_true, w, α) cell.
-  Verified in `calibration_report` written into the checkpoint.
+- **η(θ) curve is smooth** by architectural construction (GELU MLP,
+  no kinks). Approximate symmetry about `μ₀` is empirical, not
+  enforced — for symmetric Normal-Normal training distributions it
+  emerges from the training objective. The selector averages the
+  two θ-branches when looking up η at a given `|Δ|` (see
+  `LearnedDynamicEtaSelector.select_grid` Phase E branch) so the
+  contract `η(|Δ|)` is exactly symmetric at inference regardless.
+- **Calibration at nominal level** at every (θ_true, α) cell. The
+  per-checkpoint `final_eta_pred_valid_rate` summarises in-sample
+  validity; the empirical L3 calibration regression
+  (`tests/regression/test_learned_eta_calibration.py`) MC-checks
+  coverage at the trained `w`.
 - **Width strictly improves on `NumericalEtaSelector`** in the
-  conflict band. Smoke run (n_lhs=1024, n_epochs=30) at (D=4, w=0.5)
-  already gives width 5.01 vs 5.34 for the legacy selector (~6%
-  improvement); v1 production checkpoint expected to do better.
+  conflict band. v0_smoke headline at w=0.5 (committed):
+  power_law[learned] = 3.71 / 3.80 at θ_true ∈ {3, 4}, vs
+  power_law[numerical] = 4.53 / 5.23. v1 production checkpoints
+  (longer training) expected to tighten further.
 - **Width approaches Wald (3.92)** at high |Δ|, matching the
   asymptotic Wald limit of WALDO.
 - **CD shape**: smooth, unimodal across the conflict band. The Dyn-
@@ -245,9 +254,13 @@ verifies in `tests/properties/test_loss_diff.py`.
 
 (Tested in `tests/properties/test_dual_head_invariants.py`,
 `tests/properties/test_loss_diff.py`,
+`tests/properties/test_learned_eta_invariants.py`,
 `tests/regression/test_torch_pvalue_matches_numpy.py`,
 `tests/regression/test_torch_cd_matches_numpy.py`,
-`tests/regression/test_train_smoke.py` (legacy v1 path).)
+`tests/regression/test_learned_eta_calibration.py`,
+`tests/regression/test_learned_eta_narrowness.py`,
+`tests/regression/test_learned_eta_selector_smoke.py`,
+`tests/regression/test_scheme_improper_returns_nan.py`.)
 
 - `EtaNet(theta_dim ≥ 1)` and `ValidityNet(theta_dim ≥ 1)` accept
   scalar and vector θ; vector future-proofs the framework even
@@ -356,29 +369,30 @@ verifies in `tests/properties/test_loss_diff.py`.
 
 ## Empirical headline numbers
 
-End-to-end CI width on the canonical Normal-Normal sandbox (`Config.fast()`,
-σ=1, μ₀=0, n_reps=200), w=0.5 column. Learned uses the v0_smoke checkpoint:
+End-to-end CI width on the canonical Normal-Normal sandbox (σ=1,
+μ₀=0, σ₀=1 → w=0.5, n_reps=200, α=0.05). Phase E v0_smoke
+checkpoint:
 
-| θ_true | Wald | bare WALDO | legacy Dyn | learned p.l. | learned ot |
-|---|---|---|---|---|---|
-| 0 | 3.92 | 3.36 | 3.38 | 3.81 | 3.79 |
-| ±2 | 3.92 | 3.76 | 3.88 | 3.86 | 3.85 |
-| ±3 | 3.92 | 4.29 | **4.60** | **3.89** | **3.89** |
-| ±4 | 3.92 | 4.87 | **5.28** | **3.88** | **3.92** |
+| θ_true | Wald | bare WALDO | numerical Dyn | power_law[learned] |
+|---|---|---|---|---|
+| 0  | 3.92 | 3.32 | 3.35     | 3.67 |
+| 1  | 3.92 | 3.44 | 3.50     | 3.67 |
+| 2  | 3.92 | 3.75 | 3.92     | 3.67 |
+| 3  | 3.92 | 4.24 | **4.53** | **3.71** |
+| 4  | 3.92 | 4.85 | **5.23** | **3.80** |
 
 Headline:
-- **Conflict band (|θ|≥3)**: learned is 25–35 % narrower than the legacy
-  `DynamicNumericalEtaSelector` *and* narrower than bare WALDO.
-- **Low conflict (|θ|≤1)**: learned is ~12 % wider than the legacy
-  (architectural bound on η' prevents full oversharpening at the
-  lower clamp), but still ≤ Wald everywhere.
-- **Calibration**: nominal at every (θ_true, w, α) cell on the
-  in-checkpoint 5×5×3 grid (max |err| ≤ 0.029 ≈ 3·MC_SE) and on the
-  end-to-end coverage experiment via the runner.
+- **Conflict band (|θ|≥3)**: learned is ~20–30 % narrower than the
+  `numerical` Dynamic selector *and* narrower than bare WALDO.
+- **Low conflict (|θ|≤1)**: learned is ~10 % wider than the
+  `numerical` selector (which is post-selection-narrow but
+  marginally undercovers; the calibrated learned cell trades
+  width back for nominal coverage).
+- **Calibration**: nominal at every θ_true within 3·MC_SE on the
+  L3 calibration regression at the trained w (α=0.05).
 
-The framework's central claim — *a calibrated dynamic-η selector that
-matches or beats non-tilted WALDO width across the (w, θ_true) plane*
-— is empirically verified.
+Production v1 checkpoints (longer training, larger LHS) are
+expected to tighten the low-conflict gap further.
 
 ## Status notes
 
@@ -398,9 +412,16 @@ python -m scripts.run --fast experiment=width
 The smoothness experiment uses its own internal selector
 (`NumericalEtaSelector`) and is not affected by this env var.
 
-A v1 production checkpoint (n_lhs=4000, n_epochs=100) trained but
-plateaued at the same val_loss as v0_smoke — the bounded-sigmoid
-output `0.01 + 0.98·sigmoid(...)` caps how aggressively η can
-oversharpen at low |Δ|, which is the binding constraint regardless
-of training budget. v0_smoke is therefore representative; we ship
-it as the production fixture.
+v1 production checkpoints aren't committed (~each ~50 KB, easy to
+re-train); the v0_smoke shipped here is sufficient for L2/L3/L4
+gates. Run `scripts.train_learned_eta --config <experiment.yaml>
+--out artifacts/learned_eta_<config_name>_v1.pt --version v1` for
+a longer training budget; the resolution order in
+`_default_cells._make_learned_selector` prefers v1 → v0_smoke.
+
+Phase E architectural change vs Phase D: `EtaNet` is unbounded and
+non-monotonic (raw GELU MLP on θ); validity is enforced by
+training (boundary penalty + Head B), not architecture. The Phase
+D `MonotonicEtaNet` (legacy `(w, |Δ'|)` input + bounded sigmoid +
+positive-weight ReLU pathway) is removed; the framework is
+per-experiment from here on.
