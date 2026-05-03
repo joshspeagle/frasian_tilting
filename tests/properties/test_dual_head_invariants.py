@@ -443,11 +443,345 @@ def test_experiment_config_rejects_unknown_scheme(bootstrapped_registry):
 
 @pytest.mark.L1
 @pytest.mark.properties
-def test_lhs_1d_covers_support():
+def test_lhs_1d_stratification():
+    """Each of the n strata in [low, high] receives exactly one sample."""
     td = UniformThetaDistribution(low=-3.0, high=3.0)
-    samples = lhs_1d(td, n=200, seed=42)
-    # LHS should cover both halves of the support.
-    assert (samples < 0).any() and (samples > 0).any()
+    n = 100
+    samples = lhs_1d(td, n=n, seed=42)
+    assert samples.shape == (n,)
     assert samples.min() >= -3.0
     assert samples.max() <= 3.0
-    assert samples.shape == (200,)
+    # Each stratum [lo + i/n*(hi-lo), lo + (i+1)/n*(hi-lo)) gets one sample.
+    strata = np.floor((samples + 3.0) / 6.0 * n).astype(int)
+    strata = np.clip(strata, 0, n - 1)
+    assert len(np.unique(strata)) == n, (
+        f"LHS not stratified: {n} samples but {len(np.unique(strata))} "
+        f"distinct strata."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Model identity invariants (skeptic block #2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.L1
+@pytest.mark.properties
+def test_model_name_not_constructor_kwarg():
+    """`name` and `param_dim` are class-level constants, not kwargs.
+
+    Stops a YAML / Python caller from constructing a "lying" model
+    whose `.name` differs from its fingerprint's class string.
+    """
+    with pytest.raises(TypeError):
+        BernoulliModel(name="evil")
+    with pytest.raises(TypeError):
+        NormalNormalModel(sigma=1.0, name="evil")
+    with pytest.raises(TypeError):
+        NormalNormalModel(sigma=1.0, param_dim=999)
+
+
+@pytest.mark.L1
+@pytest.mark.properties
+def test_fingerprint_equality_invariant():
+    """For our concrete models / priors / θ-dists, ``a == b`` ↔
+    ``a.fingerprint() == b.fingerprint()``.
+
+    Skeptic concern (#2): the selector validates by fingerprint, so a
+    pair that's fingerprint-equal but `==`-unequal would be silently
+    accepted. Class-level `name`/`param_dim` (now ClassVar) closes
+    this gap; this test pins it.
+    """
+    pairs = [
+        (NormalNormalModel(sigma=1.0), NormalNormalModel(sigma=1.0), True),
+        (NormalNormalModel(sigma=1.0), NormalNormalModel(sigma=2.0), False),
+        (BernoulliModel(), BernoulliModel(), True),
+        (NormalDistribution(0.0, 1.0), NormalDistribution(0.0, 1.0), True),
+        (NormalDistribution(0.0, 1.0), NormalDistribution(0.0, 2.0), False),
+        (UniformThetaDistribution(low=-1.0, high=1.0),
+         UniformThetaDistribution(low=-1.0, high=1.0), True),
+    ]
+    for a, b, expected_eq in pairs:
+        assert (a == b) == expected_eq
+        assert (a.fingerprint() == b.fingerprint()) == expected_eq
+
+
+# ---------------------------------------------------------------------------
+# Skeptic block #4: scheme without tilted_pvalue
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.L1
+@pytest.mark.properties
+def test_compute_pvalues_per_sample_without_tilted_pvalue_raises():
+    """Stub schemes without ``tilted_pvalue`` raise loudly, not crash."""
+
+    class NoTiltedPvalueScheme:
+        name = "no_tp"
+
+    with pytest.raises(AttributeError, match="does not implement"):
+        compute_pvalues_per_sample(
+            NoTiltedPvalueScheme(),
+            np.array([0.0]),
+            np.array([0.0]),
+            NormalNormalModel(sigma=1.0),
+            NormalDistribution(0.0, 1.0),
+            np.array([0.5]),
+            "waldo",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Skeptic block #5: OT raises on η outside [0, 1]
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.L1
+@pytest.mark.properties
+def test_ot_tilted_pvalue_rejects_eta_out_of_admissible_range(
+    bootstrapped_registry,
+):
+    from frasian._errors import TiltingDomainError
+    from frasian.tilting.ot import OTTilting
+
+    scheme = OTTilting()
+    model = NormalNormalModel(sigma=1.0)
+    prior = NormalDistribution(0.0, 1.0)
+    # Admissible: [0, 1]; valid call works.
+    p = scheme.tilted_pvalue(np.array([0.0]), 0.0, model, prior, 0.5, "waldo")
+    assert np.isfinite(p[0]) and 0.0 <= p[0] <= 1.0
+    # Reject η < 0 and η > 1.
+    for bad_eta in (-2.0, -1e-6, 1.0 + 1e-6, 5.0):
+        with pytest.raises(TiltingDomainError, match="eta in"):
+            scheme.tilted_pvalue(
+                np.array([0.0]), 0.0, model, prior, bad_eta, "waldo"
+            )
+
+
+@pytest.mark.L1
+@pytest.mark.properties
+def test_ot_tilted_pvalue_invalid_eta_yields_nan_in_validity_helper(
+    bootstrapped_registry,
+):
+    """The validity helper sees NaN (not a fake-valid p) for OT η<0."""
+    from frasian.tilting.ot import OTTilting
+
+    scheme = OTTilting()
+    model = NormalNormalModel(sigma=1.0)
+    prior = NormalDistribution(0.0, 1.0)
+    p = compute_pvalues_per_sample(
+        scheme,
+        np.array([0.0, 0.0]),
+        np.array([0.0, 0.0]),
+        model, prior,
+        np.array([0.5, -2.0]),
+        "waldo",
+    )
+    mask = validity_mask(p)
+    assert mask[0]
+    assert not mask[1], (
+        f"OT η=-2 should be invalid; helper returned p={p[1]}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Skeptic block #9 + #12: ExperimentConfig.__post_init__ guards
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.L1
+@pytest.mark.properties
+def test_experiment_config_rejects_incompatible_scheme_statistic(
+    bootstrapped_registry,
+):
+    """Wald only accepts identity tilting; a (power_law, wald) cell
+    must be refused at construct time."""
+    with pytest.raises(ValueError, match="does not accept"):
+        ExperimentConfig(
+            scheme_name="power_law",
+            statistic_name="wald",
+            prior=NormalDistribution(0.0, 1.0),
+            model=NormalNormalModel(sigma=1.0),
+            theta_distribution=UniformThetaDistribution(low=-5.0, high=5.0),
+        )
+
+
+@pytest.mark.L1
+@pytest.mark.properties
+def test_experiment_config_rejects_unbounded_theta_distribution(
+    bootstrapped_registry,
+):
+    """Infinite-support θ-distribution → finiteness error at construct time."""
+
+    class UnboundedTheta:
+        name = "unbounded"
+
+        def sample(self, n, rng):
+            return rng.standard_normal(n)
+
+        def support(self):
+            return (-np.inf, np.inf)
+
+        def fingerprint(self):
+            return ("unbounded",)
+
+    with pytest.raises(ValueError, match="must be finite"):
+        ExperimentConfig(
+            scheme_name="power_law",
+            statistic_name="waldo",
+            prior=NormalDistribution(0.0, 1.0),
+            model=NormalNormalModel(sigma=1.0),
+            theta_distribution=UnboundedTheta(),
+        )
+
+
+@pytest.mark.L1
+@pytest.mark.properties
+def test_experiment_config_rejects_unknown_top_level_keys(bootstrapped_registry):
+    """A YAML typo (e.g., n_gird) must raise, not silently default."""
+    bad = {
+        "scheme_name": "power_law",
+        "statistic_name": "waldo",
+        "prior": {"type": "normal", "loc": 0.0, "scale": 1.0},
+        "model": {"type": "normal_normal", "sigma": 1.0},
+        "theta_distribution": {"type": "uniform", "low": -5.0, "high": 5.0},
+        "n_gird": 401,  # typo
+    }
+    with pytest.raises(ValueError, match="Unexpected ExperimentConfig keys"):
+        ExperimentConfig.from_dict(bad)
+
+
+# ---------------------------------------------------------------------------
+# Skeptic block #13: tighten "no grad to ValidityNet" check
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# E.2 round-2 invariants
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.L1
+@pytest.mark.properties
+def test_extract_normal_normal_params_rejects_degenerate_w(bootstrapped_registry):
+    """w → 0 (delta prior) and w → 1 (improper) raise."""
+    from frasian.learned.training.train import _extract_normal_normal_params
+
+    # w very close to 0: prior.scale << model.sigma
+    bad_prior_tight = NormalDistribution(0.0, 0.001)
+    model = NormalNormalModel(sigma=1.0)
+    with pytest.raises(ValueError, match="data weight"):
+        _extract_normal_normal_params(model, bad_prior_tight)
+
+    # w very close to 1: prior.scale >> model.sigma
+    bad_prior_wide = NormalDistribution(0.0, 1000.0)
+    with pytest.raises(ValueError, match="data weight"):
+        _extract_normal_normal_params(model, bad_prior_wide)
+
+    # Reasonable case still works.
+    ok_prior = NormalDistribution(0.0, 1.0)
+    w, mu0, sigma = _extract_normal_normal_params(model, ok_prior)
+    assert abs(w - 0.5) < 1e-9
+    assert mu0 == 0.0
+    assert sigma == 1.0
+
+
+@pytest.mark.L1
+@pytest.mark.properties
+def test_ot_torch_pvalue_returns_nan_outside_admissible_range():
+    """OT torch port mirrors numpy: NaN for η ∉ [0, 1].
+
+    Skeptic block #13: closes the gap between numpy (raises) and
+    torch (silently computed) so Head A's width loss masks invalid
+    samples instead of training on a bogus surface.
+    """
+    from frasian.learned.training.pvalue_torch import ot_tilted_pvalue_torch
+
+    theta = torch.tensor([[0.0]])
+    D = torch.tensor([[0.0]])
+    w = torch.tensor(0.5)
+    mu0 = torch.tensor(0.0)
+    sigma = torch.tensor(1.0)
+
+    # Inside admissible range: finite, in [0, 1].
+    p = ot_tilted_pvalue_torch(
+        theta, D, w, mu0, sigma, torch.tensor([[0.5]]), "waldo"
+    )
+    assert torch.isfinite(p).all() and 0.0 <= p.item() <= 1.0
+
+    # Outside: NaN.
+    for bad_eta in (-0.1, -2.0, 1.001, 5.0):
+        p = ot_tilted_pvalue_torch(
+            theta, D, w, mu0, sigma,
+            torch.tensor([[bad_eta]]), "waldo",
+        )
+        assert torch.isnan(p).all(), (
+            f"OT torch port at η={bad_eta} returned {p.item()}, expected NaN"
+        )
+
+
+@pytest.mark.L1
+@pytest.mark.properties
+def test_width_loss_averages_over_d_batch(bootstrapped_registry):
+    """_width_loss takes a (B,) D tensor and returns a scalar average.
+
+    Skeptic block #1: the previous single-D estimator had high
+    per-step variance, causing val_width to oscillate. Verify the
+    new code accepts batched D and that its variance scales as 1/B.
+    """
+    from frasian.learned.training.architecture import EtaNet
+    from frasian.learned.training.train import _width_loss
+
+    cfg = ExperimentConfig(
+        scheme_name="power_law", statistic_name="waldo",
+        prior=NormalDistribution(0.0, 1.0),
+        model=NormalNormalModel(sigma=1.0),
+        theta_distribution=UniformThetaDistribution(low=-5.0, high=5.0),
+        n_grid=51, n_lhs=10, eta_explore_box=(-2.0, 2.0),
+    )
+    eta_net = EtaNet(theta_dim=1)
+    theta_grid_t = torch.as_tensor(cfg.theta_grid, dtype=torch.float32)
+
+    # Single D: 1-element loss.
+    loss_1 = _width_loss(
+        eta_net=eta_net, theta_grid_t=theta_grid_t,
+        D_batch_t=torch.tensor([0.0]),
+        config=cfg, loss_kind="integrated_p", alpha=None,
+    )
+    # Batch of 8 D: scalar (mean over batch).
+    loss_8 = _width_loss(
+        eta_net=eta_net, theta_grid_t=theta_grid_t,
+        D_batch_t=torch.linspace(-2.0, 2.0, 8),
+        config=cfg, loss_kind="integrated_p", alpha=None,
+    )
+    assert loss_1.dim() == 0
+    assert loss_8.dim() == 0
+    # Both finite, gradient flows back.
+    loss_8.backward()
+    assert any(
+        p.grad is not None and p.grad.abs().sum().item() > 0
+        for p in eta_net.parameters()
+    )
+
+
+@pytest.mark.L1
+@pytest.mark.properties
+def test_validity_net_params_get_no_grad_attribute_at_all():
+    """After Head A's loss backward, ValidityNet.params should have
+    ``grad is None`` (no gradient even allocated), not zero gradient.
+
+    A `.grad == 0` could mean "leak that happens to vanish on this
+    input"; `.grad is None` means autograd never recorded a node
+    for these params — which is what `functional_call` with
+    detached params guarantees.
+    """
+    eta_net = EtaNet(theta_dim=1)
+    val_net = ValidityNet(theta_dim=1)
+    theta = torch.linspace(-2.0, 2.0, 11)
+    eta_pred = eta_net(theta)
+    v_p = {k: v.detach() for k, v in val_net.named_parameters()}
+    v_b = {k: v.detach() for k, v in val_net.named_buffers()}
+    inputs = torch.stack([theta, eta_pred], dim=-1)
+    logits = torch.func.functional_call(val_net, (v_p, v_b), (inputs,))
+    boundary_penalty_from_validity(logits).backward()
+    assert all(p.grad is None for p in val_net.parameters())

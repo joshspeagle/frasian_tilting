@@ -225,9 +225,9 @@ class ValidityNet(nn.Module):
     via ``BCEWithLogitsLoss`` (numerically stable) and the boundary
     penalty uses ``F.logsigmoid`` directly.
 
-    Call sites apply ``torch.clamp(logits, -20.0, 20.0)`` before
-    BCE / ``logsigmoid`` to keep gradients alive when Head B is
-    overconfident at the wrong boundary; see
+    No clamp on logits. ``logsigmoid`` and ``BCEWithLogitsLoss`` are
+    both numerically stable for any finite input, and clamping kills
+    the wrong-side gradient — see
     ``losses.boundary_penalty_from_validity`` for the rationale.
 
     Input convention: a single ``(N, theta_dim + 1)`` tensor with θ

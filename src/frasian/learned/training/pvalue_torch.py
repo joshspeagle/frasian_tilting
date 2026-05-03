@@ -83,6 +83,14 @@ def ot_tilted_pvalue_torch(
 ) -> torch.Tensor:
     """Torch port of `OTTilting.tilted_pvalue` for (ot, waldo|wald).
 
+    Mirrors the numpy `OTTilting.tilted_pvalue` admissible-range
+    enforcement (η ∈ [0, 1]). Outside the admissible range the torch
+    port emits NaN per element so the loss masks downstream
+    (``_masked_mean``) drop those samples instead of training Head A
+    on a meaningless surface. This closes the gap between numpy
+    (raises) and torch (silently computed) behaviours flagged in
+    the E.2 skeptic review.
+
     See `power_law_tilted_pvalue_torch` for input/output shape
     conventions; signatures match for registry uniformity.
     """
@@ -98,7 +106,13 @@ def ot_tilted_pvalue_torch(
         s_t = (w + eta * (1.0 - w)) * sigma
         a = torch.abs(mu_t - theta) / s_t
         b = (1.0 - eta) * (1.0 - w) * (mu0 - theta) / s_t
-        return _phi(b - a) + _phi(-a - b)
+        p = _phi(b - a) + _phi(-a - b)
+        # Mask out elements with η outside [0, 1] (admissible range).
+        # `torch.where(cond, NaN, p)` keeps the in-range subgraph
+        # differentiable; `_masked_mean` drops the NaN samples.
+        out_of_range = (eta < 0.0) | (eta > 1.0)
+        nan_value = torch.full_like(p, float("nan"))
+        return torch.where(out_of_range, nan_value, p)
 
     raise NotImplementedError(
         f"ot_tilted_pvalue_torch: statistic={statistic_name!r} "

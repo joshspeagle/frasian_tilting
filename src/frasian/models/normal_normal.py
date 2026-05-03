@@ -19,6 +19,7 @@ are in the Normal-Normal special case.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import ClassVar
 
 import numpy as np
 from numpy.random import Generator
@@ -78,14 +79,15 @@ class NormalNormalModel:
 
     Public attributes (`name`, `param_dim`, `sigma`) form the Normal-specific
     surface that conjugate-aware tilting schemes and test statistics rely on.
-    The attribute access discipline is intentional: by reading `model.sigma`
-    rather than calling abstract methods, a power-law tilting scheme can
-    detect "Normal-Normal context" without leaking into the protocol.
+    `name` and `param_dim` are class-level constants (not constructor kwargs)
+    so they cannot be overridden — that would let an instance silently lie
+    about its identity past the fingerprint check.
     """
 
     sigma: float
-    name: str = "normal_normal"
-    param_dim: int = 1
+
+    name: ClassVar[str] = "normal_normal"
+    param_dim: ClassVar[int] = 1
 
     def __post_init__(self) -> None:
         if not (np.isfinite(self.sigma) and self.sigma > 0):

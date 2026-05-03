@@ -24,7 +24,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
-from typing import Any, Mapping, Protocol, Tuple, runtime_checkable
+from typing import Any, ClassVar, Mapping, Protocol, Tuple, runtime_checkable
 
 import numpy as np
 import torch
@@ -173,11 +173,16 @@ class ThetaDistribution(Protocol):
 
 @dataclass(frozen=True)
 class UniformThetaDistribution:
-    """Uniform(low, high) over θ."""
+    """Uniform(low, high) over θ.
+
+    `name` is a class-level constant (not a kwarg) so a constructed
+    instance cannot lie about its identity past the fingerprint check.
+    """
 
     low: float
     high: float
-    name: str = "uniform"
+
+    name: ClassVar[str] = "uniform"
 
     def __post_init__(self) -> None:
         if not (np.isfinite(self.low) and np.isfinite(self.high)):
@@ -201,13 +206,10 @@ class UniformThetaDistribution:
         return ("uniform", float(self.low), float(self.high))
 
 
-# Factory registries mapping YAML "type" strings to constructors.
-# The framework's main `_registry` already names tilting schemes,
-# statistics, and models by their decorator; we add a small local
-# registry for priors and θ-distributions which are passed by
-# parameters rather than registered via decorator today.
-PRIOR_REGISTRY: dict[str, Any] = {}
-MODEL_REGISTRY: dict[str, Any] = {}
+# Local registry mapping YAML "type" strings to ThetaDistribution
+# constructors. (Priors / models go through their own dispatch in
+# `_build_*_from_dict`; consolidating those into a registry too is a
+# follow-up — for now the dispatch is small enough to be inline.)
 THETA_DISTRIBUTION_REGISTRY: dict[str, Any] = {
     "uniform": UniformThetaDistribution,
 }
@@ -371,6 +373,28 @@ class ExperimentConfig:
                 f"eta_explore_box must be a finite (low, high) with "
                 f"high > low; got {self.eta_explore_box}"
             )
+        # Validate theta_distribution support is finite at construct
+        # time, not lazily on first theta_grid access.
+        sup_lo, sup_hi = self.theta_distribution.support()
+        if not (np.isfinite(sup_lo) and np.isfinite(sup_hi)):
+            raise ValueError(
+                f"theta_distribution.support() must be finite for the "
+                f"learned-η training loop; got ({sup_lo}, {sup_hi}). "
+                f"Use a compactly supported θ distribution (e.g., "
+                f"UniformThetaDistribution)."
+            )
+        # Compatibility: refuse incompatible (scheme, statistic) cells
+        # up front rather than failing mid-training.
+        scheme = _registry.tiltings[self.scheme_name]()
+        statistic = _registry.statistics[self.statistic_name]()
+        if hasattr(statistic, "accepts_tilting") and not statistic.accepts_tilting(
+            scheme
+        ):
+            raise ValueError(
+                f"statistic {self.statistic_name!r} does not accept "
+                f"tilting {self.scheme_name!r}. Pair the scheme with a "
+                f"compatible statistic (e.g., 'waldo')."
+            )
 
     @cached_property
     def theta_grid(self) -> NDArray[np.float64]:
@@ -416,6 +440,24 @@ class ExperimentConfig:
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "ExperimentConfig":
+        # Strict allowlist on top-level keys so YAML typos (e.g. ``n_gird``)
+        # surface as a loud error instead of being silently dropped to a
+        # default. Fingerprint keys produced by ``to_dict`` are also
+        # accepted (and ignored on reconstruction — they're round-trip
+        # convenience metadata, not constructor inputs).
+        allowed = {
+            "scheme_name", "statistic_name", "prior", "model",
+            "theta_distribution", "n_grid", "n_lhs", "eta_explore_box",
+            "seed", "name", "description",
+            "prior_fingerprint", "model_fingerprint",
+            "theta_distribution_fingerprint",
+        }
+        extras = set(d.keys()) - allowed
+        if extras:
+            raise ValueError(
+                f"Unexpected ExperimentConfig keys: {sorted(extras)} "
+                f"(allowed: {sorted(allowed)})"
+            )
         return cls(
             scheme_name=str(d["scheme_name"]),
             statistic_name=str(d["statistic_name"]),
@@ -478,8 +520,6 @@ __all__ = [
     "UniformThetaDistribution",
     "ExperimentConfig",
     "lhs_1d",
-    "PRIOR_REGISTRY",
-    "MODEL_REGISTRY",
     "THETA_DISTRIBUTION_REGISTRY",
     # Legacy (still imported by train.py until E.2 cuts it over)
     "TrainingDistribution",

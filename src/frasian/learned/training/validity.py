@@ -75,6 +75,14 @@ def compute_pvalues_per_sample(
 
     All arrays must share the same shape ``(N,)``.
     """
+    if not hasattr(scheme, "tilted_pvalue"):
+        raise AttributeError(
+            f"{type(scheme).__name__} does not implement `tilted_pvalue`; "
+            f"compute_pvalues_per_sample requires it. Stub schemes "
+            f"(fisher_rao, mixture) need a torch port and a numpy "
+            f"implementation before they can be trained."
+        )
+
     theta_arr = np.atleast_1d(np.asarray(theta, dtype=np.float64))
     D_arr = np.atleast_1d(np.asarray(D, dtype=np.float64))
     eta_arr = np.atleast_1d(np.asarray(eta, dtype=np.float64))
@@ -97,9 +105,12 @@ def compute_pvalues_per_sample(
             )
             out[i] = float(np.asarray(p).reshape(-1)[0])
         except (TiltingDomainError, ValueError, RuntimeError,
-                NotImplementedError):
-            out[i] = np.nan
-        except FloatingPointError:
+                NotImplementedError, FloatingPointError):
+            # Deliberately NOT catching AttributeError here — a typo
+            # like `self.foo` inside a scheme's `tilted_pvalue` body
+            # should surface as a stack trace, not silently turn every
+            # sample into NaN. The hasattr() pre-check above covers
+            # the "scheme has no method at all" case loudly.
             out[i] = np.nan
     return out
 

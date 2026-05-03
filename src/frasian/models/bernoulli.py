@@ -18,6 +18,7 @@ methods is research, not refactoring.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import ClassVar
 
 import numpy as np
 from numpy.random import Generator
@@ -31,10 +32,15 @@ from .distributions import BernoulliLikelihood, BetaDistribution
 @register_model(name="bernoulli", brief="docs/methods/bernoulli.md")
 @dataclass(frozen=True)
 class BernoulliModel:
-    """Bernoulli location parameter with conjugate Beta prior."""
+    """Bernoulli location parameter with conjugate Beta prior.
 
-    name: str = "bernoulli"
-    param_dim: int = 1
+    `name` and `param_dim` are class-level constants (ClassVars) so
+    they are not constructor kwargs; that prevents an instance from
+    silently lying about its identity past the fingerprint check.
+    """
+
+    name: ClassVar[str] = "bernoulli"
+    param_dim: ClassVar[int] = 1
 
     def fingerprint(self) -> tuple:
         return ("bernoulli",)

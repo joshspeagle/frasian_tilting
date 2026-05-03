@@ -170,6 +170,17 @@ class OTTilting:
         sigma0 = float(prior.scale)
         w = sigma0 ** 2 / (sigma ** 2 + sigma0 ** 2)
 
+        # Mirror the admissibility check in `tilt()` (line 101): η outside
+        # [0, 1] makes the W2 interpolation a non-distribution and yields
+        # a non-positive scale `s_t = (w + eta(1-w))*sigma`, producing a
+        # finite-but-mathematically-bogus p-value. Refuse explicitly.
+        eta_f = float(eta)
+        if not (0.0 <= eta_f <= 1.0):
+            raise TiltingDomainError(
+                f"OTTilting.tilted_pvalue requires eta in [0, 1], got "
+                f"{eta_f!r}."
+            )
+
         theta_arr = np.asarray(theta, dtype=np.float64)
 
         if statistic_name == "wald":
@@ -178,10 +189,10 @@ class OTTilting:
 
         if statistic_name == "waldo":
             mu_n = w * D + (1.0 - w) * mu0
-            mu_t = (1.0 - eta) * mu_n + eta * D
-            s_t = (w + eta * (1.0 - w)) * sigma
+            mu_t = (1.0 - eta_f) * mu_n + eta_f * D
+            s_t = (w + eta_f * (1.0 - w)) * sigma
             a = np.abs(mu_t - theta_arr) / s_t
-            b = (1.0 - eta) * (1.0 - w) * (mu0 - theta_arr) / s_t
+            b = (1.0 - eta_f) * (1.0 - w) * (mu0 - theta_arr) / s_t
             return np.asarray(
                 stats.norm.cdf(b - a) + stats.norm.cdf(-a - b),
                 dtype=np.float64,
