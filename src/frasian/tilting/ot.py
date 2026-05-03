@@ -262,13 +262,12 @@ class OTTilting:
     ) -> tuple[list[tuple[float, float]], float, int]:
         """Dynamic-eta CI: eta = eta*(|Delta(theta)|) per theta.
 
-        Algorithm mirrors `PowerLawTilting.dynamic_tilted_confidence_interval`;
-        the only OT-specific bit is the `tilted_pvalue` callback. See the
-        power-law version for the documented step-by-step recipe.
+        Delegates to
+        `frasian.tilting._dynamic.dynamic_ci_scan`; the scheme-specific
+        bit is the `tilted_pvalue` closure.
         """
         from ..models.normal_normal import NormalNormalModel
-        from scipy import optimize
-        from .eta_selectors import _NamedStatistic
+        from ._dynamic import dynamic_ci_scan
 
         if not isinstance(model, NormalNormalModel):
             raise NotImplementedError(
@@ -280,64 +279,18 @@ class OTTilting:
         sigma0 = float(prior.scale)
         w = sigma0 ** 2 / (sigma ** 2 + sigma0 ** 2)
 
-        search_half = search_mult * sigma
-        theta_lo = D - search_half
-        theta_hi = D + search_half
-        theta_grid = np.linspace(theta_lo, theta_hi, n_grid)
-
-        abs_delta_theta = np.abs((1.0 - w) * (mu0 - theta_grid) / sigma)
-        ad_max = float(abs_delta_theta.max()) + 1e-6
-        coarse_grid = np.linspace(0.0, ad_max, coarse_n)
-        coarse_eta = eta_selector.select_grid(
-            coarse_grid, self, statistic=_NamedStatistic(statistic_name),
-            w=w, alpha=alpha,
-        )
-        eta_at_theta = np.interp(abs_delta_theta, coarse_grid, coarse_eta)
-
-        p_theta = np.empty_like(theta_grid)
-        for i in range(theta_grid.size):
-            p_theta[i] = float(self.tilted_pvalue(
-                float(theta_grid[i]), D, model, prior,
-                float(eta_at_theta[i]), statistic_name,
+        def _tilted_pvalue_fn(theta: float, eta: float) -> float:
+            return float(self.tilted_pvalue(
+                theta, D, model, prior, eta, statistic_name,
             ))
 
-        diff = p_theta - alpha
-        crossings: list[float] = []
-        for i in range(theta_grid.size - 1):
-            if diff[i] * diff[i + 1] < 0.0:
-                def _f(theta_val: float, _i=i) -> float:
-                    ad = abs((1.0 - w) * (mu0 - theta_val) / sigma)
-                    eta = float(np.interp(ad, coarse_grid, coarse_eta))
-                    return float(self.tilted_pvalue(
-                        theta_val, D, model, prior, eta, statistic_name,
-                    )) - alpha
-                try:
-                    cross = optimize.brentq(
-                        _f, theta_grid[i], theta_grid[i + 1], xtol=1e-9,
-                    )
-                    crossings.append(float(cross))
-                except ValueError:
-                    t = diff[i] / (diff[i] - diff[i + 1])
-                    crossings.append(
-                        float(theta_grid[i] + t * (theta_grid[i + 1]
-                                                    - theta_grid[i]))
-                    )
-
-        regions: list[tuple[float, float]] = []
-        if not crossings:
-            if p_theta[len(p_theta) // 2] >= alpha:
-                regions = [(float(theta_lo), float(theta_hi))]
-        else:
-            entries = list(crossings)
-            if p_theta[0] >= alpha:
-                entries = [float(theta_lo)] + entries
-            if p_theta[-1] >= alpha:
-                entries = entries + [float(theta_hi)]
-            for i in range(0, len(entries) - 1, 2):
-                regions.append((entries[i], entries[i + 1]))
-
-        total = float(sum(hi - lo for lo, hi in regions))
-        return regions, total, len(regions)
+        return dynamic_ci_scan(
+            tilted_pvalue_fn=_tilted_pvalue_fn,
+            alpha=alpha, D=D, w=w, mu0=mu0, sigma=sigma,
+            eta_selector=eta_selector, scheme=self,
+            statistic_name=statistic_name,
+            n_grid=n_grid, coarse_n=coarse_n, search_mult=search_mult,
+        )
 
     # ----- Uniform CI / regions / pvalue interface -----
 
