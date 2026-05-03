@@ -158,6 +158,34 @@ static selector is exposed via `post_selection_demo_tiltings()` only
 to make the trade-off measurable; never use it for production CI
 estimation.
 
+**Calibrated AND narrow: `LearnedDynamicEtaSelector`.** The legacy
+dynamic selector is calibrated but inflates width by ~30 % at the
+conflict band (|Δ|≥2) because the inner `NumericalEtaSelector` slams
+η to the lower clamp at small |Δ|. A monotonic-MLP-trained selector
+(`src/frasian/learned/monotonic_eta.py` + `learned/training/`)
+minimises the dynamic-procedure loss directly (integrated CI width by
+default, CD variance and α-fixed static width also available), giving
+a smooth η*(|Δ|; w) curve. Trained checkpoints live in
+`artifacts/learned_eta_<scheme>_v0_smoke.pt`. Activate via env var:
+
+```
+export FRASIAN_DEFAULT_DYNAMIC_ETA=learned   # vs default "numerical"
+```
+
+Headline empirical result on the canonical sandbox (w=0.5):
+
+```
+                            θ=0    θ=±2   θ=±3   θ=±4
+Wald                        3.92   3.92   3.92   3.92
+bare WALDO                  3.36   3.76   4.29   4.87
+power_law[dynamic_num.]     3.38   3.88   4.60   5.28   ← legacy: inflates at conflict
+power_law[learned]          3.81   3.86   3.89   3.88   ← calibrated AND ≤ Wald
+ot[learned]                 3.79   3.85   3.89   3.92
+```
+
+All learned cells calibrated within MC noise at α∈{0.05, 0.10, 0.20}.
+See `docs/methods/learned_eta.md` for the full method brief.
+
 ## Test Statistics (status)
 
 | Name          | Status        | Notes                                          |

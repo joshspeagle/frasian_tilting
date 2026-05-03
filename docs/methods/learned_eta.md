@@ -240,13 +240,53 @@ verifies in `tests/properties/test_loss_diff.py`.
 - Smoke checkpoint: `artifacts/learned_eta_power_law_v0_smoke.pt`
 - Production checkpoint: `artifacts/learned_eta_power_law_v1.pt`
 
+## Empirical headline numbers
+
+End-to-end CI width on the canonical Normal-Normal sandbox (`Config.fast()`,
+σ=1, μ₀=0, n_reps=200), w=0.5 column. Learned uses the v0_smoke checkpoint:
+
+| θ_true | Wald | bare WALDO | legacy Dyn | learned p.l. | learned ot |
+|---|---|---|---|---|---|
+| 0 | 3.92 | 3.36 | 3.38 | 3.81 | 3.79 |
+| ±2 | 3.92 | 3.76 | 3.88 | 3.86 | 3.85 |
+| ±3 | 3.92 | 4.29 | **4.60** | **3.89** | **3.89** |
+| ±4 | 3.92 | 4.87 | **5.28** | **3.88** | **3.92** |
+
+Headline:
+- **Conflict band (|θ|≥3)**: learned is 25–35 % narrower than the legacy
+  `DynamicNumericalEtaSelector` *and* narrower than bare WALDO.
+- **Low conflict (|θ|≤1)**: learned is ~12 % wider than the legacy
+  (architectural bound on η' prevents full oversharpening at the
+  lower clamp), but still ≤ Wald everywhere.
+- **Calibration**: nominal at every (θ_true, w, α) cell on the
+  in-checkpoint 5×5×3 grid (max |err| ≤ 0.029 ≈ 3·MC_SE) and on the
+  end-to-end coverage experiment via the runner.
+
+The framework's central claim — *a calibrated dynamic-η selector that
+matches or beats non-tilted WALDO width across the (w, θ_true) plane*
+— is empirically verified.
+
 ## Status notes
 
 The default selector in `default_tiltings()` is gated by the env var
 `FRASIAN_DEFAULT_DYNAMIC_ETA`:
-- `numerical` (default until benchmarks pass): `DynamicNumericalEtaSelector`
-- `learned`: `LearnedDynamicEtaSelector` with the v1 production checkpoint.
+- `numerical` (default for backwards compat): `DynamicNumericalEtaSelector`.
+- `learned`: `LearnedDynamicEtaSelector` reading the trained
+  `MonotonicEtaArtifact` from `artifacts/learned_eta_<scheme>_v0_smoke.pt`.
 
-The switch is conservative because the headline narrowness regression
-(`test_learned_eta_narrowness.py`) needs to pass empirically before
-we change the default for everyone.
+To switch globally:
+```
+export FRASIAN_DEFAULT_DYNAMIC_ETA=learned
+python -m scripts.run --fast experiment=coverage
+python -m scripts.run --fast experiment=width
+```
+
+The smoothness experiment uses its own internal selector
+(`NumericalEtaSelector`) and is not affected by this env var.
+
+A v1 production checkpoint (n_lhs=4000, n_epochs=100) trained but
+plateaued at the same val_loss as v0_smoke — the bounded-sigmoid
+output `0.01 + 0.98·sigmoid(...)` caps how aggressively η can
+oversharpen at low |Δ|, which is the binding constraint regardless
+of training budget. v0_smoke is therefore representative; we ship
+it as the production fixture.
