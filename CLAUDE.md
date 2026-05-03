@@ -129,6 +129,24 @@ paired with `waldo`. The `identity` tilting + a uniform
 `tilting.confidence_interval(alpha, data, model, prior, statistic)`
 API let coverage / width / smoothness all share one cell loop.
 
+**CI region semantics — important.** Dynamic-η inversion can produce
+a CI that is the union of multiple disjoint regions (the dynamic
+p-value is non-monotone in θ at conflict). Two methods on
+`TiltingScheme` resolve this:
+
+- `confidence_regions(...) -> list[(lo, hi)]` returns the **actual
+  union**: every disjoint accept-region, sorted. This is what
+  `coverage` and `width` experiments call. `width` records
+  `sum(hi - lo)` — true union width, NOT the convex hull.
+- `confidence_interval(...) -> (lo, hi)` returns the **convex hull**
+  `(min lo, max hi)` as a single-tuple summary. Use this only when a
+  caller needs a single interval.
+
+Single-region cells (Wald, identity, fixed-η static cells) have
+`len(regions) == 1` so the two coincide. Multi-region cells (e.g.
+`power_law[dynamic_numerical]` at extreme conflict) — `confidence_regions`
+gives the honest answer, `confidence_interval` over-counts the gaps.
+
 **Calibration caveat — important.** The framework's calibrated default
 is `DynamicNumericalEtaSelector`: η at each θ depends only on θ (not
 on D), so the WALDO p-value at any fixed η is U[0,1] under H0 and the
