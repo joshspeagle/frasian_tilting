@@ -19,6 +19,34 @@ the training distribution. A consumer (the selector) verifies these
 match its inference context at `load()` time and raises
 `MissingArtifactError` on mismatch.
 
+Checkpoint format (v1; documented in `docs/methods/learned_eta.md`):
+
+    REQUIRED keys:
+      "checkpoint_format_version": int       (= 1 for this format)
+      "architecture":               str      (= "MonotonicEtaNet")
+      "architecture_kwargs":        dict     (kwargs to MonotonicEtaNet.__init__,
+                                               required even if empty so the
+                                               trained weights match the
+                                               re-instantiated module)
+      "model_state_dict":           torch state dict
+      "scheme":                     str      ("power_law", "ot", ...)
+      "loss":                       str      ("integrated_p" | "cd_variance"
+                                               | "static_width")
+      "alpha_mode":                 str      ("marginalised" or
+                                               f"fixed_{alpha:.6g}")
+
+    OPTIONAL keys (recommended):
+      "training_distribution":      dict     (serialised TrainingDistribution)
+      "n_lhs", "n_mc", "n_epochs":  int      (training budgets)
+      "seed":                       int
+      "version":                    str      (artifact version, e.g. "v0_smoke")
+      "calibration_report":         dict     (5x5 (θ_true, w) coverage table)
+      "training_finished_at":       str      (ISO timestamp)
+
+`load()` validates the REQUIRED keys explicitly and raises
+`MissingArtifactError` with a precise message on missing or wrong-typed
+fields. Format-version mismatch also raises (no silent migration).
+
 The architecture and training loop live under
 `frasian.learned.training`; this module is the inference-only
 boundary so the rest of the framework can use trained models
@@ -36,6 +64,17 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .._errors import MissingArtifactError
+
+CHECKPOINT_FORMAT_VERSION = 1
+_REQUIRED_KEYS = (
+    "checkpoint_format_version",
+    "architecture",
+    "architecture_kwargs",
+    "model_state_dict",
+    "scheme",
+    "loss",
+    "alpha_mode",
+)
 
 
 @dataclass
@@ -66,6 +105,7 @@ class MonotonicEtaArtifact:
     _metadata: dict[str, Any] = field(default_factory=dict, init=False,
                                         repr=False, compare=False)
     _loaded: bool = field(default=False, init=False, repr=False, compare=False)
+    _device: str = field(default="cpu", init=False, repr=False, compare=False)
 
     def load(self) -> None:
         """Read the checkpoint, instantiate the model, validate metadata.
@@ -95,22 +135,33 @@ class MonotonicEtaArtifact:
 
         device = self._resolve_device()
         state = torch.load(str(path), map_location=device, weights_only=False)
-        # Required metadata keys; checkpoint format is documented in
-        # `learned/training/train.py`.
-        for key in ("architecture", "scheme", "loss", "alpha_mode",
-                    "model_state_dict"):
-            if key not in state:
-                raise MissingArtifactError(
-                    f"MonotonicEtaArtifact: checkpoint at {path} missing "
-                    f"required metadata key {key!r}; got keys {sorted(state)}."
-                )
+
+        # Validate required keys (see module docstring for format spec).
+        missing = [k for k in _REQUIRED_KEYS if k not in state]
+        if missing:
+            raise MissingArtifactError(
+                f"MonotonicEtaArtifact: checkpoint at {path} missing "
+                f"required keys {missing}; got keys {sorted(state)}."
+            )
+        version = state["checkpoint_format_version"]
+        if version != CHECKPOINT_FORMAT_VERSION:
+            raise MissingArtifactError(
+                f"MonotonicEtaArtifact: checkpoint format version "
+                f"{version} != expected {CHECKPOINT_FORMAT_VERSION}; "
+                f"re-train or migrate."
+            )
         if state["architecture"] != "MonotonicEtaNet":
             raise MissingArtifactError(
                 f"MonotonicEtaArtifact: expected architecture "
                 f"'MonotonicEtaNet', got {state['architecture']!r}."
             )
+        if not isinstance(state["architecture_kwargs"], dict):
+            raise MissingArtifactError(
+                f"MonotonicEtaArtifact: architecture_kwargs must be a dict; "
+                f"got {type(state['architecture_kwargs']).__name__!r}."
+            )
 
-        net = MonotonicEtaNet(**state.get("architecture_kwargs", {}))
+        net = MonotonicEtaNet(**state["architecture_kwargs"])
         net.load_state_dict(state["model_state_dict"])
         net.to(device)
         net.eval()
@@ -119,6 +170,7 @@ class MonotonicEtaArtifact:
         self._metadata = {
             k: v for k, v in state.items() if k != "model_state_dict"
         }
+        self._device = device
         self._loaded = True
 
     def predict(self, x: NDArray[np.float64]) -> NDArray[np.float64]:
@@ -143,9 +195,9 @@ class MonotonicEtaArtifact:
                 f"shape {x_arr.shape!r}."
             )
 
-        device = self._resolve_device()
         with torch.no_grad():
-            x_t = torch.as_tensor(x_arr, dtype=torch.float32, device=device)
+            x_t = torch.as_tensor(x_arr, dtype=torch.float32,
+                                    device=self._device)
             y_t = self._model(x_t)
         return np.asarray(y_t.cpu().numpy(), dtype=np.float64).reshape(-1)
 

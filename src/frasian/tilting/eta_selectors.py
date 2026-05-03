@@ -48,6 +48,10 @@ from dataclasses import dataclass, field
 import numpy as np
 from scipy import optimize
 
+from ..learned.transforms import (
+    delta_transform as _delta_transform,
+    eta_inverse as _eta_inverse,
+)
 from ..models.distributions import NormalDistribution
 from ..models.normal_normal import NormalNormalModel
 from ..statistics.base import TestStatistic
@@ -323,12 +327,21 @@ class LearnedDynamicEtaSelector:
             self._loaded = True
 
     def _check_scheme(self, scheme: TiltingScheme) -> None:
+        from .._errors import MissingArtifactError
+        if not self._loaded:
+            raise MissingArtifactError(
+                f"{self.artifact.name} not loaded; "
+                f"call .load() before _check_scheme()."
+            )
         meta = self.artifact.metadata
         trained_scheme = meta.get("scheme")
         if trained_scheme is None:
-            return
+            raise MissingArtifactError(
+                f"{self.artifact.name} metadata missing 'scheme' key; "
+                f"cannot verify scheme compatibility. Re-train with the "
+                f"current trainer or fix the checkpoint metadata."
+            )
         if scheme.name != trained_scheme:
-            from .._errors import MissingArtifactError
             raise MissingArtifactError(
                 f"{self.artifact.name} trained for scheme={trained_scheme!r}, "
                 f"but inference scheme={scheme.name!r}; retrain or use a "
@@ -336,19 +349,34 @@ class LearnedDynamicEtaSelector:
             )
 
     def _check_alpha(self, alpha: float) -> None:
+        from .._errors import MissingArtifactError
+        if not self._loaded:
+            raise MissingArtifactError(
+                f"{self.artifact.name} not loaded; "
+                f"call .load() before _check_alpha()."
+            )
         meta = self.artifact.metadata
-        mode = meta.get("alpha_mode", "marginalised")
+        mode = meta.get("alpha_mode")
+        if mode is None:
+            raise MissingArtifactError(
+                f"{self.artifact.name} metadata missing 'alpha_mode' key; "
+                f"cannot verify alpha compatibility."
+            )
         if mode == "marginalised":
             return
         if isinstance(mode, str) and mode.startswith("fixed_"):
             trained_alpha = float(mode[len("fixed_"):])
             if abs(alpha - trained_alpha) > 1e-9:
-                from .._errors import MissingArtifactError
                 raise MissingArtifactError(
                     f"{self.artifact.name} trained at alpha={trained_alpha}, "
                     f"but inference alpha={alpha}; retrain or use the "
                     f"marginalised artifact."
                 )
+            return
+        raise MissingArtifactError(
+            f"{self.artifact.name} has unrecognised alpha_mode={mode!r}; "
+            f"expected 'marginalised' or 'fixed_<alpha>'."
+        )
 
     def select(self, context: TiltingContext, scheme: TiltingScheme,
                *, statistic: TestStatistic) -> float:
@@ -373,10 +401,8 @@ class LearnedDynamicEtaSelector:
         self._check_scheme(scheme)
         self._check_alpha(alpha)
 
-        from ..learned.transforms import delta_transform, eta_inverse
-
         ad = np.asarray(abs_delta_grid, dtype=np.float64)
-        delta_prime = delta_transform(ad)
+        delta_prime = _delta_transform(ad)
         x = np.column_stack([np.full_like(delta_prime, float(w)), delta_prime])
         eta_prime = self.artifact.predict(x)
-        return eta_inverse(scheme.name, eta_prime, w)
+        return _eta_inverse(scheme.name, eta_prime, w)

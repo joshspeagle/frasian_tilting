@@ -63,6 +63,53 @@ class TestEtaTransformPowerLaw:
 
 @pytest.mark.L1
 @pytest.mark.properties
+class TestTransformBoundarySafety:
+    """Skeptic-Phase-B item 3: transforms must not return NaN/Inf at
+    boundary inputs the framework's grids actually reach."""
+
+    def test_delta_transform_handles_inf(self):
+        """delta_transform(inf) returns the clamped maximum, not NaN."""
+        out = delta_transform(np.inf)
+        assert np.isfinite(out)
+        assert out < 1.0
+
+    def test_delta_transform_handles_large_finite(self):
+        """delta_transform(1e9) gives a finite Δ' ≈ 1."""
+        out = delta_transform(1e9)
+        assert np.isfinite(out)
+        assert out < 1.0
+        assert out > 0.999
+
+    def test_delta_inverse_clamps_close_to_one(self):
+        """delta_inverse(1.0) does not produce inf."""
+        out = delta_inverse(1.0)
+        assert np.isfinite(out)
+
+    def test_delta_inverse_array(self):
+        """Vector inputs preserve the clamp."""
+        out = delta_inverse(np.array([0.0, 0.5, 0.9, 1.0, 1.5]))
+        assert np.all(np.isfinite(out))
+
+    def test_eta_min_powerlaw_at_w_close_to_one(self):
+        """eta_min_powerlaw(0.999) is finite (clamps w)."""
+        out = eta_min_powerlaw(0.999)
+        assert np.isfinite(out)
+
+    def test_eta_inverse_powerlaw_at_w_close_to_one(self):
+        """eta_inverse_powerlaw at w ≈ 1 is finite."""
+        out = eta_inverse_powerlaw(0.5, 0.999)
+        assert np.isfinite(out)
+
+    def test_round_trip_at_boundary_w(self):
+        """delta_transform then delta_inverse round-trips for any Δ ∈ [0, 1e6]."""
+        for delta in [0.0, 1e-3, 1.0, 100.0, 1e6]:
+            recovered = delta_inverse(delta_transform(delta))
+            np.testing.assert_allclose(recovered, delta, rtol=1e-6,
+                                         err_msg=f"failed at delta={delta}")
+
+
+@pytest.mark.L1
+@pytest.mark.properties
 class TestSchemeDispatch:
     def test_powerlaw_dispatch(self):
         """`eta_transform("power_law", ...)` matches direct call."""

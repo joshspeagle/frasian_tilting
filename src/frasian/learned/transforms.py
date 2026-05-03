@@ -44,15 +44,44 @@ except ImportError:  # pragma: no cover - torch is optional
 # ----- numpy versions (always available) -----
 
 
+# Boundary-safety constants. The transforms divide by (1-x); we clamp x
+# strictly below 1 to keep the result finite for any grid the framework
+# might generate (coverage corners can hit |Δ| = O(50), which bumps Δ'
+# against 1.0 within float64 resolution).
+_DELTA_PRIME_MAX = 1.0 - 1e-12
+_W_MIN = 1e-6
+_W_MAX = 1.0 - 1e-6
+
+
+def _validate_w(w: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Clip `w` to `[_W_MIN, _W_MAX]` to keep `1-w` strictly positive."""
+    return np.clip(w, _W_MIN, _W_MAX)
+
+
 def delta_transform(delta: ArrayLike) -> NDArray[np.float64]:
-    """Δ → Δ' = Δ/(1+Δ). Maps [0, ∞) → [0, 1)."""
+    """Δ → Δ' = Δ/(1+Δ). Maps `[0, ∞]` → `[0, 1]` (image clipped at
+    `1 - 1e-12` to keep the inverse bounded).
+
+    Handles `delta = np.inf` cleanly (returns `1 - 1e-12`).
+    """
     delta = np.asarray(delta, dtype=np.float64)
-    return delta / (1.0 + delta)
+    # delta/(1+delta) returns NaN for inf+inf in numpy; rewrite as 1/(1 + 1/delta).
+    with np.errstate(divide="ignore", invalid="ignore"):
+        out = np.where(
+            np.isinf(delta),
+            np.full_like(delta, _DELTA_PRIME_MAX),
+            delta / (1.0 + delta),
+        )
+    return np.clip(out, 0.0, _DELTA_PRIME_MAX)
 
 
 def delta_inverse(delta_prime: ArrayLike) -> NDArray[np.float64]:
-    """Δ' → Δ = Δ'/(1-Δ'). Maps [0, 1) → [0, ∞)."""
+    """Δ' → Δ = Δ'/(1-Δ'). Maps `[0, 1)` → `[0, ∞)`.
+
+    Input is clamped to `[0, 1 - 1e-12]` to keep the result finite.
+    """
     delta_prime = np.asarray(delta_prime, dtype=np.float64)
+    delta_prime = np.clip(delta_prime, 0.0, _DELTA_PRIME_MAX)
     return delta_prime / (1.0 - delta_prime)
 
 
@@ -61,8 +90,9 @@ def eta_min_powerlaw(w: ArrayLike) -> NDArray[np.float64]:
 
     Below this, the tilted variance becomes non-positive
     (`denom = 1 - η(1-w) ≤ 0`) and `tilt` raises `TiltingDomainError`.
+    `w` is clamped to `[1e-6, 1-1e-6]` to keep the result finite.
     """
-    w = np.asarray(w, dtype=np.float64)
+    w = _validate_w(np.asarray(w, dtype=np.float64))
     return -w / (1.0 - w)
 
 
@@ -70,18 +100,21 @@ def eta_transform_powerlaw(eta: ArrayLike, w: ArrayLike
                             ) -> NDArray[np.float64]:
     """η → η' = η(1-w) + w for `power_law`. Maps [η_min(w), 1] → [0, 1].
 
-    η_min(w) = -w/(1-w) ↦ 0; η = 1 ↦ 1.
+    η_min(w) = -w/(1-w) ↦ 0; η = 1 ↦ 1. `w` clamped to `[1e-6, 1-1e-6]`.
     """
     eta = np.asarray(eta, dtype=np.float64)
-    w = np.asarray(w, dtype=np.float64)
+    w = _validate_w(np.asarray(w, dtype=np.float64))
     return eta * (1.0 - w) + w
 
 
 def eta_inverse_powerlaw(eta_prime: ArrayLike, w: ArrayLike
                           ) -> NDArray[np.float64]:
-    """η' → η = (η' - w)/(1-w) for `power_law`. Maps [0, 1] → [η_min(w), 1]."""
+    """η' → η = (η' - w)/(1-w) for `power_law`. Maps [0, 1] → [η_min(w), 1].
+
+    `w` clamped to `[1e-6, 1-1e-6]` to keep `1-w` strictly positive.
+    """
     eta_prime = np.asarray(eta_prime, dtype=np.float64)
-    w = np.asarray(w, dtype=np.float64)
+    w = _validate_w(np.asarray(w, dtype=np.float64))
     return (eta_prime - w) / (1.0 - w)
 
 
