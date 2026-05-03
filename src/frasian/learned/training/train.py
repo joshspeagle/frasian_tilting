@@ -279,6 +279,8 @@ def fit_monotonic_eta_artifact(
     weight_decay: float = 1e-4,
     theta_grid_n: int = 401,
     search_mult: float = 8.0,
+    patience: int = 15,
+    min_delta: float = 1e-4,
     device: str = "auto",
     seed: int = 42,
     out_path: Path,
@@ -288,9 +290,14 @@ def fit_monotonic_eta_artifact(
 ) -> TrainResult:
     """Train a `MonotonicEtaNet` end-to-end on the dynamic-procedure loss.
 
+    Constant-LR AdamW with **early stopping**: every epoch, validation
+    loss is checked; if it hasn't improved by ≥ `min_delta` for
+    `patience` consecutive epochs, training stops and the model is
+    rolled back to the best (lowest val-loss) state seen. The checkpoint
+    records both the configured `n_epochs` and the actual `epochs_run`.
+
     Writes a checkpoint at `out_path` with all metadata required by
-    `MonotonicEtaArtifact.load()`. Returns a `TrainResult` with the
-    final validation loss and training curve.
+    `MonotonicEtaArtifact.load()`. Returns a `TrainResult`.
 
     See `scripts/train_learned_eta.py` for the CLI entry point.
     """
@@ -334,27 +341,33 @@ def fit_monotonic_eta_artifact(
 
     if verbose:
         print(f"[fit_monotonic_eta_artifact] n_train={len(train_idx)} "
-              f"n_val={len(val_idx)} n_mc={n_mc}")
+              f"n_val={len(val_idx)} n_mc={n_mc} "
+              f"early_stop=patience={patience}, min_delta={min_delta}")
 
     model = MonotonicEtaNet(**architecture_kwargs).to(device_resolved)
+    # Constant LR: AdamW with no scheduler. The dynamic-η problem is
+    # well-conditioned (smooth, bounded losses on a low-dim input) so
+    # OneCycleLR's annealing wasn't buying anything; constant LR with
+    # early stopping is simpler and matches user expectation.
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=lr, weight_decay=weight_decay,
     )
     n_train = len(train_idx)
     steps_per_epoch = max(n_train // batch_size, 1)
-    total_steps = n_epochs * steps_per_epoch
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(
-        optimizer, max_lr=lr, total_steps=total_steps,
-        pct_start=0.1, anneal_strategy="cos",
-    )
 
     train_losses: list[float] = []
     val_losses: list[float] = []
+    best_val = float("inf")
+    best_epoch = -1
+    best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
+    epochs_since_best = 0
+    epochs_run = 0
+    stopped_early = False
 
     for epoch in range(n_epochs):
+        epochs_run = epoch + 1
         model.train()
         epoch_train = 0.0
-        # Shuffle train each epoch
         ep_perm = rng.permutation(n_train)
         for step in range(steps_per_epoch):
             idx = ep_perm[step * batch_size:(step + 1) * batch_size]
@@ -373,7 +386,6 @@ def fit_monotonic_eta_artifact(
             )
             loss.backward()
             optimizer.step()
-            scheduler.step()
             epoch_train += float(loss.item())
         train_losses.append(epoch_train / max(steps_per_epoch, 1))
 
@@ -384,18 +396,42 @@ def fit_monotonic_eta_artifact(
                 train_dist, w_val, theta_val,
                 n_mc=n_mc, rng=rng, device=device_resolved,
             )
-            val_loss = _compute_loss(
+            val_loss_t = _compute_loss(
                 model=model, batch=batch,
                 scheme_name=scheme_name, statistic_name=statistic_name,
                 loss_kind=loss_kind, alpha=alpha,
                 n_grid=theta_grid_n, search_mult=search_mult,
             )
-            val_losses.append(float(val_loss.item()))
+            val_loss = float(val_loss_t.item())
+            val_losses.append(val_loss)
+
+        # Early-stopping bookkeeping: improvement = val_loss < best_val - min_delta.
+        if val_loss < best_val - min_delta:
+            best_val = val_loss
+            best_epoch = epoch
+            best_state = {k: v.detach().clone()
+                            for k, v in model.state_dict().items()}
+            epochs_since_best = 0
+        else:
+            epochs_since_best += 1
 
         if verbose and ((epoch + 1) % max(n_epochs // 10, 1) == 0 or epoch == 0):
             print(f"[epoch {epoch + 1}/{n_epochs}] "
                   f"train={train_losses[-1]:.4f} "
-                  f"val={val_losses[-1]:.4f}")
+                  f"val={val_loss:.4f} "
+                  f"best={best_val:.4f} (epoch {best_epoch + 1}, "
+                  f"no-improve {epochs_since_best})")
+
+        if epochs_since_best >= patience:
+            stopped_early = True
+            if verbose:
+                print(f"[early stop] no val improvement for {patience} "
+                      f"epochs at epoch {epoch + 1}; best={best_val:.4f} "
+                      f"(epoch {best_epoch + 1}).")
+            break
+
+    # Roll back to best checkpoint.
+    model.load_state_dict(best_state)
 
     # Post-training calibration report (Phase-C skeptic block #1).
     if verbose:
@@ -431,6 +467,11 @@ def fit_monotonic_eta_artifact(
         "n_lhs": n_lhs,
         "n_mc": n_mc,
         "n_epochs": n_epochs,
+        "epochs_run": epochs_run,
+        "stopped_early": stopped_early,
+        "best_epoch": best_epoch + 1,
+        "patience": patience,
+        "min_delta": min_delta,
         "batch_size": batch_size,
         "lr": lr,
         "weight_decay": weight_decay,
@@ -441,7 +482,7 @@ def fit_monotonic_eta_artifact(
         "training_finished_at": _dt.datetime.utcnow().isoformat(),
         "train_losses": train_losses,
         "val_losses": val_losses,
-        "final_val_loss": val_losses[-1],
+        "final_val_loss": best_val,
     }
     torch.save(state, str(out_path))
     if verbose:
@@ -451,6 +492,6 @@ def fit_monotonic_eta_artifact(
         artifact_path=out_path,
         train_losses=train_losses,
         val_losses=val_losses,
-        final_val_loss=val_losses[-1],
+        final_val_loss=best_val,
         metadata={k: v for k, v in state.items() if k != "model_state_dict"},
     )

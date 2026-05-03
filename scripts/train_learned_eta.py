@@ -35,6 +35,10 @@ def main() -> None:
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--theta-grid-n", type=int, default=401)
     parser.add_argument("--search-mult", type=float, default=8.0)
+    parser.add_argument("--patience", type=int, default=15,
+                        help="early stop after this many epochs with no val improvement")
+    parser.add_argument("--min-delta", type=float, default=1e-4,
+                        help="minimum val-loss improvement counted as progress")
     parser.add_argument("--theta-true-half-width", type=float, default=5.0)
     parser.add_argument("--w-min", type=float, default=0.05)
     parser.add_argument("--w-max", type=float, default=0.95)
@@ -78,6 +82,8 @@ def main() -> None:
         weight_decay=args.weight_decay,
         theta_grid_n=args.theta_grid_n,
         search_mult=args.search_mult,
+        patience=args.patience,
+        min_delta=args.min_delta,
         device=args.device,
         seed=args.seed,
         out_path=args.out,
