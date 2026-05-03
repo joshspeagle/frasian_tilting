@@ -35,7 +35,7 @@ def main() -> None:
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--theta-grid-n", type=int, default=401)
     parser.add_argument("--search-mult", type=float, default=8.0)
-    parser.add_argument("--theta-true-half-width", type=float, default=10.0)
+    parser.add_argument("--theta-true-half-width", type=float, default=5.0)
     parser.add_argument("--w-min", type=float, default=0.05)
     parser.add_argument("--w-max", type=float, default=0.95)
     parser.add_argument("--device", default="auto",

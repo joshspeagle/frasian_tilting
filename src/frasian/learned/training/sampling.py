@@ -6,8 +6,9 @@ The objective averages over a chosen distribution:
 
 The default `π` for the Normal-Normal sandbox:
 
-- `θ_true ~ Uniform(μ₀ - 10σ, μ₀ + 10σ)` — covers up to |Δ| ≈ 5 at
-  w=0.5, plus the asymptotic regime.
+- `θ_true ~ Uniform(μ₀ - 5σ, μ₀ + 5σ)` — covers up to |Δ| ≈ 2.5 at
+  w=0.5, exercising the conflict band where the dynamic procedure
+  matters without overweighting the asymptotic Wald regime.
 - `w ~ Uniform(0.05, 0.95)` — avoids w-boundary singularities.
 - `D | θ_true, w ~ N(θ_true, σ²)` (`σ = 1` fixed; the framework is
   scale-invariant).
@@ -19,6 +20,14 @@ form a mini-batch.
 `TrainingDistribution` is a dataclass with classmethods for ready-made
 defaults; users can construct custom distributions by passing
 explicit ranges.
+
+Note on training range — the default was widened to ±10σ initially
+but tightened back to ±5σ after the diagnostic showed the wider
+range over-weighted the asymptotic Wald regime, biasing the learned
+η toward ≈ +1 at every |Δ| (the integrated-p loss averages widths
+across cells; cells in the asymptotic tail dominate). ±5σ keeps the
+LHS density per-σ higher and gives the conflict band more relative
+weight.
 """
 
 from __future__ import annotations
@@ -50,13 +59,13 @@ class TrainingDistribution:
     """
 
     w_range: Tuple[float, float] = (0.05, 0.95)
-    theta_true_half_width: float = 10.0
+    theta_true_half_width: float = 5.0
     mu0: float = 0.0
     sigma: float = 1.0
 
     @classmethod
     def normal_normal_default(cls) -> "TrainingDistribution":
-        """Canonical default: `Uniform(0.05, 0.95)` × `Uniform(±10σ)`."""
+        """Canonical default: `Uniform(0.05, 0.95)` × `Uniform(±5σ)`."""
         return cls()
 
     def to_dict(self) -> dict:
