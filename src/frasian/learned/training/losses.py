@@ -105,9 +105,6 @@ def cd_variance_loss(
     return _masked_mean(var_per_sample)
 
 
-_LOGIT_CLAMP = 20.0
-
-
 def boundary_penalty_from_validity(
     validity_logits: torch.Tensor,
 ) -> torch.Tensor:
@@ -120,14 +117,21 @@ def boundary_penalty_from_validity(
     weights — see ``train.py`` for the ``functional_call``
     pattern).
 
-    Logits are clamped to ``[-20, 20]`` before the ``logsigmoid``
-    to keep gradients alive when Head B is overconfident at the
-    wrong boundary. Without clamping, ``-log_sigmoid(very_neg)``
-    saturates the loss and ``log_sigmoid(very_pos)`` collapses to
-    ~0 — the boundary signal would die.
+    No clamp on logits. ``torch.nn.functional.logsigmoid`` is
+    already numerically stable for any finite input
+    (``-logsigmoid(-100)`` evaluates to ≈100, no overflow), and
+    its derivative is ``-sigmoid(-x) = -(1 - sigmoid(x))``, which
+    saturates to ``-1`` (not zero) as logits go very negative —
+    so the boundary signal stays alive on the wrong side of an
+    overconfident classifier with bounded gradient. A
+    ``torch.clamp`` would kill that gradient at the clamp
+    boundary, defeating the purpose.
 
-    ``-log_sigmoid(-20) ≈ 20`` (penalty bounded above)
-    ``-log_sigmoid(+20) ≈ 2e-9`` (penalty bounded below)
+    Penalty value bounds:
+    - logit → +∞: penalty → 0 (no gradient — η is well inside
+      the valid region; nothing to push back).
+    - logit → -∞: penalty → |logit| (linear), gradient → -1
+      (constant pressure pushing η back toward the valid region).
 
     Parameters
     ----------
@@ -143,8 +147,7 @@ def boundary_penalty_from_validity(
             f"boundary_penalty_from_validity expects (N,) input; "
             f"got shape {tuple(validity_logits.shape)}."
         )
-    clamped = torch.clamp(validity_logits, -_LOGIT_CLAMP, _LOGIT_CLAMP)
-    return -torch.nn.functional.logsigmoid(clamped).mean()
+    return -torch.nn.functional.logsigmoid(validity_logits).mean()
 
 
 def static_width_loss(

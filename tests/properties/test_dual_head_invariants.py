@@ -117,14 +117,50 @@ def test_validity_net_rejects_wrong_input_shape():
 
 @pytest.mark.L1
 @pytest.mark.properties
-def test_boundary_penalty_bounds():
-    """-log_sigmoid(±20) bounds: ≈20 (penalty) and ≈2e-9 (no penalty)."""
-    very_invalid = torch.tensor([-100.0, -50.0])
-    very_valid = torch.tensor([+100.0, +50.0])
+def test_boundary_penalty_value_behavior():
+    """Penalty is ~|logit| for very negative (linear), ~0 for very positive."""
+    very_invalid = torch.tensor([-100.0])
+    very_valid = torch.tensor([+100.0])
     p_inv = boundary_penalty_from_validity(very_invalid).item()
     p_val = boundary_penalty_from_validity(very_valid).item()
-    assert 19.5 < p_inv < 20.5, f"clamp upper bound broken: {p_inv}"
-    assert p_val < 1e-6, f"clamp lower bound broken: {p_val}"
+    assert 99.0 < p_inv < 101.0, (
+        f"penalty for very-invalid logit should be ~100, got {p_inv}"
+    )
+    assert p_val < 1e-6, (
+        f"penalty for very-valid logit should be ~0, got {p_val}"
+    )
+
+
+@pytest.mark.L1
+@pytest.mark.properties
+def test_boundary_penalty_gradient_alive_at_extremes():
+    """Gradient must NOT vanish for very negative logits.
+
+    The wrong-side gradient saturates at -1 (since
+    ``d(-logsigmoid(x))/dx = -sigmoid(-x) → -1`` as x → -∞), so
+    the boundary signal stays alive even when ValidityNet is
+    extremely confident the point is invalid.
+    """
+    # Single-element batch so the mean derivative equals the per-element one.
+    very_neg = torch.tensor([-50.0], requires_grad=True)
+    boundary_penalty_from_validity(very_neg).backward()
+    assert very_neg.grad is not None
+    # Expected: -sigmoid(50) ≈ -1.0
+    assert torch.allclose(
+        very_neg.grad,
+        torch.tensor([-1.0]),
+        atol=1e-6,
+    ), f"wrong-side gradient should saturate at -1, got {very_neg.grad}"
+
+    # Right side: gradient → 0 as logit → +∞ (no penalty to apply).
+    very_pos = torch.tensor([+50.0], requires_grad=True)
+    boundary_penalty_from_validity(very_pos).backward()
+    assert very_pos.grad is not None
+    assert torch.allclose(
+        very_pos.grad,
+        torch.tensor([0.0]),
+        atol=1e-6,
+    ), f"right-side gradient should saturate at 0, got {very_pos.grad}"
 
 
 @pytest.mark.L1
@@ -134,6 +170,23 @@ def test_boundary_penalty_gradcheck():
     x = torch.randn(5, dtype=torch.float64, requires_grad=True)
     assert torch.autograd.gradcheck(
         boundary_penalty_from_validity, (x,), eps=1e-6, atol=1e-5
+    )
+
+
+@pytest.mark.L1
+@pytest.mark.properties
+def test_boundary_penalty_gradcheck_at_large_logits():
+    """gradcheck at logits well outside the previously-clamped range.
+
+    Catches a regression where a clamp was reintroduced and gradient
+    silently zeroed at extreme inputs. Uses larger atol since
+    logsigmoid is asymptotically linear with finite-difference
+    truncation error growing with |x|.
+    """
+    x = torch.linspace(-30.0, 30.0, 7, dtype=torch.float64)
+    x.requires_grad_(True)
+    assert torch.autograd.gradcheck(
+        boundary_penalty_from_validity, (x,), eps=1e-5, atol=1e-3
     )
 
 
@@ -347,6 +400,32 @@ theta_distribution: {type: uniform, low: -5.0, high: 5.0}
         cfg = ExperimentConfig.from_yaml(path)
     assert cfg.scheme_name == "power_law"
     assert cfg.statistic_name == "waldo"
+
+
+@pytest.mark.L1
+@pytest.mark.properties
+def test_experiment_config_rejects_unexpected_kwargs(bootstrapped_registry):
+    """YAML must not be able to override class-level fields.
+
+    `NormalNormalModel.name` / `.param_dim` are class-level
+    dataclass defaults; we filter them out so a YAML config
+    cannot rename a model and confuse the fingerprint check.
+    """
+    bad = {
+        "scheme_name": "power_law",
+        "statistic_name": "waldo",
+        "prior": {"type": "normal", "loc": 0.0, "scale": 1.0},
+        "model": {"type": "normal_normal", "sigma": 1.0, "name": "evil"},
+        "theta_distribution": {"type": "uniform", "low": -5.0, "high": 5.0},
+    }
+    with pytest.raises(ValueError, match="Unexpected model kwargs"):
+        ExperimentConfig.from_dict(bad)
+
+    bad_prior = dict(bad)
+    bad_prior["model"] = {"type": "normal_normal", "sigma": 1.0}
+    bad_prior["prior"] = {"type": "normal", "loc": 0.0, "scale": 1.0, "junk": 5}
+    with pytest.raises(ValueError, match="Unexpected prior kwargs"):
+        ExperimentConfig.from_dict(bad_prior)
 
 
 @pytest.mark.L1

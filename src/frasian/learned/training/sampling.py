@@ -213,32 +213,77 @@ THETA_DISTRIBUTION_REGISTRY: dict[str, Any] = {
 }
 
 
+_PRIOR_ALLOWED_KWARGS: dict[str, frozenset[str]] = {
+    "normal": frozenset({"loc", "scale"}),
+    "beta": frozenset({"alpha", "beta"}),
+}
+_MODEL_ALLOWED_KWARGS: dict[str, frozenset[str]] = {
+    # Class-level identifiers (`name`, `param_dim`) are not overridable
+    # from YAML — only true instance state is accepted.
+    "normal_normal": frozenset({"sigma"}),
+    "bernoulli": frozenset(),
+}
+_THETA_DIST_ALLOWED_KWARGS: dict[str, frozenset[str]] = {
+    "uniform": frozenset({"low", "high"}),
+}
+
+
+def _filter_kwargs(
+    spec: Mapping[str, Any],
+    allowed: frozenset[str],
+    type_: str,
+    kind: str,
+) -> dict[str, Any]:
+    """Strip keys outside ``allowed``; raise on extras to surface typos."""
+    extras = set(spec.keys()) - allowed
+    if extras:
+        raise ValueError(
+            f"Unexpected {kind} kwargs for type={type_!r}: {sorted(extras)} "
+            f"(allowed: {sorted(allowed)})"
+        )
+    return {k: v for k, v in spec.items() if k in allowed}
+
+
 def _build_prior_from_dict(d: Mapping[str, Any]) -> Prior:
     """Construct a Prior from a YAML dict ``{"type": ..., kwargs}``."""
     spec = dict(d)
     type_ = spec.pop("type")
+    if type_ not in _PRIOR_ALLOWED_KWARGS:
+        raise ValueError(
+            f"Unknown prior type {type_!r}; "
+            f"expected one of: {sorted(_PRIOR_ALLOWED_KWARGS)}"
+        )
+    kwargs = _filter_kwargs(
+        spec, _PRIOR_ALLOWED_KWARGS[type_], type_, "prior"
+    )
     if type_ == "normal":
         from ...models.distributions import NormalDistribution
-        return NormalDistribution(**spec)
+        return NormalDistribution(**kwargs)
     if type_ == "beta":
         from ...models.distributions import BetaDistribution
-        return BetaDistribution(**spec)
-    raise ValueError(f"Unknown prior type {type_!r}; expected one of: normal, beta")
+        return BetaDistribution(**kwargs)
+    raise AssertionError("unreachable")  # registry-checked above
 
 
 def _build_model_from_dict(d: Mapping[str, Any]) -> Model:
     """Construct a Model from a YAML dict ``{"type": ..., kwargs}``."""
     spec = dict(d)
     type_ = spec.pop("type")
+    if type_ not in _MODEL_ALLOWED_KWARGS:
+        raise ValueError(
+            f"Unknown model type {type_!r}; "
+            f"expected one of: {sorted(_MODEL_ALLOWED_KWARGS)}"
+        )
+    kwargs = _filter_kwargs(
+        spec, _MODEL_ALLOWED_KWARGS[type_], type_, "model"
+    )
     if type_ == "normal_normal":
         from ...models.normal_normal import NormalNormalModel
-        return NormalNormalModel(**spec)
+        return NormalNormalModel(**kwargs)
     if type_ == "bernoulli":
         from ...models.bernoulli import BernoulliModel
-        return BernoulliModel(**spec)
-    raise ValueError(
-        f"Unknown model type {type_!r}; expected one of: normal_normal, bernoulli"
-    )
+        return BernoulliModel(**kwargs)
+    raise AssertionError("unreachable")
 
 
 def _build_theta_distribution_from_dict(
@@ -252,7 +297,9 @@ def _build_theta_distribution_from_dict(
             f"{list(THETA_DISTRIBUTION_REGISTRY)}"
         )
     cls = THETA_DISTRIBUTION_REGISTRY[type_]
-    return cls(**spec)
+    allowed = _THETA_DIST_ALLOWED_KWARGS.get(type_, frozenset(spec.keys()))
+    kwargs = _filter_kwargs(spec, allowed, type_, "theta_distribution")
+    return cls(**kwargs)
 
 
 def _prior_to_dict(prior: Prior) -> dict:
