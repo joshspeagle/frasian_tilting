@@ -36,6 +36,9 @@ class BernoulliModel:
     name: str = "bernoulli"
     param_dim: int = 1
 
+    def fingerprint(self) -> tuple:
+        return ("bernoulli",)
+
     # ----- Model protocol -----
 
     def sample_data(self, theta: ArrayLike, rng: Generator, n: int

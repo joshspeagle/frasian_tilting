@@ -1,44 +1,39 @@
-"""Training distribution `π` over `(w, θ_true)`, plus LHS sampling.
+"""Training distribution and experiment-config primitives.
 
-The objective averages over a chosen distribution:
+Phase E adds:
 
-    ℒ(φ) = E_{(w, θ_true) ~ π} E_{D | θ_true, w} [ Φ(D; η_φ) ]
+- ``ThetaDistribution`` — protocol for any 1D distribution over θ
+  exposing ``sample(n, rng)``, ``support()``, and ``fingerprint()``.
+- ``UniformThetaDistribution`` — concrete uniform-on-[low, high].
+- ``THETA_DISTRIBUTION_REGISTRY`` — name → class lookup for YAML.
+- ``ExperimentConfig`` — frozen dataclass binding (scheme, statistic,
+  prior, model, theta_distribution) into a single self-describing
+  object that drives both training and selector validation. Round-
+  trips through YAML and embeds in checkpoints.
+- ``lhs_1d(theta_dist, n, seed)`` — 1D Latin Hypercube Sampling on a
+  ``ThetaDistribution``'s support. One-shot stratified sample at
+  training start.
 
-The default `π` for the Normal-Normal sandbox:
-
-- `θ_true ~ Uniform(μ₀ - 5σ, μ₀ + 5σ)` — covers up to |Δ| ≈ 2.5 at
-  w=0.5, exercising the conflict band where the dynamic procedure
-  matters without overweighting the asymptotic Wald regime.
-- `w ~ Uniform(0.05, 0.95)` — avoids w-boundary singularities.
-- `D | θ_true, w ~ N(θ_true, σ²)` (`σ = 1` fixed; the framework is
-  scale-invariant).
-
-The LHS sampler takes the (w, θ_true) marginals and draws an evenly
-spread set of points; for each point `n_mc` D draws are taken to
-form a mini-batch.
-
-`TrainingDistribution` is a dataclass with classmethods for ready-made
-defaults; users can construct custom distributions by passing
-explicit ranges.
-
-Note on training range — the default was widened to ±10σ initially
-but tightened back to ±5σ after the diagnostic showed the wider
-range over-weighted the asymptotic Wald regime, biasing the learned
-η toward ≈ +1 at every |Δ| (the integrated-p loss averages widths
-across cells; cells in the asymptotic tail dominate). ±5σ keeps the
-LHS density per-σ higher and gives the conflict band more relative
-weight.
+The legacy ``TrainingDistribution`` / ``lhs_sample`` /
+``draw_data_batch`` continue to live here while ``train.py`` still
+references them; they are removed in E.2.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Tuple
+from dataclasses import dataclass, field
+from functools import cached_property
+from pathlib import Path
+from typing import Any, Mapping, Protocol, Tuple, runtime_checkable
 
 import numpy as np
 import torch
+from numpy.random import Generator
 from numpy.typing import NDArray
 from scipy.stats import qmc
+
+from ..._registry import registry as _registry
+from ...models.base import Model, Prior
 
 
 @dataclass(frozen=True)
@@ -153,3 +148,294 @@ def draw_data_batch(
         "mu0": torch.tensor(mu0, dtype=dtype, device=device),
         "sigma": torch.tensor(sigma, dtype=dtype, device=device),
     }
+
+
+# ---------------------------------------------------------------------------
+# Phase E: ThetaDistribution protocol, ExperimentConfig, factory registry
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class ThetaDistribution(Protocol):
+    """A distribution over θ-space.
+
+    Used both as the source of training θ samples (LHS at startup,
+    i.i.d. for boundary-probing aux samples) and as the bounds of
+    the canonical inversion grid in ``ExperimentConfig.theta_grid``.
+    """
+
+    name: str
+
+    def sample(self, n: int, rng: Generator) -> NDArray[np.float64]: ...
+    def support(self) -> Tuple[float, float]: ...
+    def fingerprint(self) -> tuple: ...
+
+
+@dataclass(frozen=True)
+class UniformThetaDistribution:
+    """Uniform(low, high) over θ."""
+
+    low: float
+    high: float
+    name: str = "uniform"
+
+    def __post_init__(self) -> None:
+        if not (np.isfinite(self.low) and np.isfinite(self.high)):
+            raise ValueError(
+                f"low and high must be finite; got ({self.low}, {self.high})"
+            )
+        if self.high <= self.low:
+            raise ValueError(
+                f"high must exceed low; got ({self.low}, {self.high})"
+            )
+
+    def sample(self, n: int, rng: Generator) -> NDArray[np.float64]:
+        return rng.uniform(low=self.low, high=self.high, size=n).astype(
+            np.float64
+        )
+
+    def support(self) -> Tuple[float, float]:
+        return (float(self.low), float(self.high))
+
+    def fingerprint(self) -> tuple:
+        return ("uniform", float(self.low), float(self.high))
+
+
+# Factory registries mapping YAML "type" strings to constructors.
+# The framework's main `_registry` already names tilting schemes,
+# statistics, and models by their decorator; we add a small local
+# registry for priors and θ-distributions which are passed by
+# parameters rather than registered via decorator today.
+PRIOR_REGISTRY: dict[str, Any] = {}
+MODEL_REGISTRY: dict[str, Any] = {}
+THETA_DISTRIBUTION_REGISTRY: dict[str, Any] = {
+    "uniform": UniformThetaDistribution,
+}
+
+
+def _build_prior_from_dict(d: Mapping[str, Any]) -> Prior:
+    """Construct a Prior from a YAML dict ``{"type": ..., kwargs}``."""
+    spec = dict(d)
+    type_ = spec.pop("type")
+    if type_ == "normal":
+        from ...models.distributions import NormalDistribution
+        return NormalDistribution(**spec)
+    if type_ == "beta":
+        from ...models.distributions import BetaDistribution
+        return BetaDistribution(**spec)
+    raise ValueError(f"Unknown prior type {type_!r}; expected one of: normal, beta")
+
+
+def _build_model_from_dict(d: Mapping[str, Any]) -> Model:
+    """Construct a Model from a YAML dict ``{"type": ..., kwargs}``."""
+    spec = dict(d)
+    type_ = spec.pop("type")
+    if type_ == "normal_normal":
+        from ...models.normal_normal import NormalNormalModel
+        return NormalNormalModel(**spec)
+    if type_ == "bernoulli":
+        from ...models.bernoulli import BernoulliModel
+        return BernoulliModel(**spec)
+    raise ValueError(
+        f"Unknown model type {type_!r}; expected one of: normal_normal, bernoulli"
+    )
+
+
+def _build_theta_distribution_from_dict(
+    d: Mapping[str, Any],
+) -> ThetaDistribution:
+    spec = dict(d)
+    type_ = spec.pop("type")
+    if type_ not in THETA_DISTRIBUTION_REGISTRY:
+        raise ValueError(
+            f"Unknown theta_distribution type {type_!r}; expected one of: "
+            f"{list(THETA_DISTRIBUTION_REGISTRY)}"
+        )
+    cls = THETA_DISTRIBUTION_REGISTRY[type_]
+    return cls(**spec)
+
+
+def _prior_to_dict(prior: Prior) -> dict:
+    fp = prior.fingerprint()
+    if fp[0] == "normal":
+        return {"type": "normal", "loc": fp[1], "scale": fp[2]}
+    if fp[0] == "beta":
+        return {"type": "beta", "alpha": fp[1], "beta": fp[2]}
+    raise ValueError(f"Cannot serialise prior with fingerprint {fp!r}")
+
+
+def _model_to_dict(model: Model) -> dict:
+    fp = model.fingerprint()
+    if fp[0] == "normal_normal":
+        return {"type": "normal_normal", "sigma": fp[1]}
+    if fp[0] == "bernoulli":
+        return {"type": "bernoulli"}
+    raise ValueError(f"Cannot serialise model with fingerprint {fp!r}")
+
+
+def _theta_distribution_to_dict(td: ThetaDistribution) -> dict:
+    fp = td.fingerprint()
+    if fp[0] == "uniform":
+        return {"type": "uniform", "low": fp[1], "high": fp[2]}
+    raise ValueError(f"Cannot serialise theta_distribution with fingerprint {fp!r}")
+
+
+@dataclass(frozen=True)
+class ExperimentConfig:
+    """Self-describing experiment for the learned-η training loop.
+
+    Binds a tilting scheme, test statistic, prior, model, and
+    θ-distribution into a single object. Drives both the training
+    loop (no scheme-specific code paths) and the selector's
+    inference-time experiment-match check (fingerprints embedded
+    in the checkpoint).
+    """
+
+    scheme_name: str
+    statistic_name: str
+    prior: Prior
+    model: Model
+    theta_distribution: ThetaDistribution
+    n_grid: int = 401
+    n_lhs: int = 10000
+    eta_explore_box: Tuple[float, float] = (-5.0, 5.0)
+    seed: int = 42
+    name: str = ""
+    description: str = ""
+
+    def __post_init__(self) -> None:
+        if self.scheme_name not in _registry.tiltings:
+            raise ValueError(
+                f"scheme_name {self.scheme_name!r} not in registry; "
+                f"known: {list(_registry.tiltings)}"
+            )
+        if self.statistic_name not in _registry.statistics:
+            raise ValueError(
+                f"statistic_name {self.statistic_name!r} not in registry; "
+                f"known: {list(_registry.statistics)}"
+            )
+        if self.n_grid < 3:
+            raise ValueError(f"n_grid must be >= 3, got {self.n_grid}")
+        if self.n_lhs < 1:
+            raise ValueError(f"n_lhs must be >= 1, got {self.n_lhs}")
+        lo, hi = self.eta_explore_box
+        if not (np.isfinite(lo) and np.isfinite(hi) and hi > lo):
+            raise ValueError(
+                f"eta_explore_box must be a finite (low, high) with "
+                f"high > low; got {self.eta_explore_box}"
+            )
+
+    @cached_property
+    def theta_grid(self) -> NDArray[np.float64]:
+        """Canonical grid for dynamic-pvalue evaluation + CI inversion."""
+        lo, hi = self.theta_distribution.support()
+        if not (np.isfinite(lo) and np.isfinite(hi)):
+            raise ValueError(
+                f"theta_distribution.support() must be finite for the "
+                f"inversion grid; got ({lo}, {hi}). Provide a "
+                f"compactly supported θ distribution."
+            )
+        return np.linspace(lo, hi, self.n_grid)
+
+    def to_dict(self) -> dict:
+        """Round-trippable JSON-friendly serialisation.
+
+        Includes both the constructor kwargs (so ``from_dict`` can
+        rebuild the object) and the fingerprints (so callers reading
+        a saved config can compare against in-memory objects without
+        rebuilding them).
+        """
+        return {
+            "scheme_name": self.scheme_name,
+            "statistic_name": self.statistic_name,
+            "prior": _prior_to_dict(self.prior),
+            "model": _model_to_dict(self.model),
+            "theta_distribution": _theta_distribution_to_dict(
+                self.theta_distribution
+            ),
+            "n_grid": self.n_grid,
+            "n_lhs": self.n_lhs,
+            "eta_explore_box": list(self.eta_explore_box),
+            "seed": self.seed,
+            "name": self.name,
+            "description": self.description,
+            # Convenience fingerprints for selector validation.
+            "prior_fingerprint": list(self.prior.fingerprint()),
+            "model_fingerprint": list(self.model.fingerprint()),
+            "theta_distribution_fingerprint": list(
+                self.theta_distribution.fingerprint()
+            ),
+        }
+
+    @classmethod
+    def from_dict(cls, d: Mapping[str, Any]) -> "ExperimentConfig":
+        return cls(
+            scheme_name=str(d["scheme_name"]),
+            statistic_name=str(d["statistic_name"]),
+            prior=_build_prior_from_dict(d["prior"]),
+            model=_build_model_from_dict(d["model"]),
+            theta_distribution=_build_theta_distribution_from_dict(
+                d["theta_distribution"]
+            ),
+            n_grid=int(d.get("n_grid", 401)),
+            n_lhs=int(d.get("n_lhs", 10000)),
+            eta_explore_box=tuple(d.get("eta_explore_box", (-5.0, 5.0))),
+            seed=int(d.get("seed", 42)),
+            name=str(d.get("name", "")),
+            description=str(d.get("description", "")),
+        )
+
+    @classmethod
+    def from_yaml(cls, path: Path) -> "ExperimentConfig":
+        try:
+            import yaml
+        except ImportError as e:
+            raise RuntimeError(
+                "ExperimentConfig.from_yaml requires PyYAML; "
+                "install with `pip install pyyaml`."
+            ) from e
+        with open(path, "r") as f:
+            d = yaml.safe_load(f)
+        # Allow YAML to use "scheme" / "statistic" as shorthand.
+        if "scheme" in d and "scheme_name" not in d:
+            d["scheme_name"] = d.pop("scheme")
+        if "statistic" in d and "statistic_name" not in d:
+            d["statistic_name"] = d.pop("statistic")
+        return cls.from_dict(d)
+
+
+def lhs_1d(
+    theta_dist: ThetaDistribution,
+    n: int,
+    seed: int = 42,
+) -> NDArray[np.float64]:
+    """1D Latin Hypercube Sample on ``theta_dist``'s support.
+
+    One-shot stratified sample at training start; aux samples
+    elsewhere in the loop are drawn i.i.d. via
+    ``theta_dist.sample(n, rng)``.
+    """
+    lo, hi = theta_dist.support()
+    if not (np.isfinite(lo) and np.isfinite(hi)):
+        raise ValueError(
+            f"lhs_1d requires a finitely-supported theta_dist; got ({lo}, {hi})."
+        )
+    sampler = qmc.LatinHypercube(d=1, seed=seed)
+    u = sampler.random(n=n).reshape(-1)                          # (n,)
+    return (lo + u * (hi - lo)).astype(np.float64)
+
+
+__all__ = [
+    # Phase E additions
+    "ThetaDistribution",
+    "UniformThetaDistribution",
+    "ExperimentConfig",
+    "lhs_1d",
+    "PRIOR_REGISTRY",
+    "MODEL_REGISTRY",
+    "THETA_DISTRIBUTION_REGISTRY",
+    # Legacy (still imported by train.py until E.2 cuts it over)
+    "TrainingDistribution",
+    "lhs_sample",
+    "draw_data_batch",
+]

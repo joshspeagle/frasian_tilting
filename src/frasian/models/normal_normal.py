@@ -91,6 +91,9 @@ class NormalNormalModel:
         if not (np.isfinite(self.sigma) and self.sigma > 0):
             raise ValueError(f"sigma must be positive and finite, got {self.sigma!r}")
 
+    def fingerprint(self) -> tuple:
+        return ("normal_normal", float(self.sigma))
+
     # ----- Model protocol -----
 
     def sample_data(self, theta: ArrayLike, rng: Generator, n: int

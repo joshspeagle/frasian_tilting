@@ -105,6 +105,48 @@ def cd_variance_loss(
     return _masked_mean(var_per_sample)
 
 
+_LOGIT_CLAMP = 20.0
+
+
+def boundary_penalty_from_validity(
+    validity_logits: torch.Tensor,
+) -> torch.Tensor:
+    """``-log P(valid | θ, η)`` averaged over the batch.
+
+    Used as Head A's boundary penalty in the Phase E dual-head
+    training loop. Caller passes raw logits from a parameter-
+    detached ``ValidityNet`` (gradient flows back through the
+    (θ, η) input into ``EtaNet`` but not into ``ValidityNet``'s
+    weights — see ``train.py`` for the ``functional_call``
+    pattern).
+
+    Logits are clamped to ``[-20, 20]`` before the ``logsigmoid``
+    to keep gradients alive when Head B is overconfident at the
+    wrong boundary. Without clamping, ``-log_sigmoid(very_neg)``
+    saturates the loss and ``log_sigmoid(very_pos)`` collapses to
+    ~0 — the boundary signal would die.
+
+    ``-log_sigmoid(-20) ≈ 20`` (penalty bounded above)
+    ``-log_sigmoid(+20) ≈ 2e-9`` (penalty bounded below)
+
+    Parameters
+    ----------
+    validity_logits
+        ``(N,)`` tensor of raw logits from ``ValidityNet``.
+
+    Returns
+    -------
+    Scalar penalty.
+    """
+    if validity_logits.dim() != 1:
+        raise ValueError(
+            f"boundary_penalty_from_validity expects (N,) input; "
+            f"got shape {tuple(validity_logits.shape)}."
+        )
+    clamped = torch.clamp(validity_logits, -_LOGIT_CLAMP, _LOGIT_CLAMP)
+    return -torch.nn.functional.logsigmoid(clamped).mean()
+
+
 def static_width_loss(
     p_theta: torch.Tensor,
     theta_grid: torch.Tensor,

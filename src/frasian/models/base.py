@@ -30,7 +30,15 @@ class Distribution(Protocol):
 
 @runtime_checkable
 class Prior(Distribution, Protocol):
-    """A prior distribution over the parameter."""
+    """A prior distribution over the parameter.
+
+    Priors must expose a `fingerprint()` -> hashable tuple identifying
+    the prior up to its parameters. The learned-η selector compares
+    fingerprints between training-time and inference-time to refuse
+    cross-experiment checkpoint use.
+    """
+
+    def fingerprint(self) -> tuple: ...
 
 
 @runtime_checkable
@@ -73,6 +81,8 @@ class Model(Protocol):
 
     name: str
     param_dim: int
+
+    def fingerprint(self) -> tuple: ...
 
     def sample_data(self, theta: ArrayLike, rng: Generator, n: int
                     ) -> NDArray[np.float64]: ...
