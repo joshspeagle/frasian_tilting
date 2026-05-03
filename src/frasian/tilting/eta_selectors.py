@@ -97,28 +97,39 @@ class FixedEtaSelector:
 
 @dataclass(frozen=True)
 class NumericalEtaSelector:
-    """Pick η minimizing the (analytic) CI width for the tilted posterior.
+    """Pick η numerically per cell.
 
-    DOES NOT MAINTAIN NOMINAL COVERAGE. Choosing η = argmin_η |CI_η(D)|
-    per data sample is post-selection inference: the resulting CI is
-    biased toward narrow CIs that systematically exclude θ_true at a
-    rate higher than α. Empirically the shortfall is ~2 percentage
-    points at α=0.05 (see `tests/regression/test_post_selection_coverage.py`),
-    and grows with |Δ|.
+    Two objectives, switchable via the `objective` constructor argument:
 
-    Use this selector only as a baseline for illustrating the
-    coverage / width trade-off. For calibrated CIs, use
-    `DynamicNumericalEtaSelector` (the per-θ varying selector that the
-    framework defaults to in `default_tiltings()`).
+      - **`"static_width"`** (default, backwards-compatible): minimize
+        the analytic CI width `|C_α(D, η)|` at the alpha read from
+        the context. **DOES NOT MAINTAIN NOMINAL COVERAGE** — picking
+        η = argmin_η |CI_η(D)| per data sample is post-selection
+        inference; coverage drops by ~2 percentage points at α=0.05
+        (see `tests/regression/test_post_selection_coverage.py`).
+        Width-wise it is the genuine optimum: ≤ WALDO at every D,
+        → Wald at large |Δ|.
 
-    Width-wise, this selector is the genuine optimum: ≤ WALDO at every
-    D, → Wald at large |Δ|. That's exactly why coverage drops — the
-    procedure is too eager to shrink.
+      - **`"integrated_p"`** (new, the apples-to-apples baseline for
+        `LearnedDynamicEtaSelector`): minimize the integrated p-value
+        `∫_θ p_dyn(θ; D, η) dθ` over a θ-grid (D ± `search_mult`·σ,
+        `n_grid` points). This is *the same loss* the learned MLP
+        minimizes — `NumericalEtaSelector(objective="integrated_p")`
+        gives the per-cell scipy-optimization equivalent without the
+        architectural smoothness/monotonicity constraint.
+        Coverage behavior is similar to static_width (post-selection
+        per cell), but the optimum η differs: integrated-p prefers
+        larger η at moderate |Δ| because the loss surface averages
+        over all α via the Cavalieri / layer-cake identity.
 
-    The width is computed by inverting the tilted p-value at a single
-    representative `D` (no Monte-Carlo). For the (power_law, waldo) cell
-    this matches the legacy `optimal_eta_numerical` solver up to bracket
-    bookkeeping.
+    Use this selector only as a baseline; for calibrated CIs use
+    `DynamicNumericalEtaSelector` (per-θ static η) or
+    `LearnedDynamicEtaSelector` (per-θ MLP η).
+
+    Width is computed by inverting the tilted p-value at a single
+    representative D (no Monte-Carlo). For (`power_law`, `waldo`),
+    `objective="static_width"` matches the legacy `optimal_eta_numerical`
+    solver up to bracket bookkeeping.
     """
 
     name: str = "numerical"
@@ -127,11 +138,21 @@ class NumericalEtaSelector:
     eta_min_buffer: float = 1e-3
     is_dynamic: bool = False
 
+    # New: objective + integrated_p hyperparameters.
+    objective: str = "static_width"  # "static_width" | "integrated_p"
+    n_grid: int = 401                # only used if objective="integrated_p"
+    search_mult: float = 8.0         # only used if objective="integrated_p"
+
+    def __post_init__(self) -> None:
+        if self.objective not in ("static_width", "integrated_p"):
+            raise ValueError(
+                f"NumericalEtaSelector.objective must be "
+                f"'static_width' or 'integrated_p'; got {self.objective!r}."
+            )
+
     def select(self, context: TiltingContext, scheme: TiltingScheme,
                *, statistic: TestStatistic) -> float:
         eta_lo, eta_hi = scheme.admissible_range(context)
-        # Cap the upper end at +1 (the Wald limit); anything beyond is
-        # mathematically valid but uninteresting in practice.
         eta_hi = min(eta_hi, 1.0 - self.eta_min_buffer)
 
         sigma0 = float(np.sqrt(context.w / max(1.0 - context.w, 1e-12))
@@ -141,28 +162,65 @@ class NumericalEtaSelector:
         D = _D_from_abs_delta(context.abs_delta, context.w, self.sigma,
                                 self.mu0)
 
+        if self.objective == "static_width":
+            objective_fn = self._make_static_width_objective(
+                scheme=scheme, statistic=statistic,
+                D=D, model=model, prior=prior, alpha=context.alpha,
+            )
+        else:  # integrated_p
+            objective_fn = self._make_integrated_p_objective(
+                scheme=scheme, statistic=statistic,
+                D=D, model=model, prior=prior,
+            )
+
+        result = optimize.minimize_scalar(
+            objective_fn, bounds=(eta_lo, eta_hi), method="bounded",
+            options={"xatol": 1e-3},
+        )
+        return float(result.x)
+
+    def _make_static_width_objective(self, *, scheme, statistic, D, model,
+                                        prior, alpha):
         def width(eta: float) -> float:
             try:
                 if hasattr(scheme, "tilted_confidence_interval"):
                     lo, hi = scheme.tilted_confidence_interval(
-                        context.alpha, D, model, prior, eta,
-                        statistic.name,
+                        alpha, D, model, prior, eta, statistic.name,
                     )
                 else:
                     raise NotImplementedError(
                         f"{type(scheme).__name__} does not implement "
                         f"`tilted_confidence_interval`."
                     )
-            except (NotImplementedError, TiltingDomainError, ValueError, RuntimeError):
+            except (NotImplementedError, TiltingDomainError,
+                     ValueError, RuntimeError):
                 return np.inf
             w_ci = float(hi - lo)
             return w_ci if (w_ci > 0 and np.isfinite(w_ci)) else np.inf
+        return width
 
-        result = optimize.minimize_scalar(
-            width, bounds=(eta_lo, eta_hi), method="bounded",
-            options={"xatol": 1e-3},
-        )
-        return float(result.x)
+    def _make_integrated_p_objective(self, *, scheme, statistic, D, model,
+                                       prior):
+        """Build `f(eta) = ∫_θ p_dyn(θ; D, η) dθ` for scipy.optimize."""
+        if not hasattr(scheme, "tilted_pvalue"):
+            raise NotImplementedError(
+                f"{type(scheme).__name__} does not implement "
+                f"`tilted_pvalue`; integrated_p mode requires it."
+            )
+        half = self.search_mult * self.sigma
+        theta_grid = np.linspace(D - half, D + half, self.n_grid)
+
+        def integrated_p(eta: float) -> float:
+            try:
+                p = scheme.tilted_pvalue(theta_grid, D, model, prior,
+                                          eta, statistic.name)
+            except (NotImplementedError, TiltingDomainError,
+                     ValueError, RuntimeError):
+                return np.inf
+            p = np.clip(np.asarray(p, dtype=np.float64), 0.0, 1.0)
+            val = float(np.trapezoid(p, theta_grid))
+            return val if np.isfinite(val) else np.inf
+        return integrated_p
 
     def select_grid(self, abs_delta_grid, scheme: TiltingScheme,
                     *, statistic: TestStatistic, w: float, alpha: float
