@@ -47,6 +47,8 @@ def dynamic_ci_scan(
     n_grid: int = 401,
     coarse_n: int = 25,
     search_mult: float = 8.0,
+    model_fingerprint: tuple | None = None,
+    prior_fingerprint: tuple | None = None,
 ) -> tuple[list[tuple[float, float]], float, int]:
     """Dynamic-η-per-θ CI inversion.
 
@@ -94,10 +96,30 @@ def dynamic_ci_scan(
 
     ad_max = float(abs_delta_theta.max()) + 1e-6
     coarse_grid = np.linspace(0.0, ad_max, coarse_n)
-    coarse_eta = eta_selector.select_grid(
-        coarse_grid, scheme, statistic=_NamedStatistic(statistic_name),
-        w=w, alpha=alpha,
+    select_kwargs = dict(
+        statistic=_NamedStatistic(statistic_name), w=w, alpha=alpha,
     )
+    # Phase E selectors require the inference-time prior + model
+    # fingerprints to refuse cross-experiment use. Older selectors
+    # (Numerical/DynamicNumerical, legacy v1 LearnedDynamic) ignore
+    # these kwargs.
+    if model_fingerprint is not None:
+        select_kwargs["model_fingerprint"] = model_fingerprint
+    if prior_fingerprint is not None:
+        select_kwargs["prior_fingerprint"] = prior_fingerprint
+    try:
+        coarse_eta = eta_selector.select_grid(
+            coarse_grid, scheme, **select_kwargs,
+        )
+    except TypeError:
+        # Selector predates the fingerprint plumbing; fall back to the
+        # original signature. The Phase E selector's _check_experiment
+        # then uses w-only validation as a degraded check.
+        coarse_eta = eta_selector.select_grid(
+            coarse_grid, scheme,
+            statistic=select_kwargs["statistic"],
+            w=w, alpha=alpha,
+        )
     eta_at_theta = np.interp(abs_delta_theta, coarse_grid, coarse_eta)
 
     p_theta = np.empty_like(theta_grid)

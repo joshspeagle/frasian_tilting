@@ -301,6 +301,8 @@ class OTTilting:
             eta_selector=eta_selector, scheme=self,
             statistic_name=statistic_name,
             n_grid=n_grid, coarse_n=coarse_n, search_mult=search_mult,
+            model_fingerprint=model.fingerprint(),
+            prior_fingerprint=prior.fingerprint(),
         )
 
     # ----- Uniform CI / regions / pvalue interface -----

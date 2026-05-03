@@ -372,17 +372,28 @@ class LearnedDynamicEtaSelector:
     so no per-(w, α) cache is needed beyond the artifact load.
     """
 
-    artifact: object  # MonotonicEtaArtifact (avoid hard import here)
+    artifact: object  # MonotonicEtaArtifact (legacy v1) or EtaArtifact (Phase E v2)
     name: str = "learned_dynamic"
     sigma: float = 1.0
     mu0: float = 0.0
     is_dynamic: bool = True
     _loaded: bool = field(default=False, init=False, repr=False, compare=False)
+    _is_phase_e: bool = field(default=False, init=False, repr=False, compare=False)
 
     def _ensure_loaded(self) -> None:
         if not self._loaded:
             self.artifact.load()
             self._loaded = True
+            # Detect whether the artifact is a Phase E (v2) or legacy
+            # (v1) checkpoint by looking at format version. Phase E
+            # checkpoints have ``experiment_config`` and use raw θ
+            # input; legacy v1 has ``training_distribution`` and uses
+            # (w, |Δ'|) input.
+            meta = self.artifact.metadata
+            self._is_phase_e = (
+                meta.get("checkpoint_format_version", 1) == 2
+                and "experiment_config" in meta
+            )
 
     def _check_scheme(self, scheme: TiltingScheme) -> None:
         from .._errors import MissingArtifactError
@@ -392,10 +403,13 @@ class LearnedDynamicEtaSelector:
                 f"call .load() before _check_scheme()."
             )
         meta = self.artifact.metadata
-        trained_scheme = meta.get("scheme")
+        if self._is_phase_e:
+            trained_scheme = meta["experiment_config"]["scheme_name"]
+        else:
+            trained_scheme = meta.get("scheme")
         if trained_scheme is None:
             raise MissingArtifactError(
-                f"{self.artifact.name} metadata missing 'scheme' key; "
+                f"{self.artifact.name} metadata missing scheme name; "
                 f"cannot verify scheme compatibility. Re-train with the "
                 f"current trainer or fix the checkpoint metadata."
             )
@@ -414,6 +428,21 @@ class LearnedDynamicEtaSelector:
                 f"call .load() before _check_alpha()."
             )
         meta = self.artifact.metadata
+        if self._is_phase_e:
+            # Phase E checkpoints record `alpha` (None for marginalised
+            # losses, fixed value for static_width).
+            stored = meta.get("alpha")
+            if stored is None:
+                return
+            trained_alpha = float(stored)
+            if abs(alpha - trained_alpha) > 1e-9:
+                raise MissingArtifactError(
+                    f"{self.artifact.name} trained at alpha={trained_alpha}, "
+                    f"but inference alpha={alpha}; retrain or use a "
+                    f"marginalised checkpoint."
+                )
+            return
+        # Legacy (v1).
         mode = meta.get("alpha_mode")
         if mode is None:
             raise MissingArtifactError(
@@ -436,6 +465,71 @@ class LearnedDynamicEtaSelector:
             f"expected 'marginalised' or 'fixed_<alpha>'."
         )
 
+    def _check_experiment(
+        self,
+        w: float,
+        model_fingerprint: tuple | None = None,
+        prior_fingerprint: tuple | None = None,
+    ) -> None:
+        """Phase E: verify inference matches the trained experiment.
+
+        Strict tuple-equal compare on (model.fingerprint(),
+        prior.fingerprint()) when both are plumbed through from the
+        caller. Falls back to a w-only derived check if not — this
+        catches gross mismatches but cannot distinguish two
+        ``(σ, σ₀)`` pairs giving the same ``w``.
+        """
+        from .._errors import MissingArtifactError
+        meta = self.artifact.metadata["experiment_config"]
+        trained_model_fp = tuple(meta["model_fingerprint"])
+        trained_prior_fp = tuple(meta["prior_fingerprint"])
+        # Normal-Normal-only inversion path today.
+        if trained_model_fp[0] != "normal_normal":
+            raise MissingArtifactError(
+                f"{self.artifact.name} trained on model "
+                f"{trained_model_fp[0]!r}; only Normal-Normal is "
+                f"supported by the Phase E inversion path."
+            )
+        if trained_prior_fp[0] != "normal":
+            raise MissingArtifactError(
+                f"{self.artifact.name} trained with prior "
+                f"{trained_prior_fp[0]!r}; only NormalDistribution is "
+                f"supported by the Phase E inversion path."
+            )
+
+        # Strict per-fingerprint compare when available.
+        if model_fingerprint is not None:
+            if tuple(model_fingerprint) != trained_model_fp:
+                raise MissingArtifactError(
+                    f"{self.artifact.name} trained on model "
+                    f"{trained_model_fp!r}, but inference model is "
+                    f"{tuple(model_fingerprint)!r}. Train a new "
+                    f"checkpoint for this experiment."
+                )
+        if prior_fingerprint is not None:
+            if tuple(prior_fingerprint) != trained_prior_fp:
+                raise MissingArtifactError(
+                    f"{self.artifact.name} trained with prior "
+                    f"{trained_prior_fp!r}, but inference prior is "
+                    f"{tuple(prior_fingerprint)!r}. Train a new "
+                    f"checkpoint for this experiment."
+                )
+
+        # Derived w check (catches rough mismatches even when
+        # fingerprints aren't plumbed through).
+        sigma_trained = float(trained_model_fp[1])
+        sigma0_trained = float(trained_prior_fp[2])
+        w_trained = sigma0_trained ** 2 / (
+            sigma_trained ** 2 + sigma0_trained ** 2
+        )
+        if abs(w - w_trained) > 1e-6:
+            raise MissingArtifactError(
+                f"{self.artifact.name} trained at w={w_trained:.6f}, "
+                f"but inference w={w:.6f}; this checkpoint is "
+                f"per-experiment and cannot be reused across w values. "
+                f"Train a new checkpoint for this prior/likelihood pair."
+            )
+
     def select(self, context: TiltingContext, scheme: TiltingScheme,
                *, statistic: TestStatistic) -> float:
         """Single-context η. Convenience for non-dynamic callers."""
@@ -449,17 +543,87 @@ class LearnedDynamicEtaSelector:
         return float(out[0])
 
     def select_grid(self, abs_delta_grid, scheme: TiltingScheme,
-                    *, statistic: TestStatistic, w: float, alpha: float):
+                    *, statistic: TestStatistic, w: float, alpha: float,
+                    model_fingerprint: tuple | None = None,
+                    prior_fingerprint: tuple | None = None):
         """Per-θ η* lookup via the trained MLP.
 
-        Builds a `(N, 2)` `[w, |Δ'|]` feature matrix, calls
-        `artifact.predict` to get `η'`, then `eta_inverse` to recover η.
+        Phase E (v2): converts ``abs_delta_grid`` back to θ using the
+        trained config's μ₀ and σ, then calls ``EtaArtifact.predict_eta``.
+        Legacy (v1): builds a ``(N, 2)`` ``[w, |Δ'|]`` feature matrix,
+        calls ``MonotonicEtaArtifact.predict``, then ``eta_inverse`` to
+        recover η on the natural scale.
+
+        ``model_fingerprint`` and ``prior_fingerprint`` (Phase E only)
+        are plumbed through ``dynamic_ci_scan`` for strict cross-
+        experiment validation; legacy v1 ignores them.
         """
         self._ensure_loaded()
         self._check_scheme(scheme)
         self._check_alpha(alpha)
 
         ad = np.asarray(abs_delta_grid, dtype=np.float64)
+
+        if self._is_phase_e:
+            # Phase E: invert |Δ| → θ using trained (μ₀, σ).
+            self._check_experiment(
+                w,
+                model_fingerprint=model_fingerprint,
+                prior_fingerprint=prior_fingerprint,
+            )
+            meta = self.artifact.metadata["experiment_config"]
+            mu0 = float(meta["prior_fingerprint"][1])
+            sigma = float(meta["model_fingerprint"][1])
+            # |Δ| = (1-w)|μ₀ - θ|/σ has two θ-branches:
+            #   θ_lo = μ₀ - σ·|Δ|/(1-w)  (θ < μ₀)
+            #   θ_hi = μ₀ + σ·|Δ|/(1-w)  (θ > μ₀)
+            # The downstream `dynamic_ci_scan` indexes η by |Δ|, so we
+            # need η as a function of |Δ| — but EtaNet is θ-indexed.
+            # For Normal-Normal training (symmetric θ-distribution
+            # about μ₀), the optimal η(θ) is approximately symmetric;
+            # we average the two branches to get a symmetric η(|Δ|),
+            # which is what the contract demands. Bias is bounded by
+            # the deviation of the trained η(θ) from symmetry.
+            offset = sigma * ad / max(1.0 - w, 1e-12)
+            theta_lo = mu0 - offset
+            theta_hi = mu0 + offset
+            eta_lo = self.artifact.predict_eta(theta_lo)
+            eta_hi = self.artifact.predict_eta(theta_hi)
+            eta = 0.5 * (eta_lo + eta_hi)
+
+            # Phase E removed the architectural sigmoid clamp on η,
+            # relying on the boundary penalty during training to keep
+            # predictions inside the admissible range. A poorly-
+            # trained checkpoint can still drift past the boundary at
+            # extreme conflict; rather than crash mid-CI, clamp here
+            # with a warning. The fingerprint check on _check_experiment
+            # already refuses cross-experiment use, so this is a safety
+            # net for "this checkpoint hasn't trained enough", not for
+            # "this checkpoint is for the wrong experiment".
+            ctx = TiltingContext(w=w, abs_delta=0.0, alpha=alpha)
+            try:
+                lo, hi = scheme.admissible_range(ctx)
+            except Exception:
+                lo, hi = -np.inf, np.inf
+            margin = 1e-6 * max(1.0, abs(hi - lo) if np.isfinite(hi - lo) else 1.0)
+            lo_safe = lo + margin if np.isfinite(lo) else -np.inf
+            hi_safe = hi - margin if np.isfinite(hi) else np.inf
+            out_of_range = (eta < lo_safe) | (eta > hi_safe)
+            if out_of_range.any():
+                import warnings
+                frac = float(out_of_range.mean())
+                warnings.warn(
+                    f"{self.artifact.name}: {100*frac:.1f}% of predicted "
+                    f"η values fell outside the admissible range "
+                    f"({lo_safe:.4g}, {hi_safe:.4g}); clamping. This "
+                    f"signals the checkpoint is undertrained at the "
+                    f"conflict band — consider a longer training run.",
+                    RuntimeWarning,
+                )
+                eta = np.clip(eta, lo_safe, hi_safe)
+            return eta
+
+        # Legacy v1.
         delta_prime = _delta_transform(ad)
         x = np.column_stack([np.full_like(delta_prime, float(w)), delta_prime])
         eta_prime = self.artifact.predict(x)

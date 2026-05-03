@@ -280,11 +280,15 @@ def _lambda_schedule(
 ) -> float:
     """Linear ramp from 0 to ``lambda_max`` over the first
     ``warmup_frac`` of epochs, then constant.
+
+    λ(0) = 0 (Head B trains in isolation for epoch 0; Head A's
+    width loss has no boundary signal yet); λ(warmup_epochs) =
+    λ_max; λ(epoch ≥ warmup_epochs) = λ_max constant.
     """
     warmup_epochs = max(1, int(round(warmup_frac * n_epochs)))
     if epoch >= warmup_epochs:
         return float(lambda_max)
-    return float(lambda_max) * (epoch + 1) / warmup_epochs
+    return float(lambda_max) * epoch / warmup_epochs
 
 
 # ---------------------------------------------------------------------------
@@ -367,8 +371,22 @@ def fit_eta_artifact(
             "loss_kind must be one of {integrated_p, cd_variance, "
             f"static_width}}; got {loss_kind!r}"
         )
-    if loss_kind == "static_width" and alpha is None:
-        raise ValueError("loss_kind=static_width requires alpha")
+    if loss_kind == "static_width":
+        if alpha is None:
+            raise ValueError("loss_kind=static_width requires alpha")
+        if not (np.isfinite(alpha) and 0.0 < float(alpha) < 1.0):
+            raise ValueError(
+                f"alpha must be finite and in (0, 1); got {alpha!r}"
+            )
+    elif alpha is not None:
+        # Skeptic E.3 #7: an integrated_p / cd_variance run is
+        # α-marginalised; recording a non-None alpha would lock the
+        # checkpoint to that one α at inference, defeating the
+        # marginalisation. Refuse loudly.
+        raise ValueError(
+            f"alpha={alpha} given but loss_kind={loss_kind!r} is "
+            f"α-marginalised; pass alpha=None."
+        )
 
     device_resolved = _resolve_device(device)
     # Skeptic block #11: sub-spawn independent RNGs per consumer so a

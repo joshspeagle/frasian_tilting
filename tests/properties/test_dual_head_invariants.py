@@ -766,6 +766,108 @@ def test_width_loss_averages_over_d_batch(bootstrapped_registry):
 
 @pytest.mark.L1
 @pytest.mark.properties
+def test_phase_e_selector_rejects_cross_experiment_use(
+    bootstrapped_registry, tmp_path,
+):
+    """A Phase E checkpoint trained at (σ₀, σ) is refused for inference
+    at any other (σ₀, σ) — even when the derived w matches.
+
+    Skeptic E.3 block #2: closes the silent-wrong-scale-lookup gap.
+    """
+    from frasian._errors import MissingArtifactError
+    from frasian.learned.eta_artifact import EtaArtifact
+    from frasian.learned.training.train import fit_eta_artifact
+    from frasian.tilting.eta_selectors import LearnedDynamicEtaSelector
+    from frasian.tilting.power_law import PowerLawTilting
+    from frasian.statistics.waldo import WaldoStatistic
+
+    # Train a tiny checkpoint at the canonical (μ₀=0, σ₀=σ=1, w=0.5).
+    cfg = ExperimentConfig(
+        scheme_name="power_law", statistic_name="waldo",
+        prior=NormalDistribution(0.0, 1.0),
+        model=NormalNormalModel(sigma=1.0),
+        theta_distribution=UniformThetaDistribution(low=-3.0, high=3.0),
+        n_grid=21, n_lhs=80, eta_explore_box=(-2.0, 2.0), seed=7,
+    )
+    out = tmp_path / "ckpt.pt"
+    fit_eta_artifact(
+        config=cfg, out_path=out,
+        n_epochs=2, batch_size=20, n_aux=20,
+        lambda_max=1.0, lambda_warmup_frac=0.5, patience=5, verbose=False,
+    )
+    art = EtaArtifact(artifact_path=out, name="phase_e_test")
+    sel = LearnedDynamicEtaSelector(artifact=art)
+    scheme = PowerLawTilting(selector=sel)
+
+    # Same fingerprints: works.
+    scheme.dynamic_tilted_confidence_interval(
+        alpha=0.05, D=0.0,
+        model=NormalNormalModel(sigma=1.0),
+        prior=NormalDistribution(0.0, 1.0),
+        statistic_name="waldo",
+        eta_selector=sel,
+    )
+    # Same w (=0.5) but rescaled (σ₀=σ=2): rejected.
+    with pytest.raises(MissingArtifactError, match="trained on model"):
+        scheme.dynamic_tilted_confidence_interval(
+            alpha=0.05, D=0.0,
+            model=NormalNormalModel(sigma=2.0),
+            prior=NormalDistribution(0.0, 2.0),
+            statistic_name="waldo",
+            eta_selector=sel,
+        )
+    # Same (σ, σ₀) but shifted prior (μ₀=1): rejected.
+    with pytest.raises(MissingArtifactError, match="trained with prior"):
+        scheme.dynamic_tilted_confidence_interval(
+            alpha=0.05, D=0.0,
+            model=NormalNormalModel(sigma=1.0),
+            prior=NormalDistribution(1.0, 1.0),
+            statistic_name="waldo",
+            eta_selector=sel,
+        )
+
+
+@pytest.mark.L1
+@pytest.mark.properties
+def test_lambda_schedule_starts_at_zero():
+    """Skeptic E.3 block #4: λ(0) = 0 so Head A's boundary-penalty
+    signal is null while Head B trains on its first batch."""
+    from frasian.learned.training.train import _lambda_schedule
+    assert _lambda_schedule(0, n_epochs=10, lambda_max=10.0,
+                              warmup_frac=0.3) == 0.0
+    # At warmup_epochs, λ = λ_max.
+    warmup_epochs = max(1, int(round(0.3 * 10)))
+    assert _lambda_schedule(warmup_epochs, n_epochs=10, lambda_max=10.0,
+                              warmup_frac=0.3) == 10.0
+    # Post-warmup, constant at λ_max.
+    assert _lambda_schedule(8, n_epochs=10, lambda_max=10.0,
+                              warmup_frac=0.3) == 10.0
+
+
+@pytest.mark.L1
+@pytest.mark.properties
+def test_alpha_required_to_be_none_for_marginalised_loss(
+    bootstrapped_registry, tmp_path,
+):
+    """Skeptic E.3 block #7: integrated_p / cd_variance reject non-None α."""
+    from frasian.learned.training.train import fit_eta_artifact
+    cfg = ExperimentConfig(
+        scheme_name="power_law", statistic_name="waldo",
+        prior=NormalDistribution(0.0, 1.0),
+        model=NormalNormalModel(sigma=1.0),
+        theta_distribution=UniformThetaDistribution(low=-3.0, high=3.0),
+        n_grid=21, n_lhs=20, eta_explore_box=(-2.0, 2.0), seed=7,
+    )
+    with pytest.raises(ValueError, match="α-marginalised"):
+        fit_eta_artifact(
+            config=cfg, out_path=tmp_path / "x.pt",
+            loss_kind="integrated_p", alpha=0.05,  # invalid pairing
+            n_epochs=1, batch_size=10, verbose=False,
+        )
+
+
+@pytest.mark.L1
+@pytest.mark.properties
 def test_validity_net_params_get_no_grad_attribute_at_all():
     """After Head A's loss backward, ValidityNet.params should have
     ``grad is None`` (no gradient even allocated), not zero gradient.
