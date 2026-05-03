@@ -42,38 +42,93 @@ if TYPE_CHECKING:
     from .tilting.base import TiltingScheme
 
 
+def _resolve_dynamic_eta_mode() -> str:
+    """Read FRASIAN_DEFAULT_DYNAMIC_ETA env var.
+
+    Values:
+      - "numerical" (default): the legacy `DynamicNumericalEtaSelector`
+        wrapping `NumericalEtaSelector`. Calibrated by construction
+        but inflates CI width at conflict (kinky η*(|Δ|) curve).
+      - "learned": `LearnedDynamicEtaSelector` reading the trained
+        `MonotonicEtaArtifact` at `artifacts/learned_eta_<scheme>_v1.pt`.
+        Calibrated AND narrow (the headline empirical claim).
+
+    Default is `numerical` until the headline narrowness regression
+    passes empirically (see `tests/regression/test_learned_eta_narrowness.py`).
+    """
+    import os
+    return os.environ.get("FRASIAN_DEFAULT_DYNAMIC_ETA", "numerical").lower()
+
+
+def _make_learned_selector(scheme_name: str):
+    """Build a `LearnedDynamicEtaSelector` pointing at the v1 checkpoint.
+
+    Raises a clear error if the artifact file is missing — train via
+    `python -m scripts.train_learned_eta` first.
+    """
+    from pathlib import Path
+    from .learned.monotonic_eta import MonotonicEtaArtifact
+    from .tilting.eta_selectors import LearnedDynamicEtaSelector
+
+    candidates = [
+        Path(f"artifacts/learned_eta_{scheme_name}_v1.pt"),
+        Path(f"artifacts/learned_eta_{scheme_name}_v0_smoke.pt"),
+    ]
+    chosen = next((c for c in candidates if c.exists()), None)
+    if chosen is None:
+        raise FileNotFoundError(
+            f"FRASIAN_DEFAULT_DYNAMIC_ETA=learned but no checkpoint found "
+            f"for scheme {scheme_name!r} at any of {candidates}. "
+            f"Train one via `python -m scripts.train_learned_eta "
+            f"--scheme {scheme_name} --out {candidates[0]}`."
+        )
+    artifact = MonotonicEtaArtifact(artifact_path=chosen)
+    return LearnedDynamicEtaSelector(artifact=artifact)
+
+
 def default_tiltings(*, sigma: float = 1.0, mu0: float = 0.0,
                      n_grid: int = 401, coarse_n: int = 25,
                      ) -> list["TiltingScheme"]:
     """For coverage / width: tiltings *with their selector baked in*.
 
-    Identity + power_law[dynamic_numerical]. The fixed-η=0 power_law
-    cell is omitted as numerically redundant with identity. Smoother
-    geodesic schemes (`ot`, `fisher_rao`, `mixture`) plug in here as
-    they are implemented; `ot[dynamic_numerical]` is the W2-tilted
-    counterpart of Dynamic-WALDO.
+    Identity + power_law[dynamic] + ot[dynamic]. The fixed-η=0 power_law
+    cell is omitted as numerically redundant with identity. The
+    "dynamic" selector is gated by `FRASIAN_DEFAULT_DYNAMIC_ETA`:
+
+      - `numerical` (default): `DynamicNumericalEtaSelector`. Calibrated
+        but kinky; inflates CI width at conflict.
+      - `learned`: `LearnedDynamicEtaSelector` with the trained MLP.
+        Calibrated AND narrow.
+
+    Future smoother geodesic schemes (`fisher_rao`, `mixture`) plug
+    in here once their stubs land.
     """
-    # Imports inside the function body keep `import frasian` side-effect-
-    # free: only callers that actually need the cell instances trigger
-    # the tilting/statistic module registrations.
     from .tilting.eta_selectors import DynamicNumericalEtaSelector
     from .tilting.identity import IdentityTilting
     from .tilting.ot import OTTilting
     from .tilting.power_law import PowerLawTilting
+
+    mode = _resolve_dynamic_eta_mode()
+    if mode == "learned":
+        pl_selector = _make_learned_selector("power_law")
+        ot_selector = _make_learned_selector("ot")
+    elif mode == "numerical":
+        pl_selector = DynamicNumericalEtaSelector(
+            sigma=sigma, mu0=mu0, n_grid=n_grid, coarse_n=coarse_n,
+        )
+        ot_selector = DynamicNumericalEtaSelector(
+            sigma=sigma, mu0=mu0, n_grid=n_grid, coarse_n=coarse_n,
+        )
+    else:
+        raise ValueError(
+            f"FRASIAN_DEFAULT_DYNAMIC_ETA={mode!r}; "
+            f"expected 'numerical' or 'learned'."
+        )
+
     return [
         IdentityTilting(),
-        PowerLawTilting(
-            selector=DynamicNumericalEtaSelector(
-                sigma=sigma, mu0=mu0,
-                n_grid=n_grid, coarse_n=coarse_n,
-            ),
-        ),
-        OTTilting(
-            selector=DynamicNumericalEtaSelector(
-                sigma=sigma, mu0=mu0,
-                n_grid=n_grid, coarse_n=coarse_n,
-            ),
-        ),
+        PowerLawTilting(selector=pl_selector),
+        OTTilting(selector=ot_selector),
     ]
 
 
