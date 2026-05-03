@@ -201,3 +201,39 @@ def eta_transform_ot_torch(eta, w=None):  # noqa: ARG001
 
 def eta_inverse_ot_torch(eta_prime, w=None):  # noqa: ARG001
     return eta_prime
+
+
+# Per-scheme torch dispatch (mirrors the numpy `_ETA_TRANSFORMS` registry).
+_ETA_TRANSFORMS_TORCH: dict[str, tuple[Any, Any]] = {
+    "power_law": (eta_transform_powerlaw_torch, eta_inverse_powerlaw_torch),
+    "ot":        (eta_transform_ot_torch,        eta_inverse_ot_torch),
+}
+
+
+def eta_transform_torch(scheme_name: str, eta, w):
+    """Forward η-transform (torch) for the given scheme name."""
+    if not _HAS_TORCH:
+        raise ImportError("eta_transform_torch requires torch")
+    if scheme_name not in _ETA_TRANSFORMS_TORCH:
+        raise NotImplementedError(
+            f"No eta_transform_torch registered for scheme {scheme_name!r}. "
+            f"Available: {sorted(_ETA_TRANSFORMS_TORCH)}."
+        )
+    return _ETA_TRANSFORMS_TORCH[scheme_name][0](eta, w)
+
+
+def eta_inverse_torch(scheme_name: str, eta_prime, w):
+    """Inverse η-transform (torch) for the given scheme name.
+
+    For a clamping-aware version that handles `w → 1` gracefully, the
+    caller should pre-clamp `w` (training samples already do via the
+    `w_range` in `TrainingDistribution`).
+    """
+    if not _HAS_TORCH:
+        raise ImportError("eta_inverse_torch requires torch")
+    if scheme_name not in _ETA_TRANSFORMS_TORCH:
+        raise NotImplementedError(
+            f"No eta_inverse_torch registered for scheme {scheme_name!r}. "
+            f"Available: {sorted(_ETA_TRANSFORMS_TORCH)}."
+        )
+    return _ETA_TRANSFORMS_TORCH[scheme_name][1](eta_prime, w)

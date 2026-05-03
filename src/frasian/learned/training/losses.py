@@ -42,6 +42,9 @@ def integrated_pvalue_loss(
 
     By Fubini this equals `mean_B[ ∫_α |C_α| dα ]` with uniform α
     weighting on (0, 1). α-marginalised.
+
+    `theta_grid` may be 1D `(N,)` (shared across the batch) or 2D
+    `(B, N)` (per-sample grids; the training loop uses this).
     """
     if p_theta.dim() != 2:
         raise ValueError(
@@ -62,15 +65,18 @@ def cd_variance_loss(
     Builds the CD pdf via `cd_density_torch` (skips `signed_confidence`
     to stay differentiable), then computes `μ = ∫θ·pdf` and
     `Var = ∫(θ-μ)²·pdf`. α-free.
+
+    `theta_grid` may be 1D `(N,)` or 2D `(B, N)`.
     """
-    pdf = cd_density_torch(p_theta, theta_grid)             # (B, N)
-    mean_per_sample = torch.trapezoid(
-        pdf * theta_grid.unsqueeze(0), theta_grid, dim=-1,
-    )                                                        # (B,)
-    centred = theta_grid.unsqueeze(0) - mean_per_sample.unsqueeze(-1)
-    var_per_sample = torch.trapezoid(
-        pdf * centred * centred, theta_grid, dim=-1,
-    )                                                        # (B,)
+    pdf = cd_density_torch(p_theta, theta_grid)              # (B, N)
+    if theta_grid.dim() == 1:
+        theta_b = theta_grid.unsqueeze(0).expand_as(pdf)
+    else:
+        theta_b = theta_grid
+    mean_per_sample = torch.trapezoid(pdf * theta_b, theta_grid, dim=-1)  # (B,)
+    centred = theta_b - mean_per_sample.unsqueeze(-1)
+    var_per_sample = torch.trapezoid(pdf * centred * centred,
+                                       theta_grid, dim=-1)
     return var_per_sample.mean()
 
 
@@ -78,7 +84,7 @@ def static_width_loss(
     p_theta: torch.Tensor,
     theta_grid: torch.Tensor,
     alpha: float,
-    sharpness: float = 50.0,
+    sharpness: float = 200.0,
 ) -> torch.Tensor:
     """α-specific static CI width, averaged over the batch.
 
@@ -87,13 +93,23 @@ def static_width_loss(
         |C_α| ≈ ∫_θ σ_β( p_dyn(θ) − α ) dθ,    β = `sharpness`
 
     where `σ_β(x) = 1 / (1 + exp(-β x))`. As `β → ∞` the relaxation
-    converges to the true `1{p ≥ α}` indicator. Default `β = 50`
-    keeps the gradient finite while staying close to the indicator
-    on the relevant tails.
+    converges to the true `1{p ≥ α}` indicator.
+
+    Choosing `sharpness`. Empirically (deriver #4 in Phase C review):
+    on a Wald p-curve over a wide θ-grid, the relative bias of the
+    relaxed integral vs the true `|C_α|` is:
+       β=50,  α=0.05 → +110 % bias  (relaxed integral catches
+                                      tail mass where `σ_β(p-α) ≈ e^{-βα}`,
+                                      heavily inflating the integrand
+                                      far from the mode)
+       β=200, α=0.05 → +0.4 % bias
+       β=500, α=0.05 → +0.1 % bias
+    So `β = 50` is **not** sharp enough at typical α. Default raised to
+    `β = 200`. For very small α (≤ 0.01) prefer β ≥ 500.
 
     Used in α-conditioned training mode only. The trained MLP is
     valid only at the α it was trained for; the selector verifies
-    this at load time.
+    this at load time. `theta_grid` may be 1D `(N,)` or 2D `(B, N)`.
     """
     if not (0.0 < alpha < 1.0):
         raise ValueError(f"alpha must be in (0, 1); got {alpha}")

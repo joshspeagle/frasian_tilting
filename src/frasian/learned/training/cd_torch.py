@@ -32,12 +32,18 @@ def cd_density_torch(
 ) -> torch.Tensor:
     """Schweder-Hjort CD pdf from a p-value curve.
 
+    Accepts either a shared 1D `theta_grid` (`(N,)`, used for all batch
+    rows) or a per-sample 2D grid (`(B, N)`, one row per batch element
+    — the training pipeline uses this since each sample has its own
+    `D ± search_mult·σ` window).
+
     Parameters
     ----------
     p_theta : (B, N) tensor
         p-value evaluated on `theta_grid` for each batch element.
-    theta_grid : (N,) tensor
-        Strictly-increasing θ grid.
+    theta_grid : (N,) or (B, N) tensor
+        Strictly-increasing θ grid. If 1D, broadcast to all rows; if
+        2D, must match `p_theta.shape`.
     eps : float
         Floor for the normalisation constant `Z` to avoid div-by-zero
         when p is constant on the grid.
@@ -45,29 +51,40 @@ def cd_density_torch(
     Returns
     -------
     pdf : (B, N) tensor
-        Normalised pdf integrating to 1 along `theta_grid`.
+        Normalised pdf integrating to 1 along `theta_grid` row-wise.
     """
     if p_theta.dim() != 2:
         raise ValueError(
             f"p_theta must be (B, N); got shape {tuple(p_theta.shape)}"
         )
-    if theta_grid.dim() != 1:
+    if theta_grid.dim() == 1:
+        if theta_grid.shape[0] != p_theta.shape[1]:
+            raise ValueError(
+                f"theta_grid (1D) must have N={p_theta.shape[1]} elements; "
+                f"got shape {tuple(theta_grid.shape)}"
+            )
+        # Forward differences along the shared grid.
+        dtheta = (theta_grid[1:] - theta_grid[:-1]).unsqueeze(0)  # (1, N-1)
+    elif theta_grid.dim() == 2:
+        if theta_grid.shape != p_theta.shape:
+            raise ValueError(
+                f"theta_grid (2D) must match p_theta shape "
+                f"{tuple(p_theta.shape)}; got {tuple(theta_grid.shape)}"
+            )
+        dtheta = theta_grid[..., 1:] - theta_grid[..., :-1]      # (B, N-1)
+    else:
         raise ValueError(
-            f"theta_grid must be 1D; got shape {tuple(theta_grid.shape)}"
+            f"theta_grid must be 1D or 2D; got shape "
+            f"{tuple(theta_grid.shape)}"
         )
 
-    # Forward absolute one-sided differences along θ.
-    dtheta = theta_grid[1:] - theta_grid[:-1]                # (N-1,)
-    dp = torch.abs(p_theta[..., 1:] - p_theta[..., :-1])      # (B, N-1)
-    forward_inner = dp / dtheta.unsqueeze(0)                   # (B, N-1)
-    # Pad: forward[-1] = forward[-2] (replicate last); backward[0] = forward[0]
+    dp = torch.abs(p_theta[..., 1:] - p_theta[..., :-1])         # (B, N-1)
+    forward_inner = dp / dtheta                                   # (B, N-1)
     forward = torch.cat([forward_inner, forward_inner[..., -1:]], dim=-1)
     backward = torch.cat([forward_inner[..., 0:1], forward_inner], dim=-1)
+    abs_dp_dtheta = 0.5 * (forward + backward)
+    pdf_unnorm = 0.5 * abs_dp_dtheta                              # (B, N)
 
-    abs_dp_dtheta = 0.5 * (forward + backward)                 # (B, N)
-    pdf_unnorm = 0.5 * abs_dp_dtheta                           # SH factor
-
-    # Normalise via trapezoidal rule.
-    Z = torch.trapezoid(pdf_unnorm, theta_grid, dim=-1)        # (B,)
+    Z = torch.trapezoid(pdf_unnorm, theta_grid, dim=-1)           # (B,)
     Z = torch.clamp(Z, min=eps)
     return pdf_unnorm / Z.unsqueeze(-1)

@@ -43,6 +43,12 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--version", default="v0")
+    parser.add_argument("--shared-sizes", type=int, nargs="+",
+                        default=[64, 64],
+                        help="hidden sizes for MonotonicEtaNet shared (w) pathway")
+    parser.add_argument("--mono-sizes", type=int, nargs="+",
+                        default=[64, 64],
+                        help="hidden sizes for MonotonicEtaNet monotonic (Δ') pathway")
     parser.add_argument("--fast", action="store_true",
                         help="smoke mode: 512 LHS, 4 MC, 20 epochs")
     parser.add_argument("--quiet", action="store_true")
@@ -76,6 +82,10 @@ def main() -> None:
         seed=args.seed,
         out_path=args.out,
         version=args.version,
+        architecture_kwargs={
+            "shared_sizes": tuple(args.shared_sizes),
+            "mono_sizes": tuple(args.mono_sizes),
+        },
         verbose=not args.quiet,
     )
 

@@ -87,3 +87,73 @@ def test_train_smoke_static_width_alpha_required(tmp_path):
             n_lhs=8, n_mc=1, n_epochs=1, theta_grid_n=11,
             out_path=tmp_path / "y.pt", verbose=False,
         )
+
+
+@pytest.mark.L2
+@pytest.mark.slow
+@pytest.mark.parametrize("scheme,loss,alpha", [
+    ("power_law", "integrated_p", None),
+    ("power_law", "cd_variance",  None),
+    ("power_law", "static_width", 0.05),
+    ("ot",        "integrated_p", None),
+    ("ot",        "cd_variance",  None),
+])
+def test_train_smoke_all_loss_scheme_combos(tmp_path, scheme, loss, alpha):
+    """Each (scheme, loss) combination trains end-to-end at tiny budgets.
+
+    Adds breadth that the original `test_train_smoke_round_trip` (only
+    `(power_law, integrated_p)`) lacked. Phase-C skeptic finding #6.
+    """
+    out_path = tmp_path / f"smoke_{scheme}_{loss}.pt"
+    result = fit_monotonic_eta_artifact(
+        scheme_name=scheme,
+        statistic_name="waldo",
+        loss_kind=loss,
+        alpha=alpha,
+        n_lhs=64,
+        n_mc=2,
+        n_epochs=3,
+        batch_size=16,
+        theta_grid_n=51,
+        out_path=out_path,
+        seed=42,
+        verbose=False,
+    )
+    assert out_path.exists()
+    assert np.isfinite(result.final_val_loss)
+    # Verify metadata records the right combo.
+    artifact = MonotonicEtaArtifact(artifact_path=out_path)
+    artifact.load()
+    meta = artifact.metadata
+    assert meta["scheme"] == scheme
+    assert meta["loss"] == loss
+    if alpha is None:
+        assert meta["alpha_mode"] == "marginalised"
+    else:
+        assert meta["alpha_mode"] == f"fixed_{alpha:.6g}"
+
+
+@pytest.mark.L2
+@pytest.mark.slow
+def test_calibration_report_present_in_checkpoint(tmp_path):
+    """Phase-C skeptic block #1: calibration_report must be in checkpoint."""
+    out_path = tmp_path / "calib_check.pt"
+    fit_monotonic_eta_artifact(
+        scheme_name="power_law", loss_kind="integrated_p",
+        n_lhs=64, n_mc=2, n_epochs=3, batch_size=16, theta_grid_n=51,
+        out_path=out_path, seed=42, verbose=False,
+    )
+    artifact = MonotonicEtaArtifact(artifact_path=out_path)
+    artifact.load()
+    report = artifact.metadata["calibration_report"]
+    assert "alphas" in report and len(report["alphas"]) > 0
+    assert "theta_true_grid" in report
+    assert "w_grid" in report
+    assert "coverage" in report
+    cov = np.array(report["coverage"])
+    n_theta = len(report["theta_true_grid"])
+    n_w = len(report["w_grid"])
+    n_alpha = len(report["alphas"])
+    assert cov.shape == (n_theta, n_w, n_alpha), cov.shape
+    # All coverage values in [0, 1].
+    assert np.all((cov >= 0.0) & (cov <= 1.0))

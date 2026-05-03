@@ -68,10 +68,25 @@ def test_cd_density_torch_integrates_to_one():
 
 @pytest.mark.L2
 def test_cd_density_torch_shape_check():
-    """1D p-value or 1D theta_grid raises a clear error."""
+    """1D p-value raises; mismatched-shape 2D theta_grid raises."""
     theta = torch.linspace(0.0, 1.0, 5, dtype=torch.float64)
     with pytest.raises(ValueError, match="\\(B, N\\)"):
         cd_density_torch(torch.zeros(5, dtype=torch.float64), theta)
-    with pytest.raises(ValueError, match="1D"):
-        cd_density_torch(torch.zeros(2, 5, dtype=torch.float64),
-                          torch.zeros(2, 5, dtype=torch.float64))
+    # 2D theta_grid with the wrong shape should also fail.
+    p = torch.zeros(2, 5, dtype=torch.float64)
+    with pytest.raises(ValueError, match="must match"):
+        cd_density_torch(p, torch.zeros(3, 5, dtype=torch.float64))
+
+
+@pytest.mark.L2
+def test_cd_density_torch_per_sample_grid():
+    """Per-sample 2D theta_grid produces the same density as a shared 1D grid
+    when all rows of the 2D grid are identical."""
+    theta_1d = torch.linspace(-3.0, 3.0, 51, dtype=torch.float64)
+    theta_2d = theta_1d.unsqueeze(0).expand(4, -1).contiguous()
+    # Synthetic well-behaved p-value.
+    p = torch.sigmoid(-(theta_1d - 0.5) ** 2 + 0.5).unsqueeze(0).expand(4, -1)
+    pdf_shared = cd_density_torch(p, theta_1d)
+    pdf_per = cd_density_torch(p, theta_2d)
+    np.testing.assert_allclose(pdf_per.numpy(), pdf_shared.numpy(),
+                                 atol=1e-12)

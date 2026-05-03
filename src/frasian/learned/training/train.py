@@ -30,6 +30,7 @@ from typing import Any, Optional
 import numpy as np
 import torch
 
+from ..transforms import eta_inverse_torch
 from .architecture import MonotonicEtaNet
 from .losses import (cd_variance_loss, integrated_pvalue_loss,
                        static_width_loss)
@@ -68,6 +69,81 @@ def _theta_grid_for_D(
     return lo + u.unsqueeze(0) * (hi - lo)
 
 
+def _eta_from_mlp(
+    model: MonotonicEtaNet,
+    abs_delta_theta: torch.Tensor,
+    w: torch.Tensor,
+    scheme_name: str,
+) -> torch.Tensor:
+    """Run the MLP on `(B, N)` `(w, |Δ_θ|)` and return η on the original
+    scale via the per-scheme inverse transform."""
+    from ..transforms import delta_transform_torch
+
+    delta_prime = delta_transform_torch(abs_delta_theta)
+    B, N = abs_delta_theta.shape
+    w_b = w.unsqueeze(-1).expand_as(delta_prime)
+    x_flat = torch.stack([w_b.reshape(-1), delta_prime.reshape(-1)], dim=-1)
+    eta_prime = model(x_flat).reshape(B, N)
+    return eta_inverse_torch(scheme_name, eta_prime, w_b)
+
+
+def _compute_pvalue_grid(
+    *,
+    model: MonotonicEtaNet,
+    batch: dict,
+    scheme_name: str,
+    statistic_name: str,
+    n_grid: int,
+    search_mult: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Compute `(p_theta, theta_per_sample)` for a batch.
+
+    Returns a `(B, N)` p-value tensor and a `(B, N)` θ-grid tensor.
+    """
+    tilted_pvalue = get_torch_tilted_pvalue(scheme_name)
+
+    D = batch["D"]            # (B,)
+    w = batch["w"]            # (B,)
+    mu0 = batch["mu0"]        # scalar
+    sigma = batch["sigma"]    # scalar
+
+    theta_per_sample = _theta_grid_for_D(D, sigma, n_grid, search_mult)
+    abs_delta_theta = torch.abs(
+        (1.0 - w.unsqueeze(-1)) * (mu0 - theta_per_sample) / sigma
+    )
+    eta = _eta_from_mlp(model, abs_delta_theta, w, scheme_name)
+
+    p_theta = tilted_pvalue(
+        theta_per_sample,
+        D.unsqueeze(-1),
+        w.unsqueeze(-1),
+        mu0,
+        sigma,
+        eta,
+        statistic_name,
+    )
+
+    # Numerical sanity: under torch grad, p_theta should already lie in
+    # [0, 1] mathematically. Guard against float32 drift only after
+    # gradient logic has captured it; we *don't* clamp under autograd
+    # (clamp at the boundary kills the gradient). Instead, log a warning
+    # if drift exceeds tol.
+    if not torch.is_grad_enabled():
+        out_of_range = (
+            (p_theta < -1e-5) | (p_theta > 1 + 1e-5)
+        ).any().item()
+        if out_of_range:
+            import warnings
+            warnings.warn(
+                f"p_theta drifted outside [0, 1] by > 1e-5 in {scheme_name}/"
+                f"{statistic_name} forward; consider float64 or tighter "
+                f"η bounds.",
+                RuntimeWarning,
+            )
+
+    return p_theta, theta_per_sample
+
+
 def _compute_loss(
     *,
     model: MonotonicEtaNet,
@@ -80,91 +156,20 @@ def _compute_loss(
     search_mult: float,
 ) -> torch.Tensor:
     """One forward pass returning a scalar loss for the batch."""
-    from ..transforms import delta_transform_torch
-
-    tilted_pvalue = get_torch_tilted_pvalue(scheme_name)
-
-    D = batch["D"]            # (B,)
-    w = batch["w"]            # (B,)
-    mu0 = batch["mu0"]        # scalar
-    sigma = batch["sigma"]    # scalar
-
-    # Per-sample θ-grid centred on D.
-    theta_per_sample = _theta_grid_for_D(D, sigma, n_grid, search_mult)
-    # Conflict |Δ_θ| over the per-sample grid; (B, n_grid).
-    abs_delta_theta = torch.abs(
-        (1.0 - w.unsqueeze(-1)) * (mu0 - theta_per_sample) / sigma
+    p_theta, theta_per_sample = _compute_pvalue_grid(
+        model=model, batch=batch,
+        scheme_name=scheme_name, statistic_name=statistic_name,
+        n_grid=n_grid, search_mult=search_mult,
     )
-    delta_prime = delta_transform_torch(abs_delta_theta)
 
-    # MLP input: (B*n_grid, 2) of [w, |Δ'|].
-    B, N = abs_delta_theta.shape
-    x_flat = torch.stack([
-        w.unsqueeze(-1).expand_as(delta_prime).reshape(-1),
-        delta_prime.reshape(-1),
-    ], dim=-1)
-    eta_prime = model(x_flat).reshape(B, N)
-    # Recover η in original space (per-scheme inverse).
-    if scheme_name == "power_law":
-        eta = (eta_prime - w.unsqueeze(-1)) / (1.0 - w.unsqueeze(-1)).clamp(min=1e-6)
-    else:  # ot, future schemes with η ∈ [0,1]
-        eta = eta_prime
-
-    # p_dyn(θ; D, η) over the per-sample grid.
-    # All inputs broadcast: D, w → (B, 1); theta, eta → (B, N).
-    p_theta = tilted_pvalue(
-        theta_per_sample,
-        D.unsqueeze(-1),
-        w.unsqueeze(-1),
-        mu0,
-        sigma,
-        eta,
-        statistic_name,
-    )
-    # Numerical guard: p ∈ [0, 1].
-    p_theta = torch.clamp(p_theta, 0.0, 1.0)
-
+    if loss_kind == "integrated_p":
+        return integrated_pvalue_loss(p_theta, theta_per_sample)
+    if loss_kind == "cd_variance":
+        return cd_variance_loss(p_theta, theta_per_sample)
     if loss_kind == "static_width":
         if alpha is None:
             raise ValueError("static_width loss requires alpha not None")
-        # static_width_loss expects a single (shared) θ-grid; we pass
-        # the first sample's grid but compute width per-sample. Since
-        # each row of theta_per_sample is the same shape (n_grid points
-        # centred on its own D), we use a per-row trapezoid via the
-        # row's grid. Equivalent inline computation:
-        from .losses import static_width_loss as _swl  # noqa
-        # Implement per-row to handle differing grids.
-        sharpness = 50.0
-        indicator = torch.sigmoid(sharpness * (p_theta - alpha))   # (B, N)
-        # Per-row trapezoidal width using each row's grid.
-        widths = torch.trapezoid(indicator, theta_per_sample, dim=-1)
-        return widths.mean()
-
-    if loss_kind == "integrated_p":
-        widths = torch.trapezoid(p_theta, theta_per_sample, dim=-1)
-        return widths.mean()
-
-    if loss_kind == "cd_variance":
-        from .cd_torch import cd_density_torch
-        # cd_density_torch wants a shared grid; re-shape per-sample.
-        # Inline equivalent for per-sample θ-grids:
-        dtheta = theta_per_sample[..., 1:] - theta_per_sample[..., :-1]
-        dp = torch.abs(p_theta[..., 1:] - p_theta[..., :-1])
-        forward_inner = dp / dtheta
-        forward = torch.cat([forward_inner, forward_inner[..., -1:]], dim=-1)
-        backward = torch.cat([forward_inner[..., 0:1], forward_inner], dim=-1)
-        pdf_unnorm = 0.5 * 0.5 * (forward + backward)
-        Z = torch.trapezoid(pdf_unnorm, theta_per_sample, dim=-1).clamp(min=1e-12)
-        pdf = pdf_unnorm / Z.unsqueeze(-1)
-        mean_per = torch.trapezoid(
-            pdf * theta_per_sample, theta_per_sample, dim=-1,
-        )
-        centred = theta_per_sample - mean_per.unsqueeze(-1)
-        var_per = torch.trapezoid(
-            pdf * centred * centred, theta_per_sample, dim=-1,
-        )
-        return var_per.mean()
-
+        return static_width_loss(p_theta, theta_per_sample, alpha=alpha)
     raise ValueError(f"Unknown loss_kind={loss_kind!r}")
 
 
@@ -175,6 +180,88 @@ class TrainResult:
     val_losses: list[float]
     final_val_loss: float
     metadata: dict[str, Any]
+
+
+def _compute_calibration_report(
+    *,
+    model: MonotonicEtaNet,
+    scheme_name: str,
+    statistic_name: str,
+    train_dist: TrainingDistribution,
+    alphas: tuple = (0.05, 0.10, 0.20),
+    theta_true_grid: tuple = (-3.0, -1.0, 0.0, 1.0, 3.0),
+    w_grid: tuple = (0.2, 0.35, 0.5, 0.65, 0.8),
+    n_reps: int = 1000,
+    device: str = "cpu",
+    seed: int = 42,
+) -> dict:
+    """Empirical coverage of the trained MLP on a (θ_true, w) × α grid.
+
+    Calibration is automatic for any η(|Δ|; w) (Phase C deriver #5),
+    but this empirically verifies it on the trained model. For each
+    cell, we draw `n_reps` `D ~ N(θ_true, σ²)`, compute
+    `p_dyn(θ_true; D, η)` (one evaluation per replicate, at the true
+    parameter), and report `P(p ≥ α)` as the coverage. Under H0:
+    `p` is `U[0, 1]`, so `P(p ≥ α) = 1 - α`.
+
+    Returns a nested dict serialisable into the checkpoint:
+        {"alphas": [...], "theta_true_grid": [...], "w_grid": [...],
+         "coverage": [[[float per α] per w] per θ_true]}
+    """
+    rng = torch.Generator(device=device).manual_seed(seed)
+    sigma = train_dist.sigma
+    mu0 = train_dist.mu0
+
+    # Pre-cast scalars.
+    sigma_t = torch.tensor(sigma, dtype=torch.float32, device=device)
+    mu0_t = torch.tensor(mu0, dtype=torch.float32, device=device)
+
+    coverage = [[[0.0 for _ in alphas] for _ in w_grid]
+                  for _ in theta_true_grid]
+
+    model.eval()
+    with torch.no_grad():
+        for i, theta_true in enumerate(theta_true_grid):
+            theta_true_t = torch.tensor(
+                theta_true, dtype=torch.float32, device=device
+            )
+            for j, w_val in enumerate(w_grid):
+                w_t = torch.full((n_reps,), float(w_val),
+                                  dtype=torch.float32, device=device)
+                D = theta_true_t + sigma_t * torch.randn(
+                    n_reps, generator=rng, device=device, dtype=torch.float32,
+                )
+                # Evaluate p_dyn at theta = theta_true for each D.
+                # |Δ_{θ_true}| = (1 - w)|μ₀ - θ_true|/σ — same for all D.
+                abs_delta = torch.abs(
+                    (1.0 - w_t) * (mu0_t - theta_true_t) / sigma_t
+                )
+                # MLP at scalar (w, |Δ|) returns scalar η_prime.
+                from ..transforms import (delta_transform_torch,
+                                            eta_inverse_torch)
+                delta_prime = delta_transform_torch(abs_delta)
+                x = torch.stack([w_t, delta_prime], dim=-1)
+                eta_prime = model(x).squeeze(-1)
+                eta = eta_inverse_torch(scheme_name, eta_prime, w_t)
+
+                tilted_pvalue = get_torch_tilted_pvalue(scheme_name)
+                # Compute p at theta = theta_true for each D.
+                theta_in = theta_true_t.expand(n_reps)
+                p = tilted_pvalue(
+                    theta_in, D, w_t, mu0_t, sigma_t, eta, statistic_name,
+                )
+                p = p.clamp(0.0, 1.0)
+                for k, alpha in enumerate(alphas):
+                    cov = float((p >= alpha).float().mean().item())
+                    coverage[i][j][k] = cov
+
+    return {
+        "alphas": list(alphas),
+        "theta_true_grid": list(theta_true_grid),
+        "w_grid": list(w_grid),
+        "coverage": coverage,
+        "n_reps": n_reps,
+    }
 
 
 def fit_monotonic_eta_artifact(
@@ -310,6 +397,24 @@ def fit_monotonic_eta_artifact(
                   f"train={train_losses[-1]:.4f} "
                   f"val={val_losses[-1]:.4f}")
 
+    # Post-training calibration report (Phase-C skeptic block #1).
+    if verbose:
+        print(f"[fit_monotonic_eta_artifact] computing calibration report...")
+    calibration_report = _compute_calibration_report(
+        model=model, scheme_name=scheme_name,
+        statistic_name=statistic_name, train_dist=train_dist,
+        device=device_resolved, seed=seed + 1,
+    )
+    if verbose:
+        # Summarise: max |coverage - (1-α)| across the grid for each α.
+        import numpy as _np
+        cov = _np.array(calibration_report["coverage"])
+        for k, a in enumerate(calibration_report["alphas"]):
+            err = _np.abs(cov[..., k] - (1.0 - a))
+            print(f"[calibration α={a}] "
+                  f"mean cov={float(cov[..., k].mean()):.4f}, "
+                  f"max |err|={float(err.max()):.4f}")
+
     # Save checkpoint
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -322,6 +427,7 @@ def fit_monotonic_eta_artifact(
         "loss": loss_kind,
         "alpha_mode": alpha_mode,
         "training_distribution": train_dist.to_dict(),
+        "calibration_report": calibration_report,
         "n_lhs": n_lhs,
         "n_mc": n_mc,
         "n_epochs": n_epochs,
