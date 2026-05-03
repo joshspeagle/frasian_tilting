@@ -30,27 +30,39 @@ from frasian.models.distributions import NormalDistribution
 from frasian.models.normal_normal import NormalNormalModel
 from frasian.statistics.waldo import WaldoStatistic
 from frasian.tilting.eta_selectors import LearnedDynamicEtaSelector
+from frasian.tilting.ot import OTTilting
 from frasian.tilting.power_law import PowerLawTilting
 
 
-_V1 = Path("artifacts/learned_eta_canonical_normal_normal_powerlaw_v1.pt")
-_V0_SMOKE = Path(
-    "artifacts/learned_eta_canonical_normal_normal_powerlaw_v0_smoke.pt"
-)
+_CHECKPOINTS = {
+    "powerlaw": (
+        Path("artifacts/learned_eta_canonical_normal_normal_powerlaw_v1.pt"),
+        Path("artifacts/learned_eta_canonical_normal_normal_powerlaw_v0_smoke.pt"),
+        PowerLawTilting,
+    ),
+    "ot": (
+        Path("artifacts/learned_eta_canonical_normal_normal_ot_v1.pt"),
+        Path("artifacts/learned_eta_canonical_normal_normal_ot_v0_smoke.pt"),
+        OTTilting,
+    ),
+}
 
 
-def _checkpoint_and_tolerance() -> tuple[Path, float]:
-    """Return (checkpoint_path, tolerance) — strict for v1, loose for v0_smoke."""
-    if _V1.exists():
-        return _V1, 0.0
-    if _V0_SMOKE.exists():
-        # v0_smoke is undertrained; allow learned to be up to 15%
-        # WIDER than the bound as a sanity floor (the headline claim
-        # only holds for the v1 production checkpoint). Looser than
-        # pre-Phase-E because the new architecture has no
-        # bounded-sigmoid output to compress widths.
-        return _V0_SMOKE, 0.15
-    pytest.skip("no Phase E learned-eta checkpoint available")
+def _checkpoint_and_tolerance(scheme_label: str) -> tuple[Path, float, type]:
+    """Return (checkpoint_path, tolerance, scheme_class).
+
+    Strict tolerance for v1; loose for v0_smoke. OT v0_smoke is more
+    undertrained (Head B accuracy ~0.67 vs power_law's ~0.97), so the
+    smoke tolerance is wider.
+    """
+    v1, v0_smoke, cls = _CHECKPOINTS[scheme_label]
+    if v1.exists():
+        return v1, 0.0, cls
+    if v0_smoke.exists():
+        # OT smoke is more undertrained → wider tolerance.
+        rel_tol = 0.15 if scheme_label == "powerlaw" else 0.30
+        return v0_smoke, rel_tol, cls
+    pytest.skip(f"no Phase E {scheme_label} learned-eta checkpoint available")
 
 
 def _measure_widths(
@@ -73,7 +85,7 @@ def _measure_widths(
     return widths
 
 
-def _build_scheme_and_priors(ckpt_path: Path):
+def _build_scheme_and_priors(ckpt_path: Path, scheme_cls: type):
     """Read sigma/sigma0/mu0 from the trained checkpoint config."""
     artifact = EtaArtifact(artifact_path=ckpt_path)
     artifact.load()
@@ -84,7 +96,7 @@ def _build_scheme_and_priors(ckpt_path: Path):
     selector = LearnedDynamicEtaSelector(
         artifact=artifact, sigma=sigma, mu0=mu0,
     )
-    scheme = PowerLawTilting(selector=selector)
+    scheme = scheme_cls(selector=selector)
     prior = NormalDistribution(loc=mu0, scale=sigma0)
     model = NormalNormalModel(sigma=sigma)
     return scheme, prior, model, sigma, mu0
@@ -92,15 +104,18 @@ def _build_scheme_and_priors(ckpt_path: Path):
 
 @pytest.mark.L3
 @pytest.mark.slow
+@pytest.mark.parametrize("scheme_label", ["powerlaw", "ot"])
 @pytest.mark.parametrize("theta_true", [-3.0, -1.0, 0.0, 1.0, 3.0])
-def test_learned_no_wider_than_wald(theta_true):
+def test_learned_no_wider_than_wald(scheme_label, theta_true):
     """Headline claim 1: learned width ≤ Wald (3.92) + MC tolerance."""
-    ckpt, rel_tol = _checkpoint_and_tolerance()
+    ckpt, rel_tol, scheme_cls = _checkpoint_and_tolerance(scheme_label)
     alpha = 0.05
     n_reps = 100
 
-    learned, prior, model, sigma, _ = _build_scheme_and_priors(ckpt)
-    rng = np.random.default_rng(seed=42 + int(theta_true))
+    learned, prior, model, sigma, _ = _build_scheme_and_priors(ckpt, scheme_cls)
+    rng = np.random.default_rng(
+        seed=42 + int(theta_true) + hash(scheme_label) % 50,
+    )
     widths = _measure_widths(
         learned, n_reps, rng, theta_true, sigma, prior, model, alpha,
     )
@@ -118,17 +133,20 @@ def test_learned_no_wider_than_wald(theta_true):
 
 @pytest.mark.L3
 @pytest.mark.slow
+@pytest.mark.parametrize("scheme_label", ["powerlaw", "ot"])
 @pytest.mark.parametrize("theta_true", [-4.0, 4.0])
-def test_learned_beats_bare_waldo_at_conflict(theta_true):
+def test_learned_beats_bare_waldo_at_conflict(scheme_label, theta_true):
     """Headline claim 2: at high conflict, learned strictly < bare WALDO."""
-    ckpt, rel_tol = _checkpoint_and_tolerance()
+    ckpt, rel_tol, scheme_cls = _checkpoint_and_tolerance(scheme_label)
     alpha = 0.05
     n_reps = 100
 
-    learned, prior, model, sigma, _ = _build_scheme_and_priors(ckpt)
-    bare_waldo = PowerLawTilting()  # default = identity selector (η=0)
+    learned, prior, model, sigma, _ = _build_scheme_and_priors(ckpt, scheme_cls)
+    bare_waldo = scheme_cls()  # default = identity selector (η=0)
 
-    rng = np.random.default_rng(seed=42 + int(theta_true))
+    rng = np.random.default_rng(
+        seed=42 + int(theta_true) + hash(scheme_label) % 50,
+    )
     widths_learned = _measure_widths(
         learned, n_reps, rng, theta_true, sigma, prior, model, alpha,
     )
@@ -144,7 +162,7 @@ def test_learned_beats_bare_waldo_at_conflict(theta_true):
     ))
     threshold = mean_bare * (1.0 + rel_tol) + 2.0 * se_diff
     assert mean_learned <= threshold, (
-        f"At conflict θ_true={theta_true}: learned width "
-        f"{mean_learned:.3f} > bare WALDO {mean_bare:.3f} + tol = "
-        f"{threshold:.3f}; the conflict-band narrowness claim fails."
+        f"At conflict θ_true={theta_true} ({scheme_label}): learned "
+        f"width {mean_learned:.3f} > bare WALDO {mean_bare:.3f} + tol "
+        f"= {threshold:.3f}; the conflict-band narrowness claim fails."
     )

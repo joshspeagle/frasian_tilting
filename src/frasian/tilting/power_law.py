@@ -390,9 +390,24 @@ class PowerLawTilting:
             coarse_n = int(getattr(self.selector, "coarse_n", 25))
             ad_max = float(abs_delta_theta.max()) + 1e-6
             coarse_grid = np.linspace(0.0, ad_max, coarse_n)
-            coarse_eta = self.selector.select_grid(
-                coarse_grid, self, statistic=_NamedStatistic(statistic.name),
+            # Plumb fingerprints so the Phase E selector applies the
+            # strict cross-experiment check; legacy selectors ignore
+            # the kwargs.
+            select_kwargs = dict(
+                statistic=_NamedStatistic(statistic.name),
                 w=w, alpha=alpha,
+            )
+            try:
+                import inspect
+                sig = inspect.signature(self.selector.select_grid)
+                if "model_fingerprint" in sig.parameters:
+                    select_kwargs["model_fingerprint"] = model.fingerprint()
+                if "prior_fingerprint" in sig.parameters:
+                    select_kwargs["prior_fingerprint"] = prior.fingerprint()
+            except (TypeError, ValueError):
+                pass
+            coarse_eta = self.selector.select_grid(
+                coarse_grid, self, **select_kwargs,
             )
             eta_at_theta = np.interp(abs_delta_theta, coarse_grid, coarse_eta)
             return self.dynamic_tilted_pvalue(

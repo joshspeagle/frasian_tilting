@@ -326,6 +326,14 @@ class DynamicNumericalEtaSelector:
         return np.interp(abs_delta_grid, cached_grid, cached_eta)
 
 
+# Threshold for the runtime safety clamp in `LearnedDynamicEtaSelector`.
+# If the predicted η is out of admissible range for more than this
+# fraction of the batch, raise rather than silently clamp — a checkpoint
+# that drifts that far is either undertrained or for the wrong
+# experiment, and silently clamping would mask a calibration failure.
+_CLAMP_FAIL_THRESHOLD = 0.20
+
+
 @dataclass
 class LearnedDynamicEtaSelector:
     """Per-θ varying η* via a trained `LearnedArtifact`.
@@ -376,6 +384,13 @@ class LearnedDynamicEtaSelector:
     mu0: float = 0.0
     is_dynamic: bool = True
     _loaded: bool = field(default=False, init=False, repr=False, compare=False)
+    # Diagnostic counters tracking how often the runtime safety clamp
+    # has fired (skeptic E pre-PR review #2). Cumulative across calls
+    # in the lifetime of this selector instance.
+    _clamped_calls: int = field(default=0, init=False, repr=False, compare=False)
+    _last_clamped_fraction: float = field(
+        default=0.0, init=False, repr=False, compare=False
+    )
 
     def _ensure_loaded(self) -> None:
         if not self._loaded:
@@ -563,9 +578,14 @@ class LearnedDynamicEtaSelector:
         # use; this safety net is for "this checkpoint hasn't
         # trained enough", not for "this checkpoint is wrong".
         ctx = TiltingContext(w=w, abs_delta=0.0, alpha=alpha)
+        # Catch only the documented protocol exception for invalid
+        # context; any other exception (TypeError from a buggy ctx,
+        # AttributeError from a stub scheme, etc.) should propagate
+        # so we don't silently disable the safety net by falling
+        # through to (-inf, inf).
         try:
             lo, hi = scheme.admissible_range(ctx)
-        except Exception:
+        except (ValueError, TiltingDomainError):
             lo, hi = -np.inf, np.inf
         margin = 1e-6 * max(1.0, abs(hi - lo) if np.isfinite(hi - lo) else 1.0)
         lo_safe = lo + margin if np.isfinite(lo) else -np.inf
@@ -574,6 +594,8 @@ class LearnedDynamicEtaSelector:
         if out_of_range.any():
             import warnings
             frac = float(out_of_range.mean())
+            self._clamped_calls += 1
+            self._last_clamped_fraction = frac
             warnings.warn(
                 f"{self.artifact.name}: {100*frac:.1f}% of predicted "
                 f"η values fell outside the admissible range "
@@ -581,6 +603,21 @@ class LearnedDynamicEtaSelector:
                 f"signals the checkpoint is undertrained at the "
                 f"conflict band — consider a longer training run.",
                 RuntimeWarning,
+                stacklevel=3,
             )
+            # Stricter: if more than `_CLAMP_FAIL_THRESHOLD` of the
+            # batch is out of range, refuse rather than clamp. This
+            # closes the "silent escape hatch" — a checkpoint that
+            # routinely drifts past the boundary should not pass
+            # silently as if calibration held.
+            if frac > _CLAMP_FAIL_THRESHOLD:
+                from .._errors import MissingArtifactError
+                raise MissingArtifactError(
+                    f"{self.artifact.name}: {100*frac:.1f}% of predicted "
+                    f"η values fell outside the admissible range — over "
+                    f"the {100*_CLAMP_FAIL_THRESHOLD:.0f}% threshold. "
+                    f"This checkpoint is undertrained or for the wrong "
+                    f"experiment; refuse rather than train on a clamp."
+                )
             eta = np.clip(eta, lo_safe, hi_safe)
         return eta

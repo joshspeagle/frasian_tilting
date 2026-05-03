@@ -99,27 +99,25 @@ def dynamic_ci_scan(
     select_kwargs = dict(
         statistic=_NamedStatistic(statistic_name), w=w, alpha=alpha,
     )
-    # Phase E selectors require the inference-time prior + model
-    # fingerprints to refuse cross-experiment use. Older selectors
-    # (Numerical/DynamicNumerical, legacy v1 LearnedDynamic) ignore
-    # these kwargs.
-    if model_fingerprint is not None:
-        select_kwargs["model_fingerprint"] = model_fingerprint
-    if prior_fingerprint is not None:
-        select_kwargs["prior_fingerprint"] = prior_fingerprint
+    # Phase E selectors accept inference-time prior + model
+    # fingerprints to enforce strict cross-experiment refusal.
+    # Older selectors (Numerical/DynamicNumerical) don't have these
+    # kwargs in their signature; introspect to dispatch cleanly.
+    # Avoids try/except TypeError which would swallow real bugs in
+    # the selector body (skeptic E pre-PR review #6).
+    import inspect as _inspect
     try:
-        coarse_eta = eta_selector.select_grid(
-            coarse_grid, scheme, **select_kwargs,
-        )
-    except TypeError:
-        # Selector predates the fingerprint plumbing; fall back to the
-        # original signature. The Phase E selector's _check_experiment
-        # then uses w-only validation as a degraded check.
-        coarse_eta = eta_selector.select_grid(
-            coarse_grid, scheme,
-            statistic=select_kwargs["statistic"],
-            w=w, alpha=alpha,
-        )
+        _sig = _inspect.signature(eta_selector.select_grid)
+        _params = _sig.parameters
+    except (TypeError, ValueError):
+        _params = {}
+    if model_fingerprint is not None and "model_fingerprint" in _params:
+        select_kwargs["model_fingerprint"] = model_fingerprint
+    if prior_fingerprint is not None and "prior_fingerprint" in _params:
+        select_kwargs["prior_fingerprint"] = prior_fingerprint
+    coarse_eta = eta_selector.select_grid(
+        coarse_grid, scheme, **select_kwargs,
+    )
     eta_at_theta = np.interp(abs_delta_theta, coarse_grid, coarse_eta)
 
     p_theta = np.empty_like(theta_grid)

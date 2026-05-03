@@ -708,7 +708,7 @@ def fit_eta_artifact(
         "batch_size": batch_size,
         "seed": config.seed,
         "version": version,
-        "training_finished_at": _dt.datetime.utcnow().isoformat(),
+        "training_finished_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
         "train_losses": train_losses,
         "train_width_losses": train_width_losses,
         "train_penalty_losses": train_penalty_losses,

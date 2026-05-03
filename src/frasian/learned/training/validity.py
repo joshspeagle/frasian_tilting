@@ -105,12 +105,15 @@ def compute_pvalues_per_sample(
             )
             out[i] = float(np.asarray(p).reshape(-1)[0])
         except (TiltingDomainError, ValueError, RuntimeError,
-                NotImplementedError, FloatingPointError):
-            # Deliberately NOT catching AttributeError here — a typo
-            # like `self.foo` inside a scheme's `tilted_pvalue` body
-            # should surface as a stack trace, not silently turn every
-            # sample into NaN. The hasattr() pre-check above covers
-            # the "scheme has no method at all" case loudly.
+                NotImplementedError, ArithmeticError):
+            # ArithmeticError is the parent of FloatingPointError /
+            # OverflowError / ZeroDivisionError — catches numerical
+            # blowups across schemes uniformly. Deliberately NOT
+            # catching AttributeError: a typo like `self.foo` inside
+            # a scheme's `tilted_pvalue` body should surface as a
+            # stack trace, not silently turn every sample into NaN.
+            # The hasattr() pre-check above covers the "scheme has
+            # no method at all" case loudly.
             out[i] = np.nan
     return out
 

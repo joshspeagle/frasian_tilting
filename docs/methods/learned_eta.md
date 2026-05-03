@@ -199,22 +199,27 @@ verifies in `tests/properties/test_loss_diff.py`.
 - **Validity vs distribution properness — known gap.** The
   per-sample validity criterion (`tilted_pvalue` returns a finite
   scalar in `[0, 1]`) checks the p-value output, not the underlying
-  tilted distribution being a proper CDF. The two registered
-  schemes use different mechanisms to surface impropriety:
-  - `power_law`: the numpy `tilted_pvalue` raises
-    `TiltingDomainError` when `denom = 1 − η(1−w) ≤ 0`; the torch
-    port `clamp(denom, min=1e-6)`s and lets the resulting p-value
-    fail the `[0, 1]` validity test (the clamp keeps things finite
-    but pushes a moral-but-not-physical p-value through, which the
-    range check then catches).
-  - `ot`: both numpy and torch raise / return NaN explicitly when
-    η is outside `[0, 1]` (the admissible range).
-  A future scheme whose closed-form `tilted_pvalue` returns a
-  finite-in-[0,1] value despite an improper tilted distribution
+  tilted distribution being a proper CDF. There is a deliberate
+  numpy/torch split in the registered schemes:
+  - **Numpy** `tilted_pvalue` (used by the validity helper to label
+    Head B's BCE) **raises** `TiltingDomainError` for invalid η —
+    `power_law` when `1 − η(1−w) ≤ 0`, `ot` when `η ∉ [0, 1]`.
+    `compute_pvalues_per_sample` catches and writes NaN; the
+    validity mask drops the slot.
+  - **Torch** ports (used by Head A's width loss for autograd)
+    instead `clamp(denom or s_t, min=1e-6)` so the loss surface
+    stays smooth and gradient-bearing past the boundary. Without
+    this, an EtaNet initialised outside the admissible region
+    produces 100 % NaN loss and never recovers (verified for OT
+    during training). The validity helper independently labels
+    Head B correctly because it uses the numpy path.
+  A future scheme whose closed-form numpy `tilted_pvalue` returns
+  a finite-in-[0,1] value despite an improper tilted distribution
   could pass validity while encoding a bogus η range. Mitigation:
-  every newly-registered scheme should ship a per-scheme audit
-  test asserting that `tilted_pvalue` returns NaN/raises across
-  its declared `admissible_range` complement; the end-to-end
+  every newly-registered scheme must ship a per-scheme audit
+  test (`tests/regression/test_scheme_improper_returns_nan.py`)
+  asserting `compute_pvalues_per_sample` returns NaN across the
+  declared `admissible_range` complement; the end-to-end
   calibration regression on a trained checkpoint catches any miss
   via empirical coverage drift.
 - **Undertrained checkpoint at conflict.** The boundary penalty
@@ -282,9 +287,12 @@ verifies in `tests/properties/test_loss_diff.py`.
 - `is_pair_valid` is per-scalar (not per-grid) and admits values
   in `[-1e-9, 1+1e-9]` to absorb FP rounding. NaN / ±Inf / values
   outside that slack are invalid.
-- `OTTilting.tilted_pvalue` raises `TiltingDomainError` for
-  `eta ∉ [0, 1]`; `ot_tilted_pvalue_torch` returns NaN per-element
-  on the same input. The validity mask treats both as invalid.
+- `OTTilting.tilted_pvalue` (numpy) raises `TiltingDomainError`
+  for `eta ∉ [0, 1]`; `ot_tilted_pvalue_torch` clamps `s_t` to
+  keep the loss surface differentiable past the boundary instead
+  (the validity helper uses the numpy path so labels are correct
+  regardless). Same dual mechanism for `power_law`. Audited per-
+  scheme in `tests/regression/test_scheme_improper_returns_nan.py`.
 - `Prior.fingerprint()` and `Model.fingerprint()` are tuples; for
   every concrete (model, prior, θ-distribution) pair in the
   framework, `a == b ⟺ a.fingerprint() == b.fingerprint()`.
@@ -389,9 +397,12 @@ Headline:
 - **Conflict band (|θ|≥3)**: learned is ~20–30 % narrower than the
   `numerical` Dynamic selector *and* narrower than bare WALDO.
 - **Low conflict (|θ|≤1)**: learned is ~10 % wider than the
-  `numerical` selector (which is post-selection-narrow but
-  marginally undercovers; the calibrated learned cell trades
-  width back for nominal coverage).
+  `numerical` Dynamic selector. (Both are calibrated by
+  construction — η depends only on θ; the static `NumericalEta`-
+  `Selector` is the one that undercovers via post-selection
+  inference. The learned cell trades width back at low conflict
+  in exchange for the smooth η(θ) curve that prevents the legacy
+  selector's kinky width inflation at high conflict.)
 - **Calibration**: nominal at every θ_true within 3·MC_SE on the
   L3 calibration regression at the trained w (α=0.05).
 

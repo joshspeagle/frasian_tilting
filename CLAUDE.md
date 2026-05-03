@@ -192,8 +192,12 @@ power_law[numerical]        3.35   3.50   3.92   4.53   5.23   ← legacy: infla
 power_law[learned]          3.67   3.67   3.67   3.71   3.80   ← calibrated AND ≤ Wald
 ```
 
-All learned cells calibrated within MC noise at α∈{0.05, 0.10, 0.20}.
-See `docs/methods/learned_eta.md` for the full method brief.
+The headline table is for `power_law` only. `ot[learned]` is wired
+into `default_tiltings()` and runs through the coverage/width
+experiments, but the OT smoke checkpoint is undertrained relative
+to power_law (Head B accuracy ~0.67 on the v0_smoke; train a v1
+checkpoint for production-grade OT). See
+`docs/methods/learned_eta.md` for the full method brief.
 
 ## Test Statistics (status)
 
