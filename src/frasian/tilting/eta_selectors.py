@@ -266,3 +266,117 @@ class DynamicNumericalEtaSelector:
         else:
             cached_grid, cached_eta = cached
         return np.interp(abs_delta_grid, cached_grid, cached_eta)
+
+
+@dataclass
+class LearnedDynamicEtaSelector:
+    """Per-θ varying η* via a trained `LearnedArtifact`.
+
+    Replaces the inner `NumericalEtaSelector.select_grid` with a
+    direct neural-network lookup. The artifact's MLP is trained to
+    minimise the **dynamic-procedure** loss directly (e.g. integrated
+    CI width `∫ p_dyn(θ; D, η) dθ`), instead of the static-per-D
+    width that `NumericalEtaSelector` minimises pointwise. The
+    learned η*(|Δ|; w) curve is smooth and monotone by architectural
+    construction (positive-weight ReLU pathway), avoiding the
+    lower-clamp kink that inflates dynamic-CI widths at conflict.
+
+    Calibration is preserved by the same argument as
+    `DynamicNumericalEtaSelector`: η depends only on θ (and `w`),
+    never on D, so the WALDO p-value at fixed η is U[0,1] under H0
+    and the dynamic CI hits 1-α coverage exactly.
+
+    α handling
+    ----------
+    The MLP architecture is α-agnostic; α is a property of the
+    *checkpoint*, not of the model:
+      - `alpha_mode = "marginalised"`: trained on an α-independent
+        loss (integrated-p or CD-variance). Selector ignores its
+        `alpha` argument; valid at any α.
+      - `alpha_mode = "fixed_<α>"`: trained on the static CI width
+        at that specific α. Selector verifies the inference α
+        matches and raises if it doesn't.
+
+    Scheme compatibility
+    --------------------
+    The artifact records the scheme it was trained for. The selector
+    raises if a different scheme is passed at inference time;
+    retrain to use a different scheme.
+
+    Caching
+    -------
+    `select_grid` calls `artifact.predict` directly with no coarse
+    grid + interpolate step (the MLP itself is the dense lookup),
+    so no per-(w, α) cache is needed beyond the artifact load.
+    """
+
+    artifact: object  # MonotonicEtaArtifact (avoid hard import here)
+    name: str = "learned_dynamic"
+    sigma: float = 1.0
+    mu0: float = 0.0
+    is_dynamic: bool = True
+    _loaded: bool = field(default=False, init=False, repr=False, compare=False)
+
+    def _ensure_loaded(self) -> None:
+        if not self._loaded:
+            self.artifact.load()
+            self._loaded = True
+
+    def _check_scheme(self, scheme: TiltingScheme) -> None:
+        meta = self.artifact.metadata
+        trained_scheme = meta.get("scheme")
+        if trained_scheme is None:
+            return
+        if scheme.name != trained_scheme:
+            from .._errors import MissingArtifactError
+            raise MissingArtifactError(
+                f"{self.artifact.name} trained for scheme={trained_scheme!r}, "
+                f"but inference scheme={scheme.name!r}; retrain or use a "
+                f"different artifact."
+            )
+
+    def _check_alpha(self, alpha: float) -> None:
+        meta = self.artifact.metadata
+        mode = meta.get("alpha_mode", "marginalised")
+        if mode == "marginalised":
+            return
+        if isinstance(mode, str) and mode.startswith("fixed_"):
+            trained_alpha = float(mode[len("fixed_"):])
+            if abs(alpha - trained_alpha) > 1e-9:
+                from .._errors import MissingArtifactError
+                raise MissingArtifactError(
+                    f"{self.artifact.name} trained at alpha={trained_alpha}, "
+                    f"but inference alpha={alpha}; retrain or use the "
+                    f"marginalised artifact."
+                )
+
+    def select(self, context: TiltingContext, scheme: TiltingScheme,
+               *, statistic: TestStatistic) -> float:
+        """Single-context η. Convenience for non-dynamic callers."""
+        self._ensure_loaded()
+        self._check_scheme(scheme)
+        self._check_alpha(context.alpha)
+        out = self.select_grid(
+            np.asarray([context.abs_delta]), scheme,
+            statistic=statistic, w=context.w, alpha=context.alpha,
+        )
+        return float(out[0])
+
+    def select_grid(self, abs_delta_grid, scheme: TiltingScheme,
+                    *, statistic: TestStatistic, w: float, alpha: float):
+        """Per-θ η* lookup via the trained MLP.
+
+        Builds a `(N, 2)` `[w, |Δ'|]` feature matrix, calls
+        `artifact.predict` to get `η'`, then `eta_inverse` to recover η.
+        """
+        self._ensure_loaded()
+        self._check_scheme(scheme)
+        self._check_alpha(alpha)
+
+        from ..learned.transforms import delta_transform, eta_inverse
+
+        ad = np.asarray(abs_delta_grid, dtype=np.float64)
+        delta_prime = delta_transform(ad)
+        x = np.column_stack([np.full_like(delta_prime, float(w)), delta_prime])
+        eta_prime = self.artifact.predict(x)
+        return eta_inverse(scheme.name, eta_prime, w)

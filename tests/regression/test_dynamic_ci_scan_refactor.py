@@ -116,8 +116,19 @@ def _reference_inline_dynamic_ci(
 
 @pytest.mark.L2
 @pytest.mark.parametrize("scheme_factory", [PowerLawTilting, OTTilting])
-@pytest.mark.parametrize("D", [-2.0, 0.0, 1.5, 4.0])
-@pytest.mark.parametrize("sigma0", [0.5, 1.0, 2.0])
+@pytest.mark.parametrize("D, sigma0", [
+    # Standard sweep
+    (-2.0, 0.5), (-2.0, 1.0), (-2.0, 2.0),
+    (0.0, 0.5),  (0.0, 1.0),  (0.0, 2.0),
+    (1.5, 0.5),  (1.5, 1.0),  (1.5, 2.0),
+    (4.0, 0.5),  (4.0, 1.0),  (4.0, 2.0),
+    # Extreme conflict — exercises multi-region branch when applicable.
+    # At (D=8, σ0=2.0): w=0.8, |Δ|=0.2·8=1.6; high-conflict territory
+    # where the dynamic p-value can become multimodal.
+    (8.0, 2.0),
+    # At (D=6, σ0=0.5): w=0.2, |Δ|=0.8·6=4.8; very high conflict.
+    (6.0, 0.5),
+])
 def test_extracted_helper_matches_inline(scheme_factory, D, sigma0):
     """`dynamic_ci_scan` produces byte-identical regions to the reference."""
     sigma, mu0, alpha = 1.0, 0.0, 0.05

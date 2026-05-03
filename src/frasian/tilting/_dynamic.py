@@ -1,4 +1,4 @@
-"""Shared helper for dynamic-η-per-θ CI inversion.
+"""Shared helper for dynamic-η-per-θ CI inversion (Normal-Normal sandbox).
 
 The dynamic procedure: at each θ in a fine scan, look up
 η = η*(|Δ_θ|) from a pre-computed coarse grid, evaluate the tilted
@@ -6,16 +6,22 @@ p-value at that θ with that θ-specific η, then find α-crossings to
 delineate the CI regions. Calibration is automatic because η depends
 only on θ (not on D).
 
-The algorithm itself is scheme-agnostic; only the `tilted_pvalue`
-callback is scheme-specific. Concrete `TiltingScheme`s
-(`PowerLawTilting`, `OTTilting`, ...) delegate
+The algorithm itself is scheme-agnostic *given the |Δ| coordinate is
+the Normal-Normal scaled prior-data conflict* `|Δ| = (1-w)|μ₀-θ|/σ`;
+only the `tilted_pvalue` callback is scheme-specific. Concrete
+`TiltingScheme`s (`PowerLawTilting`, `OTTilting`, ...) delegate
 `dynamic_tilted_confidence_interval` to `dynamic_ci_scan` here,
 passing in their own `tilted_pvalue` closure.
 
+Future non-Gaussian schemes (e.g. on a `BernoulliModel`) would need
+either a generalisation of the `|Δ|`-formula (`abs_delta(theta)`
+callback would have to be parametrised) or a sibling helper. The
+current contract bakes in the Normal-Normal sandbox.
+
 Originally duplicated across `power_law.py` and `ot.py`; extracted
 here so the algorithm has a single source of truth and so future
-schemes (`fisher_rao`, `mixture`) plug in without re-implementing the
-scan.
+Normal-Normal schemes (`fisher_rao`, `mixture`) plug in without
+re-implementing the scan.
 """
 
 from __future__ import annotations

@@ -40,6 +40,10 @@ dev = [
     "ipython",
     "jupyter",
 ]
+ml = [
+    "torch>=2.0",
+    "h5py>=3.8",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
