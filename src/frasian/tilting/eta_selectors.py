@@ -510,6 +510,17 @@ class LearnedDynamicEtaSelector:
                 f"per-experiment and cannot be reused across w values. "
                 f"Train a new checkpoint for this prior/likelihood pair."
             )
+        # Mirror the training-time degenerate-w guard so that hand-
+        # edited or out-of-band checkpoints can't slip through with
+        # w → 0 / w → 1 (where the torch port's denom-clamp distorts
+        # silently).
+        _W_EPS = 1e-3
+        if not (_W_EPS < w < 1.0 - _W_EPS):
+            raise MissingArtifactError(
+                f"{self.artifact.name}: inference w={w:.6f} is outside "
+                f"({_W_EPS}, {1.0 - _W_EPS}); the torch port's "
+                f"denom-clamp distorts silently in this regime."
+            )
 
     def select(self, context: TiltingContext, scheme: TiltingScheme,
                *, statistic: TestStatistic) -> float:

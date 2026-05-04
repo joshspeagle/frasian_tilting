@@ -168,6 +168,7 @@ def _width_loss(
                 f"{config.scheme_name}/{config.statistic_name}; "
                 f"consider float64 or tighter η bounds.",
                 RuntimeWarning,
+                stacklevel=2,
             )
     theta_grid_b = theta_grid_t.unsqueeze(0).expand(B, G)         # (B, G)
 
@@ -281,10 +282,15 @@ def _lambda_schedule(
     """Linear ramp from 0 to ``lambda_max`` over the first
     ``warmup_frac`` of epochs, then constant.
 
-    λ(0) = 0 (Head B trains in isolation for epoch 0; Head A's
-    width loss has no boundary signal yet); λ(warmup_epochs) =
-    λ_max; λ(epoch ≥ warmup_epochs) = λ_max constant.
+    Special case: ``warmup_frac == 0`` returns ``lambda_max``
+    immediately (no warmup); the user explicitly opted out.
+
+    Otherwise: λ(0) = 0 (Head B trains in isolation for epoch 0;
+    Head A's width loss has no boundary signal yet);
+    λ(warmup_epochs) = λ_max; λ(epoch ≥ warmup_epochs) = λ_max.
     """
+    if warmup_frac <= 0.0:
+        return float(lambda_max)
     warmup_epochs = max(1, int(round(warmup_frac * n_epochs)))
     if epoch >= warmup_epochs:
         return float(lambda_max)
@@ -561,6 +567,7 @@ def fit_eta_artifact(
                     warnings.warn(
                         f"[width loss] step {step} skipped: {e}",
                         RuntimeWarning,
+                        stacklevel=2,
                     )
                 continue
             penalty = _boundary_penalty(
@@ -590,6 +597,7 @@ def fit_eta_artifact(
                 f"BCE is class-degenerate; widen `eta_explore_box` for "
                 f"this scheme.",
                 RuntimeWarning,
+                stacklevel=2,
             )
 
         # Validation — Head A's loss on the frozen (θ_val, D_val) set.

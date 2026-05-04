@@ -747,7 +747,7 @@ def test_width_loss_averages_over_d_batch(bootstrapped_registry):
         prior=NormalDistribution(0.0, 1.0),
         model=NormalNormalModel(sigma=1.0),
         theta_distribution=UniformThetaDistribution(low=-5.0, high=5.0),
-        n_grid=51, n_lhs=10, eta_explore_box=(-2.0, 2.0),
+        n_grid=51, n_lhs=20, eta_explore_box=(-2.0, 2.0),
     )
     eta_net = EtaNet(theta_dim=1)
     theta_grid_t = torch.as_tensor(cfg.theta_grid, dtype=torch.float32)
@@ -774,8 +774,8 @@ def test_width_loss_averages_over_d_batch(bootstrapped_registry):
     )
 
 
-@pytest.mark.L1
-@pytest.mark.properties
+@pytest.mark.L3
+@pytest.mark.slow
 def test_phase_e_selector_rejects_cross_experiment_use(
     bootstrapped_registry, tmp_path,
 ):
@@ -854,8 +854,8 @@ def test_lambda_schedule_starts_at_zero():
                               warmup_frac=0.3) == 10.0
 
 
-@pytest.mark.L1
-@pytest.mark.properties
+@pytest.mark.L3
+@pytest.mark.slow
 def test_alpha_required_to_be_none_for_marginalised_loss(
     bootstrapped_registry, tmp_path,
 ):

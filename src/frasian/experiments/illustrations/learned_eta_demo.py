@@ -37,9 +37,11 @@ from frasian.tilting.power_law import PowerLawTilting
 
 def _ensure_phase_e_checkpoint(smoke: bool) -> Path:
     """Locate or train a Phase E checkpoint (format v2)."""
+    # Anchor at project root so paths don't depend on CWD.
+    project_root = Path(__file__).resolve().parents[4]
     candidates = [
-        Path("artifacts/learned_eta_canonical_normal_normal_powerlaw_v0_smoke.pt"),
-        Path("artifacts/learned_eta_canonical_normal_normal_powerlaw_v1.pt"),
+        project_root / "artifacts" / "learned_eta_canonical_normal_normal_powerlaw_v0_smoke.pt",
+        project_root / "artifacts" / "learned_eta_canonical_normal_normal_powerlaw_v1.pt",
     ]
     for c in candidates:
         if c.exists():
@@ -50,7 +52,7 @@ def _ensure_phase_e_checkpoint(smoke: bool) -> Path:
     from frasian.learned.training.sampling import ExperimentConfig
     from frasian.learned.training.train import fit_eta_artifact
 
-    cfg_path = Path("experiments/canonical_normal_normal_powerlaw.yaml")
+    cfg_path = project_root / "experiments" / "canonical_normal_normal_powerlaw.yaml"
     cfg = ExperimentConfig.from_yaml(cfg_path)
     if smoke:
         cfg = ExperimentConfig(
@@ -60,7 +62,7 @@ def _ensure_phase_e_checkpoint(smoke: bool) -> Path:
             n_grid=51, n_lhs=512, eta_explore_box=cfg.eta_explore_box,
             seed=cfg.seed,
         )
-    out = Path("artifacts/learned_eta_canonical_normal_normal_powerlaw_v0_smoke.pt")
+    out = project_root / "artifacts" / "learned_eta_canonical_normal_normal_powerlaw_v0_smoke.pt"
     fit_eta_artifact(
         config=cfg, out_path=out,
         n_epochs=10 if smoke else 30,

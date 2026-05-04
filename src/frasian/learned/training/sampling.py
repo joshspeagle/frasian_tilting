@@ -239,8 +239,16 @@ class ExperimentConfig:
             )
         if self.n_grid < 3:
             raise ValueError(f"n_grid must be >= 3, got {self.n_grid}")
-        if self.n_lhs < 1:
-            raise ValueError(f"n_lhs must be >= 1, got {self.n_lhs}")
+        # n_lhs minimum: the training loop carves off ~10% for held-out
+        # validation, then iterates batch_size-sized minibatches. Below
+        # ~20 LHS samples the held-out set is degenerate and Head A
+        # trains on essentially nothing — refuse loudly.
+        if self.n_lhs < 20:
+            raise ValueError(
+                f"n_lhs must be >= 20 (training carves off 10% for "
+                f"held-out validation; below this the loop trains on "
+                f"essentially nothing); got {self.n_lhs}."
+            )
         lo, hi = self.eta_explore_box
         if not (np.isfinite(lo) and np.isfinite(hi) and hi > lo):
             raise ValueError(

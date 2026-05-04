@@ -85,9 +85,12 @@ def _make_learned_selector(scheme_name: str):
             f"`_PHASE_E_CHECKPOINT_FOR_SCHEME` and a YAML under "
             f"`experiments/`."
         )
+    # Anchor at the project root so resolution doesn't depend on CWD;
+    # `_default_cells.py` lives at `<root>/src/frasian/`.
+    project_root = Path(__file__).resolve().parents[2]
     candidates = [
-        Path(f"artifacts/learned_eta_{config_name}_v1.pt"),
-        Path(f"artifacts/learned_eta_{config_name}_v0_smoke.pt"),
+        project_root / "artifacts" / f"learned_eta_{config_name}_v1.pt",
+        project_root / "artifacts" / f"learned_eta_{config_name}_v0_smoke.pt",
     ]
     chosen = next((c for c in candidates if c.exists()), None)
     if chosen is None:
