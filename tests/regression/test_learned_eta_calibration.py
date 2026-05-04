@@ -56,10 +56,20 @@ def _checkpoint_path(scheme_label: str) -> Path:
 @pytest.mark.L3
 @pytest.mark.slow
 @pytest.mark.parametrize("scheme_label", ["powerlaw", "ot"])
-@pytest.mark.parametrize("theta_true", [-2.0, 0.0, 2.0])
+@pytest.mark.parametrize(
+    "theta_true",
+    [-4.0, -3.0, -2.0, 0.0, 2.0, 3.0, 4.0],
+)
 def test_calibration_at_alpha_05(scheme_label, theta_true):
     """At α=0.05 and the trained w, empirical coverage matches nominal
-    0.95 within 3·MC_SE for both power_law and ot smoke checkpoints."""
+    0.95 within 3·MC_SE for both power_law and ot smoke checkpoints.
+
+    Covers the full θ range from non-conflict (θ=0) through the
+    conflict band (|θ|=3, 4) — pins the theoretical guarantee
+    (η depends only on θ → p_dyn(θ_0; D, η_φ) is U[0,1] under H0)
+    against perturbations from the runtime safety clamp and the
+    symmetric branch-averaging in the selector's `select_grid`.
+    """
     alpha = 0.05
     n_reps = 300
 
