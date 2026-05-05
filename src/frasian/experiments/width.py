@@ -21,7 +21,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
-from numpy.typing import NDArray
 
 from .._registry import register_experiment
 from ..config import Config
@@ -55,13 +54,16 @@ class WidthExperiment:
             },
             rng_seed=config.seed + 1,  # different RNG stream from coverage
             metadata={
-                "sigma": self.sigma, "mu0": self.mu0,
-                "alpha": config.alpha, "n_reps": config.n_reps,
+                "sigma": self.sigma,
+                "mu0": self.mu0,
+                "alpha": config.alpha,
+                "n_reps": config.n_reps,
             },
         )
 
-    def run_cell(self, ctx: ExperimentContext, tilting: TiltingScheme,
-                 statistic: TestStatistic) -> RawResult:
+    def run_cell(
+        self, ctx: ExperimentContext, tilting: TiltingScheme, statistic: TestStatistic
+    ) -> RawResult:
         theta_grid = ctx.grid["theta_grid"]
         w_grid = ctx.grid["w_grid"]
         alpha = ctx.config.alpha
@@ -70,8 +72,12 @@ class WidthExperiment:
         model = NormalNormalModel(sigma=self.sigma)
         rng = np.random.default_rng(ctx.rng_seed)
         raw = generate_normal_D_samples(
-            name="width", model=model, theta_grid=theta_grid,
-            n_reps=n_reps, rng=rng, seed=ctx.rng_seed,
+            name="width",
+            model=model,
+            theta_grid=theta_grid,
+            n_reps=n_reps,
+            rng=rng,
+            seed=ctx.rng_seed,
         )
 
         n_theta = theta_grid.size
@@ -91,7 +97,11 @@ class WidthExperiment:
                     D = raw.D[i, k]
                     try:
                         regions = tilting.confidence_regions(
-                            alpha, np.asarray([D]), model, prior, statistic,
+                            alpha,
+                            np.asarray([D]),
+                            model,
+                            prior,
+                            statistic,
                         )
                     except NotImplementedError:
                         supported = False
@@ -125,8 +135,7 @@ class WidthExperiment:
                 "n_reps": n_reps,
                 "sigma": self.sigma,
                 "mu0": self.mu0,
-                "selector": getattr(getattr(tilting, "selector", None),
-                                    "name", None),
+                "selector": getattr(getattr(tilting, "selector", None), "name", None),
             },
         )
 

@@ -34,7 +34,10 @@ class TestWaldoAcceptanceRegionClosure:
         theta_arr = np.array([1.0, 5.0, 10.0], dtype=np.float64)
 
         D_lo, D_hi = WaldoStatistic().acceptance_region(
-            alpha, theta_arr, model, prior,
+            alpha,
+            theta_arr,
+            model,
+            prior,
         )
         D_lo = np.atleast_1d(np.asarray(D_lo, dtype=np.float64))
         D_hi = np.atleast_1d(np.asarray(D_hi, dtype=np.float64))
@@ -45,8 +48,7 @@ class TestWaldoAcceptanceRegionClosure:
         # interval centred on 10.0 — caught here.
         for i, theta_i in enumerate(theta_arr):
             assert D_lo[i] < theta_i < D_hi[i], (
-                f"D_lo[{i}]={D_lo[i]} < theta={theta_i} < "
-                f"D_hi[{i}]={D_hi[i]} failed"
+                f"D_lo[{i}]={D_lo[i]} < theta={theta_i} < " f"D_hi[{i}]={D_hi[i]} failed"
             )
 
     def test_acceptance_region_strictly_monotone_in_theta(self):
@@ -57,18 +59,17 @@ class TestWaldoAcceptanceRegionClosure:
         theta_arr = np.array([1.0, 5.0, 10.0], dtype=np.float64)
 
         D_lo, D_hi = WaldoStatistic().acceptance_region(
-            alpha, theta_arr, model, prior,
+            alpha,
+            theta_arr,
+            model,
+            prior,
         )
         D_lo = np.atleast_1d(np.asarray(D_lo, dtype=np.float64))
         D_hi = np.atleast_1d(np.asarray(D_hi, dtype=np.float64))
 
         # Monotone: theta sweeping right => D_lo, D_hi both sweep right.
-        assert D_lo[0] < D_lo[1] < D_lo[2], (
-            f"D_lo not strictly increasing: {D_lo!r}"
-        )
-        assert D_hi[0] < D_hi[1] < D_hi[2], (
-            f"D_hi not strictly increasing: {D_hi!r}"
-        )
+        assert D_lo[0] < D_lo[1] < D_lo[2], f"D_lo not strictly increasing: {D_lo!r}"
+        assert D_hi[0] < D_hi[1] < D_hi[2], f"D_hi not strictly increasing: {D_hi!r}"
 
     def test_acceptance_region_nontrivial_gap_across_theta(self):
         """The gap between first/last D_hi must be > 5.0.
@@ -84,7 +85,10 @@ class TestWaldoAcceptanceRegionClosure:
         theta_arr = np.array([1.0, 5.0, 10.0], dtype=np.float64)
 
         D_lo, D_hi = WaldoStatistic().acceptance_region(
-            alpha, theta_arr, model, prior,
+            alpha,
+            theta_arr,
+            model,
+            prior,
         )
         D_lo = np.atleast_1d(np.asarray(D_lo, dtype=np.float64))
         D_hi = np.atleast_1d(np.asarray(D_hi, dtype=np.float64))

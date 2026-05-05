@@ -32,10 +32,7 @@ from frasian.tilting.eta_selectors import LearnedDynamicEtaSelector
 from frasian.tilting.identity import IdentityTilting
 from frasian.tilting.power_law import PowerLawTilting
 
-
-_CKPT = Path(
-    "artifacts/learned_eta_canonical_normal_normal_powerlaw_v0_smoke.pt"
-)
+_CKPT = Path("artifacts/learned_eta_canonical_normal_normal_powerlaw_v0_smoke.pt")
 
 
 def _config(w_trained: float) -> Config:
@@ -57,7 +54,7 @@ class TestLearnedEtaPipelineEndToEnd:
         cfg_meta = artifact.metadata["experiment_config"]
         sigma = float(cfg_meta["model_fingerprint"][1])
         sigma0 = float(cfg_meta["prior_fingerprint"][2])
-        w_trained = sigma0 ** 2 / (sigma ** 2 + sigma0 ** 2)
+        w_trained = sigma0**2 / (sigma**2 + sigma0**2)
 
         selector = LearnedDynamicEtaSelector(artifact=artifact)
         tiltings = [
@@ -70,20 +67,21 @@ class TestLearnedEtaPipelineEndToEnd:
         cfg = _config(w_trained)
         run_experiment(
             experiment=experiment,
-            tiltings=tiltings, statistics=statistics,
-            config=cfg, out_dir=tmp_path,
+            tiltings=tiltings,
+            statistics=statistics,
+            config=cfg,
+            out_dir=tmp_path,
         )
 
         manifest = json.loads((tmp_path / "manifest.json").read_text())
         assert manifest["experiment"] == "coverage"
         ok = [c for c in manifest["cells"] if c["status"] == "ok"]
         assert len(ok) == 2  # identity, power_law[learned_dynamic]
-        learned_cell = next(
-            c for c in ok if c["tilting"].startswith("power_law")
-        )
+        learned_cell = next(c for c in ok if c["tilting"].startswith("power_law"))
         assert "learned_dynamic" in learned_cell["tilting"]
 
         from frasian.simulation.storage import load_result
+
         result = load_result(tmp_path / learned_cell["cache_path"])
         cov = result.arrays["coverage"]
         assert cov.shape == (cfg.theta_grid.n_points, cfg.w_grid.n_points)
@@ -93,17 +91,19 @@ class TestLearnedEtaPipelineEndToEnd:
         assert (tmp_path / "coverage_rate.csv").exists()
 
     def test_env_var_default_switch(
-        self, tmp_path: Path, monkeypatch, bootstrapped_registry,
+        self,
+        tmp_path: Path,
+        monkeypatch,
+        bootstrapped_registry,
     ):
         """``FRASIAN_DEFAULT_DYNAMIC_ETA=learned`` selects the Phase E selector."""
         if not _CKPT.exists():
             pytest.skip(f"checkpoint missing at {_CKPT}; train first")
-        ot_ckpt = Path(
-            "artifacts/learned_eta_canonical_normal_normal_ot_v0_smoke.pt"
-        )
+        ot_ckpt = Path("artifacts/learned_eta_canonical_normal_normal_ot_v0_smoke.pt")
         if not ot_ckpt.exists():
             pytest.skip("ot smoke checkpoint missing; train first")
         from frasian._default_cells import default_tiltings
+
         monkeypatch.setenv("FRASIAN_DEFAULT_DYNAMIC_ETA", "learned")
         tiltings = default_tiltings()
         # identity + power_law[learned_dynamic] + ot[learned_dynamic]

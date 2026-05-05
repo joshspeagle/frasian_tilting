@@ -29,7 +29,6 @@ from __future__ import annotations
 from typing import Any, Callable
 
 import numpy as np
-from numpy.typing import NDArray
 from scipy import optimize
 
 
@@ -97,7 +96,9 @@ def dynamic_ci_scan(
     ad_max = float(abs_delta_theta.max()) + 1e-6
     coarse_grid = np.linspace(0.0, ad_max, coarse_n)
     select_kwargs = dict(
-        statistic=_NamedStatistic(statistic_name), w=w, alpha=alpha,
+        statistic=_NamedStatistic(statistic_name),
+        w=w,
+        alpha=alpha,
     )
     # Phase E selectors accept inference-time prior + model
     # fingerprints to enforce strict cross-experiment refusal.
@@ -106,6 +107,9 @@ def dynamic_ci_scan(
     # Avoids try/except TypeError which would swallow real bugs in
     # the selector body (skeptic E pre-PR review #6).
     import inspect as _inspect
+    from collections.abc import Mapping
+
+    _params: Mapping[str, _inspect.Parameter]
     try:
         _sig = _inspect.signature(eta_selector.select_grid)
         _params = _sig.parameters
@@ -116,35 +120,37 @@ def dynamic_ci_scan(
     if prior_fingerprint is not None and "prior_fingerprint" in _params:
         select_kwargs["prior_fingerprint"] = prior_fingerprint
     coarse_eta = eta_selector.select_grid(
-        coarse_grid, scheme, **select_kwargs,
+        coarse_grid,
+        scheme,
+        **select_kwargs,
     )
     eta_at_theta = np.interp(abs_delta_theta, coarse_grid, coarse_eta)
 
     p_theta = np.empty_like(theta_grid)
     for i in range(theta_grid.size):
-        p_theta[i] = float(tilted_pvalue_fn(
-            float(theta_grid[i]), float(eta_at_theta[i])
-        ))
+        p_theta[i] = float(tilted_pvalue_fn(float(theta_grid[i]), float(eta_at_theta[i])))
 
     diff = p_theta - alpha
     crossings: list[float] = []
     for i in range(theta_grid.size - 1):
         if diff[i] * diff[i + 1] < 0.0:
+
             def _f(theta_val: float, _i=i) -> float:
                 ad = abs((1.0 - w) * (mu0 - theta_val) / sigma)
                 eta = float(np.interp(ad, coarse_grid, coarse_eta))
                 return float(tilted_pvalue_fn(theta_val, eta)) - alpha
+
             try:
                 cross = optimize.brentq(
-                    _f, theta_grid[i], theta_grid[i + 1], xtol=1e-9,
+                    _f,
+                    theta_grid[i],
+                    theta_grid[i + 1],
+                    xtol=1e-9,
                 )
                 crossings.append(float(cross))
             except ValueError:
                 t = diff[i] / (diff[i] - diff[i + 1])
-                crossings.append(
-                    float(theta_grid[i] + t * (theta_grid[i + 1]
-                                                - theta_grid[i]))
-                )
+                crossings.append(float(theta_grid[i] + t * (theta_grid[i + 1] - theta_grid[i])))
 
     regions: list[tuple[float, float]] = []
     if not crossings:

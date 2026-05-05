@@ -15,10 +15,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
-from typing import Any, ClassVar, Mapping, Protocol, Tuple, runtime_checkable
+from typing import Any, ClassVar, Protocol, runtime_checkable
 
 import numpy as np
 from numpy.random import Generator
@@ -41,8 +42,8 @@ class ThetaDistribution(Protocol):
     name: str
 
     def sample(self, n: int, rng: Generator) -> NDArray[np.float64]: ...
-    def support(self) -> Tuple[float, float]: ...
-    def fingerprint(self) -> tuple: ...
+    def support(self) -> tuple[float, float]: ...
+    def fingerprint(self) -> tuple[Any, ...]: ...
 
 
 @dataclass(frozen=True)
@@ -60,23 +61,17 @@ class UniformThetaDistribution:
 
     def __post_init__(self) -> None:
         if not (np.isfinite(self.low) and np.isfinite(self.high)):
-            raise ValueError(
-                f"low and high must be finite; got ({self.low}, {self.high})"
-            )
+            raise ValueError(f"low and high must be finite; got ({self.low}, {self.high})")
         if self.high <= self.low:
-            raise ValueError(
-                f"high must exceed low; got ({self.low}, {self.high})"
-            )
+            raise ValueError(f"high must exceed low; got ({self.low}, {self.high})")
 
     def sample(self, n: int, rng: Generator) -> NDArray[np.float64]:
-        return rng.uniform(low=self.low, high=self.high, size=n).astype(
-            np.float64
-        )
+        return rng.uniform(low=self.low, high=self.high, size=n).astype(np.float64)
 
-    def support(self) -> Tuple[float, float]:
+    def support(self) -> tuple[float, float]:
         return (float(self.low), float(self.high))
 
-    def fingerprint(self) -> tuple:
+    def fingerprint(self) -> tuple[Any, ...]:
         return ("uniform", float(self.low), float(self.high))
 
 
@@ -126,17 +121,16 @@ def _build_prior_from_dict(d: Mapping[str, Any]) -> Prior:
     type_ = spec.pop("type")
     if type_ not in _PRIOR_ALLOWED_KWARGS:
         raise ValueError(
-            f"Unknown prior type {type_!r}; "
-            f"expected one of: {sorted(_PRIOR_ALLOWED_KWARGS)}"
+            f"Unknown prior type {type_!r}; " f"expected one of: {sorted(_PRIOR_ALLOWED_KWARGS)}"
         )
-    kwargs = _filter_kwargs(
-        spec, _PRIOR_ALLOWED_KWARGS[type_], type_, "prior"
-    )
+    kwargs = _filter_kwargs(spec, _PRIOR_ALLOWED_KWARGS[type_], type_, "prior")
     if type_ == "normal":
         from ...models.distributions import NormalDistribution
+
         return NormalDistribution(**kwargs)
     if type_ == "beta":
         from ...models.distributions import BetaDistribution
+
         return BetaDistribution(**kwargs)
     raise AssertionError("unreachable")  # registry-checked above
 
@@ -147,17 +141,16 @@ def _build_model_from_dict(d: Mapping[str, Any]) -> Model:
     type_ = spec.pop("type")
     if type_ not in _MODEL_ALLOWED_KWARGS:
         raise ValueError(
-            f"Unknown model type {type_!r}; "
-            f"expected one of: {sorted(_MODEL_ALLOWED_KWARGS)}"
+            f"Unknown model type {type_!r}; " f"expected one of: {sorted(_MODEL_ALLOWED_KWARGS)}"
         )
-    kwargs = _filter_kwargs(
-        spec, _MODEL_ALLOWED_KWARGS[type_], type_, "model"
-    )
+    kwargs = _filter_kwargs(spec, _MODEL_ALLOWED_KWARGS[type_], type_, "model")
     if type_ == "normal_normal":
         from ...models.normal_normal import NormalNormalModel
+
         return NormalNormalModel(**kwargs)
     if type_ == "bernoulli":
         from ...models.bernoulli import BernoulliModel
+
         return BernoulliModel(**kwargs)
     raise AssertionError("unreachable")
 
@@ -175,10 +168,11 @@ def _build_theta_distribution_from_dict(
     cls = THETA_DISTRIBUTION_REGISTRY[type_]
     allowed = _THETA_DIST_ALLOWED_KWARGS.get(type_, frozenset(spec.keys()))
     kwargs = _filter_kwargs(spec, allowed, type_, "theta_distribution")
-    return cls(**kwargs)
+    instance: ThetaDistribution = cls(**kwargs)
+    return instance
 
 
-def _prior_to_dict(prior: Prior) -> dict:
+def _prior_to_dict(prior: Prior) -> dict[str, Any]:
     fp = prior.fingerprint()
     if fp[0] == "normal":
         return {"type": "normal", "loc": fp[1], "scale": fp[2]}
@@ -187,7 +181,7 @@ def _prior_to_dict(prior: Prior) -> dict:
     raise ValueError(f"Cannot serialise prior with fingerprint {fp!r}")
 
 
-def _model_to_dict(model: Model) -> dict:
+def _model_to_dict(model: Model) -> dict[str, Any]:
     fp = model.fingerprint()
     if fp[0] == "normal_normal":
         return {"type": "normal_normal", "sigma": fp[1]}
@@ -196,7 +190,7 @@ def _model_to_dict(model: Model) -> dict:
     raise ValueError(f"Cannot serialise model with fingerprint {fp!r}")
 
 
-def _theta_distribution_to_dict(td: ThetaDistribution) -> dict:
+def _theta_distribution_to_dict(td: ThetaDistribution) -> dict[str, Any]:
     fp = td.fingerprint()
     if fp[0] == "uniform":
         return {"type": "uniform", "low": fp[1], "high": fp[2]}
@@ -221,7 +215,7 @@ class ExperimentConfig:
     theta_distribution: ThetaDistribution
     n_grid: int = 401
     n_lhs: int = 10000
-    eta_explore_box: Tuple[float, float] = (-5.0, 5.0)
+    eta_explore_box: tuple[float, float] = (-5.0, 5.0)
     seed: int = 42
     name: str = ""
     description: str = ""
@@ -269,9 +263,7 @@ class ExperimentConfig:
         # up front rather than failing mid-training.
         scheme = _registry.tiltings[self.scheme_name]()
         statistic = _registry.statistics[self.statistic_name]()
-        if hasattr(statistic, "accepts_tilting") and not statistic.accepts_tilting(
-            scheme
-        ):
+        if hasattr(statistic, "accepts_tilting") and not statistic.accepts_tilting(scheme):
             raise ValueError(
                 f"statistic {self.statistic_name!r} does not accept "
                 f"tilting {self.scheme_name!r}. Pair the scheme with a "
@@ -290,7 +282,7 @@ class ExperimentConfig:
             )
         return np.linspace(lo, hi, self.n_grid)
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         """Round-trippable JSON-friendly serialisation.
 
         Includes both the constructor kwargs (so ``from_dict`` can
@@ -303,9 +295,7 @@ class ExperimentConfig:
             "statistic_name": self.statistic_name,
             "prior": _prior_to_dict(self.prior),
             "model": _model_to_dict(self.model),
-            "theta_distribution": _theta_distribution_to_dict(
-                self.theta_distribution
-            ),
+            "theta_distribution": _theta_distribution_to_dict(self.theta_distribution),
             "n_grid": self.n_grid,
             "n_lhs": self.n_lhs,
             "eta_explore_box": list(self.eta_explore_box),
@@ -315,23 +305,30 @@ class ExperimentConfig:
             # Convenience fingerprints for selector validation.
             "prior_fingerprint": list(self.prior.fingerprint()),
             "model_fingerprint": list(self.model.fingerprint()),
-            "theta_distribution_fingerprint": list(
-                self.theta_distribution.fingerprint()
-            ),
+            "theta_distribution_fingerprint": list(self.theta_distribution.fingerprint()),
         }
 
     @classmethod
-    def from_dict(cls, d: Mapping[str, Any]) -> "ExperimentConfig":
+    def from_dict(cls, d: Mapping[str, Any]) -> ExperimentConfig:
         # Strict allowlist on top-level keys so YAML typos (e.g. ``n_gird``)
         # surface as a loud error instead of being silently dropped to a
         # default. Fingerprint keys produced by ``to_dict`` are also
         # accepted (and ignored on reconstruction — they're round-trip
         # convenience metadata, not constructor inputs).
         allowed = {
-            "scheme_name", "statistic_name", "prior", "model",
-            "theta_distribution", "n_grid", "n_lhs", "eta_explore_box",
-            "seed", "name", "description",
-            "prior_fingerprint", "model_fingerprint",
+            "scheme_name",
+            "statistic_name",
+            "prior",
+            "model",
+            "theta_distribution",
+            "n_grid",
+            "n_lhs",
+            "eta_explore_box",
+            "seed",
+            "name",
+            "description",
+            "prior_fingerprint",
+            "model_fingerprint",
             "theta_distribution_fingerprint",
         }
         extras = set(d.keys()) - allowed
@@ -345,9 +342,7 @@ class ExperimentConfig:
             statistic_name=str(d["statistic_name"]),
             prior=_build_prior_from_dict(d["prior"]),
             model=_build_model_from_dict(d["model"]),
-            theta_distribution=_build_theta_distribution_from_dict(
-                d["theta_distribution"]
-            ),
+            theta_distribution=_build_theta_distribution_from_dict(d["theta_distribution"]),
             n_grid=int(d.get("n_grid", 401)),
             n_lhs=int(d.get("n_lhs", 10000)),
             eta_explore_box=tuple(d.get("eta_explore_box", (-5.0, 5.0))),
@@ -357,15 +352,14 @@ class ExperimentConfig:
         )
 
     @classmethod
-    def from_yaml(cls, path: Path) -> "ExperimentConfig":
+    def from_yaml(cls, path: Path) -> ExperimentConfig:
         try:
             import yaml
         except ImportError as e:
             raise RuntimeError(
-                "ExperimentConfig.from_yaml requires PyYAML; "
-                "install with `pip install pyyaml`."
+                "ExperimentConfig.from_yaml requires PyYAML; " "install with `pip install pyyaml`."
             ) from e
-        with open(path, "r") as f:
+        with open(path) as f:
             d = yaml.safe_load(f)
         # Allow YAML to use "scheme" / "statistic" as shorthand.
         if "scheme" in d and "scheme_name" not in d:
@@ -388,12 +382,11 @@ def lhs_1d(
     """
     lo, hi = theta_dist.support()
     if not (np.isfinite(lo) and np.isfinite(hi)):
-        raise ValueError(
-            f"lhs_1d requires a finitely-supported theta_dist; got ({lo}, {hi})."
-        )
+        raise ValueError(f"lhs_1d requires a finitely-supported theta_dist; got ({lo}, {hi}).")
     sampler = qmc.LatinHypercube(d=1, seed=seed)
-    u = sampler.random(n=n).reshape(-1)                          # (n,)
-    return (lo + u * (hi - lo)).astype(np.float64)
+    u = sampler.random(n=n).reshape(-1)  # (n,)
+    out: NDArray[np.float64] = (lo + u * (hi - lo)).astype(np.float64)
+    return out
 
 
 __all__ = [

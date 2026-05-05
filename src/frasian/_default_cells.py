@@ -56,6 +56,7 @@ def _resolve_dynamic_eta_mode() -> str:
     Default is `numerical`.
     """
     import os
+
     return os.environ.get("FRASIAN_DEFAULT_DYNAMIC_ETA", "numerical").lower()
 
 
@@ -74,6 +75,7 @@ def _make_learned_selector(scheme_name: str):
     ``python -m scripts.train_learned_eta --config <yaml>``.
     """
     from pathlib import Path
+
     from .learned.eta_artifact import EtaArtifact
     from .tilting.eta_selectors import LearnedDynamicEtaSelector
 
@@ -106,9 +108,13 @@ def _make_learned_selector(scheme_name: str):
     return LearnedDynamicEtaSelector(artifact=artifact)
 
 
-def default_tiltings(*, sigma: float = 1.0, mu0: float = 0.0,
-                     n_grid: int = 401, coarse_n: int = 25,
-                     ) -> list["TiltingScheme"]:
+def default_tiltings(
+    *,
+    sigma: float = 1.0,
+    mu0: float = 0.0,
+    n_grid: int = 401,
+    coarse_n: int = 25,
+) -> list[TiltingScheme]:
     """For coverage / width: tiltings *with their selector baked in*.
 
     Identity + power_law[dynamic] + ot[dynamic]. The fixed-η=0 power_law
@@ -134,15 +140,20 @@ def default_tiltings(*, sigma: float = 1.0, mu0: float = 0.0,
         ot_selector = _make_learned_selector("ot")
     elif mode == "numerical":
         pl_selector = DynamicNumericalEtaSelector(
-            sigma=sigma, mu0=mu0, n_grid=n_grid, coarse_n=coarse_n,
+            sigma=sigma,
+            mu0=mu0,
+            n_grid=n_grid,
+            coarse_n=coarse_n,
         )
         ot_selector = DynamicNumericalEtaSelector(
-            sigma=sigma, mu0=mu0, n_grid=n_grid, coarse_n=coarse_n,
+            sigma=sigma,
+            mu0=mu0,
+            n_grid=n_grid,
+            coarse_n=coarse_n,
         )
     else:
         raise ValueError(
-            f"FRASIAN_DEFAULT_DYNAMIC_ETA={mode!r}; "
-            f"expected 'numerical' or 'learned'."
+            f"FRASIAN_DEFAULT_DYNAMIC_ETA={mode!r}; " f"expected 'numerical' or 'learned'."
         )
 
     return [
@@ -152,8 +163,11 @@ def default_tiltings(*, sigma: float = 1.0, mu0: float = 0.0,
     ]
 
 
-def post_selection_demo_tiltings(*, sigma: float = 1.0, mu0: float = 0.0,
-                                   ) -> list["TiltingScheme"]:
+def post_selection_demo_tiltings(
+    *,
+    sigma: float = 1.0,
+    mu0: float = 0.0,
+) -> list[TiltingScheme]:
     """Tiltings for the **post-selection coverage demo**.
 
     Returns `[IdentityTilting(), PowerLawTilting(NumericalEtaSelector())]`.
@@ -169,6 +183,7 @@ def post_selection_demo_tiltings(*, sigma: float = 1.0, mu0: float = 0.0,
     from .tilting.eta_selectors import NumericalEtaSelector
     from .tilting.identity import IdentityTilting
     from .tilting.power_law import PowerLawTilting
+
     return [
         IdentityTilting(),
         PowerLawTilting(
@@ -177,7 +192,7 @@ def post_selection_demo_tiltings(*, sigma: float = 1.0, mu0: float = 0.0,
     ]
 
 
-def default_smoothness_tiltings() -> list["TiltingScheme"]:
+def default_smoothness_tiltings() -> list[TiltingScheme]:
     """For smoothness: tilting *families* whose η*(|Δ|) curve we want to
     characterise. Smoothness sweeps the parameter via its own internal
     `NumericalEtaSelector`, so the cell's selector is irrelevant — we
@@ -186,19 +201,21 @@ def default_smoothness_tiltings() -> list["TiltingScheme"]:
     from .tilting.identity import IdentityTilting
     from .tilting.ot import OTTilting
     from .tilting.power_law import PowerLawTilting
+
     return [IdentityTilting(), PowerLawTilting(), OTTilting()]
 
 
-def default_statistics() -> list["TestStatistic"]:
+def default_statistics() -> list[TestStatistic]:
     """Wald + WALDO."""
     from .statistics.wald import WaldStatistic
     from .statistics.waldo import WaldoStatistic
+
     return [WaldStatistic(), WaldoStatistic()]
 
 
-def default_cells(*, experiment: str = "coverage",
-                   **tilting_kwargs) -> tuple[list[TiltingScheme],
-                                              list[TestStatistic]]:
+def default_cells(
+    *, experiment: str = "coverage", **tilting_kwargs
+) -> tuple[list[TiltingScheme], list[TestStatistic]]:
     """`(tiltings, statistics)` for the runner, dispatched by experiment.
 
     `coverage` / `width` use selector-baked tiltings (so `power_law`

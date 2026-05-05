@@ -31,23 +31,25 @@ from frasian.cd.distances import (
 from frasian.cd.grid import GridConfidenceDistribution
 
 
-def _gaussian_cd(mu: float, sigma: float, n: int = 4001
-                 ) -> GridConfidenceDistribution:
+def _gaussian_cd(mu: float, sigma: float, n: int = 4001) -> GridConfidenceDistribution:
     """Gaussian CD on a 12σ window."""
     theta = np.linspace(mu - 12.0 * sigma, mu + 12.0 * sigma, n)
     pdf = stats.norm.pdf(theta, loc=mu, scale=sigma)
     return GridConfidenceDistribution(
-        name=f"gauss(mu={mu},sigma={sigma})", theta_grid=theta, pdf_values=pdf,
+        name=f"gauss(mu={mu},sigma={sigma})",
+        theta_grid=theta,
+        pdf_values=pdf,
     )
 
 
 def _bimodal_cd(n: int = 4001) -> GridConfidenceDistribution:
     """50:50 mixture of N(-2, 1) and N(+2, 1)."""
     theta = np.linspace(-15.0, 15.0, n)
-    pdf = 0.5 * (stats.norm.pdf(theta, -2.0, 1.0)
-                  + stats.norm.pdf(theta, +2.0, 1.0))
+    pdf = 0.5 * (stats.norm.pdf(theta, -2.0, 1.0) + stats.norm.pdf(theta, +2.0, 1.0))
     return GridConfidenceDistribution(
-        name="bimodal_+/-2", theta_grid=theta, pdf_values=pdf,
+        name="bimodal_+/-2",
+        theta_grid=theta,
+        pdf_values=pdf,
     )
 
 
@@ -55,12 +57,15 @@ def _bimodal_cd(n: int = 4001) -> GridConfidenceDistribution:
 class TestWasserstein2GaussianClosedForm:
     """W₂ on Gaussians matches Olkin–Pukelsheim (1982)."""
 
-    @pytest.mark.parametrize("mu_a, sigma_a, mu_b, sigma_b", [
-        (0.0, 1.0, 0.0, 1.0),
-        (0.0, 1.0, 1.0, 1.0),
-        (0.0, 1.0, 0.0, 2.0),
-        (-1.0, 0.5, 1.5, 2.0),
-    ])
+    @pytest.mark.parametrize(
+        "mu_a, sigma_a, mu_b, sigma_b",
+        [
+            (0.0, 1.0, 0.0, 1.0),
+            (0.0, 1.0, 1.0, 1.0),
+            (0.0, 1.0, 0.0, 2.0),
+            (-1.0, 0.5, 1.5, 2.0),
+        ],
+    )
     def test_w2_matches_closed_form(self, mu_a, sigma_a, mu_b, sigma_b):
         a = _gaussian_cd(mu_a, sigma_a)
         b = _gaussian_cd(mu_b, sigma_b)
@@ -82,9 +87,9 @@ class TestWasserstein2GaussianClosedForm:
         b = _gaussian_cd(0.0, sigma_b, n=8001)  # finer grid for σ=10 tail
         actual = wasserstein_2(a, b)
         expected = wasserstein_2_gaussian(0.0, 1.0, 0.0, sigma_b)
-        assert actual == pytest.approx(expected, abs=1e-4), (
-            f"W₂ at σ-mismatch (1, {sigma_b}): expected {expected}, got {actual}"
-        )
+        assert actual == pytest.approx(
+            expected, abs=1e-4
+        ), f"W₂ at σ-mismatch (1, {sigma_b}): expected {expected}, got {actual}"
 
     def test_w2_n_quad_doubling_converged(self):
         """Doubling n_quad changes the result by less than the CD's own
@@ -107,9 +112,15 @@ class TestWasserstein2GaussianClosedForm:
 class TestWasserstein1GaussianShift:
     """W₁ on shifted Gaussians of equal scale equals the absolute shift."""
 
-    @pytest.mark.parametrize("mu_a, mu_b", [
-        (0.0, 0.0), (-1.0, 1.0), (0.5, 2.5), (-3.0, -1.0),
-    ])
+    @pytest.mark.parametrize(
+        "mu_a, mu_b",
+        [
+            (0.0, 0.0),
+            (-1.0, 1.0),
+            (0.5, 2.5),
+            (-3.0, -1.0),
+        ],
+    )
     def test_w1_equal_scale_shift(self, mu_a, mu_b):
         a = _gaussian_cd(mu_a, 1.0)
         b = _gaussian_cd(mu_b, 1.0)
@@ -127,12 +138,15 @@ class TestWasserstein1GaussianScaleMismatch:
     representation). This is the missing tight regression that the
     equal-scale-shift test does not exercise."""
 
-    @pytest.mark.parametrize("sigma_a, sigma_b", [
-        (1.0, 2.0),
-        (1.0, 5.0),
-        (0.5, 3.0),
-        (1.0, 10.0),
-    ])
+    @pytest.mark.parametrize(
+        "sigma_a, sigma_b",
+        [
+            (1.0, 2.0),
+            (1.0, 5.0),
+            (0.5, 3.0),
+            (1.0, 10.0),
+        ],
+    )
     def test_w1_zero_mean_scale_mismatch(self, sigma_a, sigma_b):
         # Use a generously wider grid for the heavy-σ side so the
         # CDF integral covers both supports adequately.
@@ -147,8 +161,7 @@ class TestWasserstein1GaussianScaleMismatch:
         # the ~5e-3 error a Gauss–Hermite quantile-form integration
         # would suffer at the |·| kink.
         assert actual == pytest.approx(expected, abs=5e-4), (
-            f"W₁(N(0,{sigma_a}), N(0,{sigma_b})): expected {expected}, "
-            f"got {actual}"
+            f"W₁(N(0,{sigma_a}), N(0,{sigma_b})): expected {expected}, " f"got {actual}"
         )
 
 
@@ -166,15 +179,13 @@ class TestDistanceProperties:
         a = _gaussian_cd(0.0, 1.0)
         assert total_variation(a, a) == pytest.approx(0.0, abs=1e-9)
 
-    @pytest.mark.parametrize("metric", [wasserstein_1, wasserstein_2,
-                                          total_variation])
+    @pytest.mark.parametrize("metric", [wasserstein_1, wasserstein_2, total_variation])
     def test_symmetry(self, metric):
         a = _gaussian_cd(0.0, 1.0)
         b = _gaussian_cd(1.5, 2.0)
         assert metric(a, b) == pytest.approx(metric(b, a), abs=1e-9)
 
-    @pytest.mark.parametrize("metric", [wasserstein_1, wasserstein_2,
-                                          total_variation])
+    @pytest.mark.parametrize("metric", [wasserstein_1, wasserstein_2, total_variation])
     def test_non_negative(self, metric):
         a = _gaussian_cd(0.0, 1.0)
         b = _gaussian_cd(1.5, 2.0)
@@ -221,8 +232,7 @@ class TestBimodalDistance:
         expected = float(np.sqrt(np.trapezoid(sq, u)))
 
         assert actual == pytest.approx(expected, abs=2e-2), (
-            f"W₂(bimodal, N(0,1)): framework={actual:.4f}, "
-            f"reference={expected:.4f}"
+            f"W₂(bimodal, N(0,1)): framework={actual:.4f}, " f"reference={expected:.4f}"
         )
 
     def test_w2_bimodal_vs_self_zero(self):
@@ -251,7 +261,9 @@ class TestCDFNonMonotoneStillWorks:
         # Perturb signed to be non-monotone (the simulated Dyn-WALDO case).
         signed[400:600] -= 0.05
         return GridConfidenceDistribution(
-            name="nonmono", theta_grid=theta, pdf_values=pdf,
+            name="nonmono",
+            theta_grid=theta,
+            pdf_values=pdf,
             signed_confidence=signed,
         )
 
@@ -260,8 +272,7 @@ class TestCDFNonMonotoneStillWorks:
         # Distance to a separate canonical Gaussian.
         b_theta = np.linspace(-6.0, 6.0, 1001)
         b_pdf = stats.norm.pdf(b_theta, 0.0, 1.0)
-        b = GridConfidenceDistribution(name="gauss", theta_grid=b_theta,
-                                         pdf_values=b_pdf)
+        b = GridConfidenceDistribution(name="gauss", theta_grid=b_theta, pdf_values=b_pdf)
         # Both have the same density, so W₂ should be ≈ 0 — even though
         # `a.signed_confidence` is non-monotone. This is the punchline:
         # distance metrics ignore signed_confidence entirely.

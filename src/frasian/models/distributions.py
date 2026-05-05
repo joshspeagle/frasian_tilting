@@ -29,26 +29,22 @@ class NormalDistribution:
             raise ValueError(f"scale must be positive and finite, got {self.scale!r}")
 
     def pdf(self, x: ArrayLike) -> NDArray[np.float64]:
-        return np.asarray(stats.norm.pdf(x, loc=self.loc, scale=self.scale),
-                          dtype=np.float64)
+        return np.asarray(stats.norm.pdf(x, loc=self.loc, scale=self.scale), dtype=np.float64)
 
     def logpdf(self, x: ArrayLike) -> NDArray[np.float64]:
-        return np.asarray(stats.norm.logpdf(x, loc=self.loc, scale=self.scale),
-                          dtype=np.float64)
+        return np.asarray(stats.norm.logpdf(x, loc=self.loc, scale=self.scale), dtype=np.float64)
 
     def cdf(self, x: ArrayLike) -> NDArray[np.float64]:
-        return np.asarray(stats.norm.cdf(x, loc=self.loc, scale=self.scale),
-                          dtype=np.float64)
+        return np.asarray(stats.norm.cdf(x, loc=self.loc, scale=self.scale), dtype=np.float64)
 
     def quantile(self, q: ArrayLike) -> NDArray[np.float64]:
-        return np.asarray(stats.norm.ppf(q, loc=self.loc, scale=self.scale),
-                          dtype=np.float64)
+        return np.asarray(stats.norm.ppf(q, loc=self.loc, scale=self.scale), dtype=np.float64)
 
     def mean(self) -> float:
         return float(self.loc)
 
     def var(self) -> float:
-        return float(self.scale ** 2)
+        return float(self.scale**2)
 
     def sample(self, rng: Generator, n: int) -> NDArray[np.float64]:
         return rng.normal(loc=self.loc, scale=self.scale, size=n)
@@ -76,27 +72,23 @@ class BetaDistribution:
             raise ValueError(f"beta must be positive, got {self.beta!r}")
 
     def pdf(self, x: ArrayLike) -> NDArray[np.float64]:
-        return np.asarray(stats.beta.pdf(x, self.alpha, self.beta),
-                          dtype=np.float64)
+        return np.asarray(stats.beta.pdf(x, self.alpha, self.beta), dtype=np.float64)
 
     def logpdf(self, x: ArrayLike) -> NDArray[np.float64]:
-        return np.asarray(stats.beta.logpdf(x, self.alpha, self.beta),
-                          dtype=np.float64)
+        return np.asarray(stats.beta.logpdf(x, self.alpha, self.beta), dtype=np.float64)
 
     def cdf(self, x: ArrayLike) -> NDArray[np.float64]:
-        return np.asarray(stats.beta.cdf(x, self.alpha, self.beta),
-                          dtype=np.float64)
+        return np.asarray(stats.beta.cdf(x, self.alpha, self.beta), dtype=np.float64)
 
     def quantile(self, q: ArrayLike) -> NDArray[np.float64]:
-        return np.asarray(stats.beta.ppf(q, self.alpha, self.beta),
-                          dtype=np.float64)
+        return np.asarray(stats.beta.ppf(q, self.alpha, self.beta), dtype=np.float64)
 
     def mean(self) -> float:
         return float(self.alpha / (self.alpha + self.beta))
 
     def var(self) -> float:
         ab = self.alpha + self.beta
-        return float(self.alpha * self.beta / (ab ** 2 * (ab + 1.0)))
+        return float(self.alpha * self.beta / (ab**2 * (ab + 1.0)))
 
     def sample(self, rng: Generator, n: int) -> NDArray[np.float64]:
         return rng.beta(self.alpha, self.beta, size=n)
@@ -120,9 +112,7 @@ class BernoulliLikelihood:
         if self.n_total <= 0:
             raise ValueError(f"n_total must be positive, got {self.n_total!r}")
         if not (0 <= self.n_success <= self.n_total):
-            raise ValueError(
-                f"n_success ({self.n_success}) outside [0, {self.n_total}]"
-            )
+            raise ValueError(f"n_success ({self.n_success}) outside [0, {self.n_total}]")
 
     def __call__(self, theta: ArrayLike) -> NDArray[np.float64]:
         return np.exp(self.loglik(theta))
@@ -133,8 +123,7 @@ class BernoulliLikelihood:
         eps = 1e-300
         return np.asarray(
             self.n_success * np.log(np.clip(theta_arr, eps, 1.0))
-            + (self.n_total - self.n_success)
-            * np.log(np.clip(1.0 - theta_arr, eps, 1.0)),
+            + (self.n_total - self.n_success) * np.log(np.clip(1.0 - theta_arr, eps, 1.0)),
             dtype=np.float64,
         )
 
@@ -162,4 +151,4 @@ class GaussianLikelihood:
 
     def loglik(self, theta: ArrayLike) -> NDArray[np.float64]:
         z = (np.asarray(theta, dtype=np.float64) - self.D) / self.sigma
-        return -0.5 * z * z - 0.5 * np.log(2.0 * np.pi * self.sigma ** 2)
+        return -0.5 * z * z - 0.5 * np.log(2.0 * np.pi * self.sigma**2)

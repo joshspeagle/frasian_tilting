@@ -37,7 +37,7 @@ def main(smoke: bool = False, out: Path | None = None) -> Path:
 
     fig, ax = plt.subplots(figsize=(6, 3.5))
     ax.plot(thetas, ps, color="#DC3545", lw=2, label=r"Wald $p(\theta)$")
-    ax.axhline(alpha, ls="--", color="0.5", lw=1, label=fr"$\alpha={alpha}$")
+    ax.axhline(alpha, ls="--", color="0.5", lw=1, label=rf"$\alpha={alpha}$")
     ax.axvspan(lo, hi, color="#DC3545", alpha=0.12, label="95% CI")
     ax.axvline(D, color="0.2", lw=1, ls=":", label="MLE $= D$")
     ax.set_xlabel(r"$\theta$")
@@ -56,8 +56,7 @@ def main(smoke: bool = False, out: Path | None = None) -> Path:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--smoke", action="store_true",
-                        help="fast mode used by CI")
+    parser.add_argument("--smoke", action="store_true", help="fast mode used by CI")
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args()
     path = main(smoke=args.smoke, out=args.out)

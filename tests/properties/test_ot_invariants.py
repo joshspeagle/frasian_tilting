@@ -73,8 +73,12 @@ class TestOTInvariants:
         tilted = OTTilting().tilt(post, prior, lik, eta)
         assert tilted.scale > 0.0
 
-    @given(D=_D, sigma=_SIGMA, sigma0=_SIGMA0,
-           eta=st.floats(min_value=0.0, max_value=0.99, allow_nan=False))
+    @given(
+        D=_D,
+        sigma=_SIGMA,
+        sigma0=_SIGMA0,
+        eta=st.floats(min_value=0.0, max_value=0.99, allow_nan=False),
+    )
     @settings(max_examples=60, deadline=None)
     def test_continuous_in_eta(self, D, sigma, sigma0, eta):
         """A small change in eta produces a small change in (mu_t, sigma_t).
@@ -100,6 +104,7 @@ class TestOTInvariants:
     def test_admissible_range_is_unit_interval(self):
         """t in [0, 1] by construction."""
         from frasian.tilting.base import TiltingContext
+
         scheme = OTTilting()
         ctx = TiltingContext(w=0.5, abs_delta=1.0, alpha=0.05)
         lo, hi = scheme.admissible_range(ctx)
@@ -118,12 +123,14 @@ class TestOTInvariants:
         with pytest.raises(TiltingDomainError):
             OTTilting().tilt(post, prior, lik, 1.1)
 
-    @given(t=st.floats(min_value=0.0, max_value=1.0, allow_nan=False),
-           u=st.floats(min_value=0.01, max_value=0.99, allow_nan=False),
-           mu_a=st.floats(min_value=-3.0, max_value=3.0, allow_nan=False),
-           sigma_a=st.floats(min_value=0.3, max_value=2.0, allow_nan=False),
-           mu_b=st.floats(min_value=-3.0, max_value=3.0, allow_nan=False),
-           sigma_b=st.floats(min_value=0.3, max_value=2.0, allow_nan=False))
+    @given(
+        t=st.floats(min_value=0.0, max_value=1.0, allow_nan=False),
+        u=st.floats(min_value=0.01, max_value=0.99, allow_nan=False),
+        mu_a=st.floats(min_value=-3.0, max_value=3.0, allow_nan=False),
+        sigma_a=st.floats(min_value=0.3, max_value=2.0, allow_nan=False),
+        mu_b=st.floats(min_value=-3.0, max_value=3.0, allow_nan=False),
+        sigma_b=st.floats(min_value=0.3, max_value=2.0, allow_nan=False),
+    )
     @settings(max_examples=80, deadline=None)
     def test_quantile_mixture_identity(self, t, u, mu_a, sigma_a, mu_b, sigma_b):
         """General 1D path: F_t^{-1}(u) = (1-t) F_p^{-1}(u) + t F_q^{-1}(u)."""
@@ -134,11 +141,14 @@ class TestOTInvariants:
         rhs = float((1.0 - t) * p.quantile(u) + t * q.quantile(u))
         np.testing.assert_allclose(lhs, rhs, atol=1e-12)
 
-    @given(D=_D, sigma=_SIGMA, sigma0=_SIGMA0,
-           theta=st.floats(min_value=-5.0, max_value=5.0, allow_nan=False))
+    @given(
+        D=_D,
+        sigma=_SIGMA,
+        sigma0=_SIGMA0,
+        theta=st.floats(min_value=-5.0, max_value=5.0, allow_nan=False),
+    )
     @settings(max_examples=60, deadline=None)
-    def test_tilted_pvalue_reduces_to_bare_waldo_at_eta_zero(
-            self, D, sigma, sigma0, theta):
+    def test_tilted_pvalue_reduces_to_bare_waldo_at_eta_zero(self, D, sigma, sigma0, theta):
         """At eta=0, tilted_pvalue (waldo) must equal bare WALDO p-value."""
         model = NormalNormalModel(sigma=sigma)
         prior = NormalDistribution(loc=0.0, scale=sigma0)
@@ -147,13 +157,17 @@ class TestOTInvariants:
         tilted = float(scheme.tilted_pvalue(theta, D, model, prior, 0.0, "waldo"))
         np.testing.assert_allclose(tilted, bare, atol=1e-12)
 
-    @given(D=_D, sigma=_SIGMA, sigma0=_SIGMA0,
-           theta=st.floats(min_value=-5.0, max_value=5.0, allow_nan=False))
+    @given(
+        D=_D,
+        sigma=_SIGMA,
+        sigma0=_SIGMA0,
+        theta=st.floats(min_value=-5.0, max_value=5.0, allow_nan=False),
+    )
     @settings(max_examples=60, deadline=None)
-    def test_tilted_pvalue_reduces_to_bare_wald_at_eta_one(
-            self, D, sigma, sigma0, theta):
+    def test_tilted_pvalue_reduces_to_bare_wald_at_eta_one(self, D, sigma, sigma0, theta):
         """At eta=1, tilted_pvalue (waldo) must equal bare two-sided Wald."""
         from scipy import stats
+
         model = NormalNormalModel(sigma=sigma)
         prior = NormalDistribution(loc=0.0, scale=sigma0)
         scheme = OTTilting()
@@ -172,20 +186,21 @@ class TestOTInvariants:
         """
         model = NormalNormalModel(sigma=sigma)
         prior = NormalDistribution(loc=0.0, scale=sigma0)
-        w = sigma0 ** 2 / (sigma ** 2 + sigma0 ** 2)
+        w = sigma0**2 / (sigma**2 + sigma0**2)
         mu_n = w * D + (1.0 - w) * 0.0
         mu_t = (1.0 - eta) * mu_n + eta * D
         scheme = OTTilting()
         p = float(scheme.tilted_pvalue(mu_t, D, model, prior, eta, "waldo"))
         np.testing.assert_allclose(p, 1.0, atol=1e-12)
 
-    @given(sigma=_SIGMA, sigma0=_SIGMA0,
-           eta=st.floats(min_value=0.0, max_value=0.99, allow_nan=False))
+    @given(
+        sigma=_SIGMA, sigma0=_SIGMA0, eta=st.floats(min_value=0.0, max_value=0.99, allow_nan=False)
+    )
     @settings(max_examples=40, deadline=None)
     def test_s_t_strictly_increasing_in_eta(self, sigma, sigma0, eta):
         """s_t(eta) = (w + eta*(1-w))*sigma is strictly increasing in eta;
         s_t(0) = w*sigma; s_t(1) = sigma."""
-        w = sigma0 ** 2 / (sigma ** 2 + sigma0 ** 2)
+        w = sigma0**2 / (sigma**2 + sigma0**2)
         h = 1e-3
         s_t_lo = (w + eta * (1.0 - w)) * sigma
         s_t_hi = (w + (eta + h) * (1.0 - w)) * sigma

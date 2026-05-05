@@ -13,8 +13,9 @@ n_reps); the Python `Experiment` class describes *what* to compute. Same
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 from numpy.typing import NDArray
@@ -57,11 +58,13 @@ class Experiment(Protocol):
         - `diagnostics()` returns at least one `Diagnostic`.
     """
 
-    name: str
+    @property
+    def name(self) -> str: ...
 
     def setup(self, config: Config) -> ExperimentContext: ...
 
-    def run_cell(self, ctx: ExperimentContext, tilting: TiltingScheme,
-                 statistic: TestStatistic) -> RawResult: ...
+    def run_cell(
+        self, ctx: ExperimentContext, tilting: TiltingScheme, statistic: TestStatistic
+    ) -> RawResult: ...
 
     def diagnostics(self) -> list[Diagnostic]: ...

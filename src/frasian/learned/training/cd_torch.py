@@ -54,9 +54,7 @@ def cd_density_torch(
         Normalised pdf integrating to 1 along `theta_grid` row-wise.
     """
     if p_theta.dim() != 2:
-        raise ValueError(
-            f"p_theta must be (B, N); got shape {tuple(p_theta.shape)}"
-        )
+        raise ValueError(f"p_theta must be (B, N); got shape {tuple(p_theta.shape)}")
     if theta_grid.dim() == 1:
         if theta_grid.shape[0] != p_theta.shape[1]:
             raise ValueError(
@@ -71,20 +69,17 @@ def cd_density_torch(
                 f"theta_grid (2D) must match p_theta shape "
                 f"{tuple(p_theta.shape)}; got {tuple(theta_grid.shape)}"
             )
-        dtheta = theta_grid[..., 1:] - theta_grid[..., :-1]      # (B, N-1)
+        dtheta = theta_grid[..., 1:] - theta_grid[..., :-1]  # (B, N-1)
     else:
-        raise ValueError(
-            f"theta_grid must be 1D or 2D; got shape "
-            f"{tuple(theta_grid.shape)}"
-        )
+        raise ValueError(f"theta_grid must be 1D or 2D; got shape " f"{tuple(theta_grid.shape)}")
 
-    dp = torch.abs(p_theta[..., 1:] - p_theta[..., :-1])         # (B, N-1)
-    forward_inner = dp / dtheta                                   # (B, N-1)
+    dp = torch.abs(p_theta[..., 1:] - p_theta[..., :-1])  # (B, N-1)
+    forward_inner = dp / dtheta  # (B, N-1)
     forward = torch.cat([forward_inner, forward_inner[..., -1:]], dim=-1)
     backward = torch.cat([forward_inner[..., 0:1], forward_inner], dim=-1)
     abs_dp_dtheta = 0.5 * (forward + backward)
-    pdf_unnorm = 0.5 * abs_dp_dtheta                              # (B, N)
+    pdf_unnorm = 0.5 * abs_dp_dtheta  # (B, N)
 
-    Z = torch.trapezoid(pdf_unnorm, theta_grid, dim=-1)           # (B,)
+    Z = torch.trapezoid(pdf_unnorm, theta_grid, dim=-1)  # (B,)
     Z = torch.clamp(Z, min=eps)
     return pdf_unnorm / Z.unsqueeze(-1)

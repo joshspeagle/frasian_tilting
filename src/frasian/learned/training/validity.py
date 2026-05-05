@@ -19,6 +19,8 @@ This module contains:
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 from numpy.typing import NDArray
 
@@ -34,10 +36,7 @@ def is_pair_valid(p_scalar: float) -> bool:
     (the small slack handles FP noise from e.g. ``norm.cdf``
     rounding at ±5σ).
     """
-    return (
-        np.isfinite(p_scalar)
-        and -_FP_SLACK <= p_scalar <= 1.0 + _FP_SLACK
-    )
+    return np.isfinite(p_scalar) and -_FP_SLACK <= p_scalar <= 1.0 + _FP_SLACK
 
 
 def validity_mask(p_array: NDArray[np.float64]) -> NDArray[np.bool_]:
@@ -47,19 +46,15 @@ def validity_mask(p_array: NDArray[np.float64]) -> NDArray[np.bool_]:
     as NaN" path).
     """
     arr = np.asarray(p_array, dtype=np.float64)
-    return (
-        np.isfinite(arr)
-        & (arr >= -_FP_SLACK)
-        & (arr <= 1.0 + _FP_SLACK)
-    )
+    return np.isfinite(arr) & (arr >= -_FP_SLACK) & (arr <= 1.0 + _FP_SLACK)
 
 
 def compute_pvalues_per_sample(
-    scheme,
+    scheme: Any,
     theta: NDArray[np.float64],
     D: NDArray[np.float64],
-    model,
-    prior,
+    model: Any,
+    prior: Any,
     eta: NDArray[np.float64],
     statistic_name: str,
 ) -> NDArray[np.float64]:
@@ -104,8 +99,7 @@ def compute_pvalues_per_sample(
                 statistic_name,
             )
             out[i] = float(np.asarray(p).reshape(-1)[0])
-        except (TiltingDomainError, ValueError, RuntimeError,
-                NotImplementedError, ArithmeticError):
+        except (TiltingDomainError, ValueError, RuntimeError, NotImplementedError, ArithmeticError):
             # ArithmeticError is the parent of FloatingPointError /
             # OverflowError / ZeroDivisionError — catches numerical
             # blowups across schemes uniformly. Deliberately NOT

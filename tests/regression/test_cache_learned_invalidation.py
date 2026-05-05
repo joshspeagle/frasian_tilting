@@ -103,11 +103,15 @@ class TestLearnedCheckpointInvalidatesCache:
         tilt_b = _StubTilting(selector=_StubSelector(artifact=_StubArtifact("bbb")))
 
         path_a = persist_cell(
-            raw_result=raw, config=cfg, cache_root=tmp_path / "ca",
+            raw_result=raw,
+            config=cfg,
+            cache_root=tmp_path / "ca",
             tilting=tilt_a,
         )
         path_b = persist_cell(
-            raw_result=raw, config=cfg, cache_root=tmp_path / "cb",
+            raw_result=raw,
+            config=cfg,
+            cache_root=tmp_path / "cb",
             tilting=tilt_b,
         )
 
@@ -137,7 +141,9 @@ class TestLearnedCheckpointInvalidatesCache:
 
         # No tilting at all.
         path_none = persist_cell(
-            raw_result=raw, config=cfg, cache_root=tmp_path / "c1",
+            raw_result=raw,
+            config=cfg,
+            cache_root=tmp_path / "c1",
         )
         assert path_none.exists() or path_none.parent.exists()
 
@@ -150,13 +156,16 @@ class TestLearnedCheckpointInvalidatesCache:
             selector = _BareSelector()
 
         path_bare = persist_cell(
-            raw_result=raw, config=cfg, cache_root=tmp_path / "c2",
+            raw_result=raw,
+            config=cfg,
+            cache_root=tmp_path / "c2",
             tilting=_BareTilting(),
         )
         assert path_bare.exists() or path_bare.parent.exists()
 
     def test_persist_cell_swallows_attribute_or_type_error_on_fingerprint(
-        self, tmp_path,
+        self,
+        tmp_path,
     ):
         """Pin the narrow except: an artifact whose `.fingerprint()` raises
         AttributeError or TypeError must be skipped silently (treated as
@@ -201,7 +210,9 @@ class TestLearnedCheckpointInvalidatesCache:
         # AttributeError path.
         tilt_attr = _StubTilting(selector=_StubSelector(artifact=_AttrErrArtifact()))
         path_attr = persist_cell(
-            raw_result=raw, config=cfg, cache_root=tmp_path / "ca",
+            raw_result=raw,
+            config=cfg,
+            cache_root=tmp_path / "ca",
             tilting=tilt_attr,
         )
         assert path_attr.exists() or path_attr.parent.exists()
@@ -209,7 +220,9 @@ class TestLearnedCheckpointInvalidatesCache:
         # TypeError path.
         tilt_type = _StubTilting(selector=_StubSelector(artifact=_TypeErrArtifact()))
         path_type = persist_cell(
-            raw_result=raw, config=cfg, cache_root=tmp_path / "ct",
+            raw_result=raw,
+            config=cfg,
+            cache_root=tmp_path / "ct",
             tilting=tilt_type,
         )
         assert path_type.exists() or path_type.parent.exists()
@@ -254,12 +267,17 @@ class TestLearnedCheckpointInvalidatesCache:
         tilt = _StubTilting(selector=_StubSelector(artifact=_OSErrArtifact()))
         with _pt.raises(OSError, match=r"simulated checkpoint missing"):
             persist_cell(
-                raw_result=raw, config=cfg, cache_root=tmp_path / "co",
+                raw_result=raw,
+                config=cfg,
+                cache_root=tmp_path / "co",
                 tilting=tilt,
             )
 
     def test_runner_plumbs_artifact_fingerprint_end_to_end(
-        self, tmp_path, monkeypatch, bootstrapped_registry,
+        self,
+        tmp_path,
+        monkeypatch,
+        bootstrapped_registry,
     ):
         """End-to-end: ``run_experiment`` must pass ``tilting=tilting`` to
         ``persist_cell`` so the runner-level cache key picks up the
@@ -311,6 +329,7 @@ class TestLearnedCheckpointInvalidatesCache:
 
         captured: list[dict] = []
         from frasian import _runner as runner_mod
+
         real_persist = runner_mod.persist_cell
 
         def _spy_persist(**kwargs):
@@ -340,14 +359,11 @@ class TestLearnedCheckpointInvalidatesCache:
         assert captured, "persist_cell was never called by run_experiment"
         forwarded = [c.get("tilting") for c in captured]
         assert all(t is not None for t in forwarded), (
-            "run_experiment dropped `tilting=tilting`; "
-            f"forwarded={forwarded!r}"
+            "run_experiment dropped `tilting=tilting`; " f"forwarded={forwarded!r}"
         )
         # And the forwarded tilting must carry our fingerprintable artifact.
         for t in forwarded:
             sel = getattr(t, "selector", None)
             art = getattr(sel, "artifact", None) if sel else None
-            assert art is not None, (
-                f"runner forwarded a tilting without selector.artifact: {t!r}"
-            )
+            assert art is not None, f"runner forwarded a tilting without selector.artifact: {t!r}"
             assert art.fingerprint() == "stub_fingerprint_xyz"

@@ -21,13 +21,13 @@ def _small_config() -> Config:
 
 @pytest.mark.L4
 class TestFiguresScript:
-    def test_regenerate_from_results(self, tmp_path: Path,
-                                        bootstrapped_registry):
+    def test_regenerate_from_results(self, tmp_path: Path, bootstrapped_registry):
         experiment = registry.experiments["coverage"]()
         tiltings, statistics = default_cells(n_grid=81, coarse_n=9)
         run_experiment(
             experiment=experiment,
-            tiltings=tiltings, statistics=statistics,
+            tiltings=tiltings,
+            statistics=statistics,
             config=_small_config(),
             out_dir=tmp_path,
         )

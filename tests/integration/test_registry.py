@@ -36,26 +36,21 @@ class TestRegistryDecorators:
 
     def test_register_statistic_inserts_into_slice(self):
         register_statistic(
-            name="dummy_stat", brief="docs/methods/dummy_stat.md",
+            name="dummy_stat",
+            brief="docs/methods/dummy_stat.md",
         )(_DummyStatistic)
         assert "dummy_stat" in registry.statistics
 
     def test_double_registration_raises(self):
-        register_tilting(name="dup", brief="docs/methods/dup.md")(
-            type("T1", (), {"name": "dup"})
-        )
+        register_tilting(name="dup", brief="docs/methods/dup.md")(type("T1", (), {"name": "dup"}))
         with pytest.raises(RegistryConflictError):
             register_tilting(name="dup", brief="docs/methods/dup.md")(
                 type("T2", (), {"name": "dup"})
             )
 
     def test_slice_filtering_by_status(self):
-        register_tilting(name="impl", brief="b1.md", status="implemented")(
-            type("A", (), {})
-        )
-        register_tilting(name="stb", brief="b2.md", status="stub")(
-            type("B", (), {})
-        )
+        register_tilting(name="impl", brief="b1.md", status="implemented")(type("A", (), {}))
+        register_tilting(name="stb", brief="b2.md", status="stub")(type("B", (), {}))
         impl = registry.tiltings.where(status="implemented")
         stub = registry.tiltings.where(status="stub")
         assert len(impl) == 1

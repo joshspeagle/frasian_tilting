@@ -27,8 +27,7 @@ import pytest
 from scipy import stats
 
 from frasian import TiltingDomainError
-from frasian.models.distributions import (BetaDistribution, GaussianLikelihood,
-                                            NormalDistribution)
+from frasian.models.distributions import BetaDistribution, GaussianLikelihood, NormalDistribution
 from frasian.models.normal_normal import NormalNormalModel
 from frasian.tilting.ot import OTTilting
 from frasian.tilting.quantile_mixture import QuantileMixturePath
@@ -50,8 +49,7 @@ class TestOTClosedFormGaussianPath:
     def test_w2_path_linear_in_mu_and_sigma(self, D, eta, sigma0):
         """W2 geodesic on Gaussians: linear in (mu, sigma)."""
         sigma, mu0 = 1.0, 0.0
-        _, prior, likelihood, posterior = _setup(D=D, mu0=mu0,
-                                                  sigma=sigma, sigma0=sigma0)
+        _, prior, likelihood, posterior = _setup(D=D, mu0=mu0, sigma=sigma, sigma0=sigma0)
         scheme = OTTilting()
         tilted = scheme.tilt(posterior, prior, likelihood, eta)
 
@@ -112,7 +110,12 @@ class TestOTDynamicTiltedPvalueGuard:
         eta_at_theta = np.array([0.5, np.nan, 0.7], dtype=np.float64)
         with pytest.raises(TiltingDomainError, match=r"index 1"):
             OTTilting().dynamic_tilted_pvalue(
-                theta_arr, D, model, prior, "waldo", eta_at_theta,
+                theta_arr,
+                D,
+                model,
+                prior,
+                "waldo",
+                eta_at_theta,
             )
 
     def test_eta_above_one_raises_with_index(self):
@@ -120,7 +123,12 @@ class TestOTDynamicTiltedPvalueGuard:
         eta_at_theta = np.array([0.5, 1.5, 0.7], dtype=np.float64)
         with pytest.raises(TiltingDomainError, match=r"index 1"):
             OTTilting().dynamic_tilted_pvalue(
-                theta_arr, D, model, prior, "waldo", eta_at_theta,
+                theta_arr,
+                D,
+                model,
+                prior,
+                "waldo",
+                eta_at_theta,
             )
 
     def test_eta_below_zero_raises_with_index(self):
@@ -128,7 +136,12 @@ class TestOTDynamicTiltedPvalueGuard:
         eta_at_theta = np.array([-0.1, 0.5, 0.7], dtype=np.float64)
         with pytest.raises(TiltingDomainError, match=r"index 0"):
             OTTilting().dynamic_tilted_pvalue(
-                theta_arr, D, model, prior, "waldo", eta_at_theta,
+                theta_arr,
+                D,
+                model,
+                prior,
+                "waldo",
+                eta_at_theta,
             )
 
     def test_valid_eta_returns_finite_pvalues(self):
@@ -138,7 +151,12 @@ class TestOTDynamicTiltedPvalueGuard:
         model, prior, D, theta_arr = self._setup_dyn()
         eta_at_theta = np.array([0.0, 0.5, 1.0], dtype=np.float64)
         p = OTTilting().dynamic_tilted_pvalue(
-            theta_arr, D, model, prior, "waldo", eta_at_theta,
+            theta_arr,
+            D,
+            model,
+            prior,
+            "waldo",
+            eta_at_theta,
         )
         p_arr = np.atleast_1d(np.asarray(p, dtype=np.float64))
         assert p_arr.shape == theta_arr.shape
@@ -157,7 +175,7 @@ class TestOTTiltedWaldoPvalue:
         scheme = OTTilting()
         thetas = np.linspace(D - 4 * sigma, D + 4 * sigma, 17)
         # Reference: recompute by the documented closed form.
-        w = sigma0 ** 2 / (sigma ** 2 + sigma0 ** 2)
+        w = sigma0**2 / (sigma**2 + sigma0**2)
         mu_n = w * D + (1.0 - w) * mu0
         mu_t = (1.0 - eta) * mu_n + eta * D
         s_t = (w + eta * (1.0 - w)) * sigma
@@ -171,6 +189,7 @@ class TestOTTiltedWaldoPvalue:
     @pytest.mark.parametrize("sigma0", [0.5, 1.0, 2.0])
     def test_eta_zero_matches_bare_waldo(self, D, sigma0):
         from frasian.statistics.waldo import WaldoStatistic
+
         sigma, mu0 = 1.0, 0.0
         model, prior, _, _ = _setup(D=D, mu0=mu0, sigma=sigma, sigma0=sigma0)
         thetas = np.linspace(D - 3 * sigma, D + 3 * sigma, 13)
@@ -219,12 +238,10 @@ class TestQuantileMixturePathBetaEndpoints:
         u_grid = np.linspace(0.01, 0.99, 25)
 
         path0 = QuantileMixturePath(p=p, q=q, t=0.0)
-        np.testing.assert_allclose(path0.quantile(u_grid), p.quantile(u_grid),
-                                     atol=1e-12)
+        np.testing.assert_allclose(path0.quantile(u_grid), p.quantile(u_grid), atol=1e-12)
 
         path1 = QuantileMixturePath(p=p, q=q, t=1.0)
-        np.testing.assert_allclose(path1.quantile(u_grid), q.quantile(u_grid),
-                                     atol=1e-12)
+        np.testing.assert_allclose(path1.quantile(u_grid), q.quantile(u_grid), atol=1e-12)
 
     def test_mean_is_linear_in_endpoints(self):
         p = BetaDistribution(alpha=2.0, beta=5.0)
@@ -313,13 +330,17 @@ class TestOTPathAgreementGaussianEndpoints:
     @pytest.mark.parametrize(
         "mu_p,sigma_p,mu_q,sigma_q",
         [
-            (0.0, 1.0, 0.0, 2.0),   # balanced: same mean, different scale
-            (3.0, 1.0, 0.0, 1.0),   # conflict: same scale, different mean
+            (0.0, 1.0, 0.0, 2.0),  # balanced: same mean, different scale
+            (3.0, 1.0, 0.0, 1.0),  # conflict: same scale, different mean
             (-1.0, 0.5, 2.0, 1.5),  # mixed: both differ
         ],
     )
     def test_fast_path_matches_general_path(
-        self, mu_p, sigma_p, mu_q, sigma_q,
+        self,
+        mu_p,
+        sigma_p,
+        mu_q,
+        sigma_q,
     ):
         t = 0.5
         p_normal = NormalDistribution(loc=mu_p, scale=sigma_p)
@@ -335,12 +356,8 @@ class TestOTPathAgreementGaussianEndpoints:
 
         # Quantile agreement at 50 q points (atol 1e-12).
         q_grid = np.linspace(0.01, 0.99, 50)
-        qf = np.asarray(
-            [float(fast.quantile(np.asarray(u))) for u in q_grid]
-        )
-        qg = np.asarray(
-            [float(general.quantile(np.asarray(u))) for u in q_grid]
-        )
+        qf = np.asarray([float(fast.quantile(np.asarray(u))) for u in q_grid])
+        qg = np.asarray([float(general.quantile(np.asarray(u))) for u in q_grid])
         np.testing.assert_allclose(qg, qf, atol=1e-12)
 
         # PDF agreement at 50 theta points (atol 1e-9). Choose a theta range
@@ -348,10 +365,6 @@ class TestOTPathAgreementGaussianEndpoints:
         lo = mu_fast - 3.0 * sigma_fast
         hi = mu_fast + 3.0 * sigma_fast
         theta_grid = np.linspace(lo, hi, 50)
-        pdf_fast = np.asarray(
-            [float(fast.pdf(np.asarray(x))) for x in theta_grid]
-        )
-        pdf_general = np.asarray(
-            [float(general.pdf(np.asarray(x))) for x in theta_grid]
-        )
+        pdf_fast = np.asarray([float(fast.pdf(np.asarray(x))) for x in theta_grid])
+        pdf_general = np.asarray([float(general.pdf(np.asarray(x))) for x in theta_grid])
         np.testing.assert_allclose(pdf_general, pdf_fast, atol=1e-9)

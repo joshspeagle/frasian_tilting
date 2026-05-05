@@ -35,41 +35,40 @@ def _tiny_config() -> Config:
 
 @pytest.mark.L4
 class TestConfidenceDistributionExperimentEndToEnd:
-    def test_runs_and_produces_manifest(self, tmp_path: Path,
-                                          bootstrapped_registry):
+    def test_runs_and_produces_manifest(self, tmp_path: Path, bootstrapped_registry):
         experiment = registry.experiments["confidence_distribution"](
             n_grid_cd=201,
         )
         tiltings, statistics = default_cells(
             experiment="confidence_distribution",
-            n_grid=201, coarse_n=11,
+            n_grid=201,
+            coarse_n=11,
         )
         cfg = _tiny_config()
         run_experiment(
             experiment=experiment,
-            tiltings=tiltings, statistics=statistics,
-            config=cfg, out_dir=tmp_path,
+            tiltings=tiltings,
+            statistics=statistics,
+            config=cfg,
+            out_dir=tmp_path,
         )
         manifest = json.loads((tmp_path / "manifest.json").read_text())
         assert manifest["experiment"] == "confidence_distribution"
         # 6 cells in the cross product (3 tiltings × 2 statistics);
         # the two (wald × non-identity) cells gate out as incompatible.
         ok = [c for c in manifest["cells"] if c["status"] == "ok"]
-        skipped = [c for c in manifest["cells"]
-                    if c["status"] == "incompatible"]
+        skipped = [c for c in manifest["cells"] if c["status"] == "incompatible"]
         assert len(ok) == 4
         assert len(skipped) == 2
         for sk in skipped:
             assert sk["statistic"] == "wald"
-            assert (sk["tilting"].startswith("power_law")
-                    or sk["tilting"].startswith("ot"))
+            assert sk["tilting"].startswith("power_law") or sk["tilting"].startswith("ot")
         assert "cd_summary" in manifest["diagnostics"]
         # Diagnostic outputs.
         assert (tmp_path / "figures" / "cd_summary.png").exists()
         assert (tmp_path / "cd_summary.csv").exists()
 
-    def test_identity_wald_cell_has_zero_w1_to_wald(self, tmp_path: Path,
-                                                       bootstrapped_registry):
+    def test_identity_wald_cell_has_zero_w1_to_wald(self, tmp_path: Path, bootstrapped_registry):
         """The (identity, wald) cell IS the Wald CD reference. So
         W₁ to Wald is 0 (modulo numerical precision)."""
         experiment = registry.experiments["confidence_distribution"](
@@ -83,10 +82,11 @@ class TestConfidenceDistributionExperimentEndToEnd:
             out_dir=tmp_path,
         )
         manifest = json.loads((tmp_path / "manifest.json").read_text())
-        cell = next(c for c in manifest["cells"]
-                     if c["status"] == "ok"
-                     and c["statistic"] == "wald"
-                     and c["tilting"] == "identity")
+        cell = next(
+            c
+            for c in manifest["cells"]
+            if c["status"] == "ok" and c["statistic"] == "wald" and c["tilting"] == "identity"
+        )
         result = load_result(tmp_path / cell["cache_path"])
         w1 = result.arrays["w1_to_wald_cd"]
         finite = w1[np.isfinite(w1)]
@@ -95,7 +95,8 @@ class TestConfidenceDistributionExperimentEndToEnd:
         assert finite.max() < 5e-3, f"W₁(Wald, Wald) should be ~0, got {finite}"
 
     def test_dyn_waldo_cell_records_nonmonotone_at_conflict(
-            self, tmp_path: Path, bootstrapped_registry):
+        self, tmp_path: Path, bootstrapped_registry
+    ):
         """The (power_law[dyn], waldo) cell at θ=±2 (so |Δ| ≈ 1) and
         w=0.5 should record some non-monotone replicates as the dynamic
         p-value's bimodal regime kicks in."""
@@ -107,7 +108,10 @@ class TestConfidenceDistributionExperimentEndToEnd:
         )
         dyn = PowerLawTilting(
             selector=DynamicNumericalEtaSelector(
-                sigma=1.0, mu0=0.0, n_grid=201, coarse_n=11,
+                sigma=1.0,
+                mu0=0.0,
+                n_grid=201,
+                coarse_n=11,
             ),
         )
         run_experiment(
@@ -116,7 +120,8 @@ class TestConfidenceDistributionExperimentEndToEnd:
             ),
             tiltings=[dyn],
             statistics=[WaldoStatistic()],
-            config=cfg, out_dir=tmp_path,
+            config=cfg,
+            out_dir=tmp_path,
         )
         manifest = json.loads((tmp_path / "manifest.json").read_text())
         cell = next(c for c in manifest["cells"] if c["status"] == "ok")
@@ -131,8 +136,7 @@ class TestConfidenceDistributionExperimentEndToEnd:
             f"got nonmonotone_fraction={nm}"
         )
 
-    def test_all_summaries_finite_on_supported_cells(
-            self, tmp_path: Path, bootstrapped_registry):
+    def test_all_summaries_finite_on_supported_cells(self, tmp_path: Path, bootstrapped_registry):
         """Every supported cell produces finite values for all four
         headline metrics."""
         experiment = registry.experiments["confidence_distribution"](
@@ -140,11 +144,13 @@ class TestConfidenceDistributionExperimentEndToEnd:
         )
         tiltings, statistics = default_cells(
             experiment="confidence_distribution",
-            n_grid=201, coarse_n=11,
+            n_grid=201,
+            coarse_n=11,
         )
         run_experiment(
             experiment=experiment,
-            tiltings=tiltings, statistics=statistics,
+            tiltings=tiltings,
+            statistics=statistics,
             config=_tiny_config(),
             out_dir=tmp_path,
         )
@@ -153,8 +159,7 @@ class TestConfidenceDistributionExperimentEndToEnd:
             if cell["status"] != "ok":
                 continue
             result = load_result(tmp_path / cell["cache_path"])
-            for col in ("cd_median", "cd_width_95", "w1_to_wald_cd",
-                        "nonmonotone_fraction"):
+            for col in ("cd_median", "cd_width_95", "w1_to_wald_cd", "nonmonotone_fraction"):
                 arr = result.arrays[col]
                 assert np.all(np.isfinite(arr)), (
                     f"{col} has non-finite entries in {cell['tilting']} × "

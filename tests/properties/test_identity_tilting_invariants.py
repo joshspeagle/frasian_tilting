@@ -51,10 +51,17 @@ class TestIdentityTiltingInvariants:
         ident = IdentityTilting()
         wald = WaldStatistic()
         ci_via_tilting = ident.confidence_interval(
-            0.05, np.asarray([D]), model, prior, wald,
+            0.05,
+            np.asarray([D]),
+            model,
+            prior,
+            wald,
         )
         ci_direct = wald.confidence_interval(
-            0.05, np.asarray([D]), model, prior,
+            0.05,
+            np.asarray([D]),
+            model,
+            prior,
         )
         np.testing.assert_allclose(ci_via_tilting, ci_direct, atol=1e-12)
 
@@ -66,15 +73,23 @@ class TestIdentityTiltingInvariants:
         ident = IdentityTilting()
         waldo = WaldoStatistic()
         ci_via_tilting = ident.confidence_interval(
-            0.05, np.asarray([D]), model, prior, waldo,
+            0.05,
+            np.asarray([D]),
+            model,
+            prior,
+            waldo,
         )
         ci_direct = waldo.confidence_interval(
-            0.05, np.asarray([D]), model, prior,
+            0.05,
+            np.asarray([D]),
+            model,
+            prior,
         )
         np.testing.assert_allclose(ci_via_tilting, ci_direct, atol=1e-9)
 
     def test_admissible_range_is_unbounded(self):
         from frasian.tilting.base import TiltingContext
+
         ctx = TiltingContext(w=0.5, abs_delta=1.0, alpha=0.05)
         lo, hi = IdentityTilting().admissible_range(ctx)
         assert np.isinf(lo) and lo < 0

@@ -14,8 +14,7 @@ from scipy import stats
 from frasian.models.distributions import NormalDistribution
 from frasian.models.normal_normal import NormalNormalModel
 from frasian.statistics.waldo import WaldoStatistic
-from frasian.tilting.eta_selectors import (DynamicNumericalEtaSelector,
-                                              NumericalEtaSelector)
+from frasian.tilting.eta_selectors import DynamicNumericalEtaSelector, NumericalEtaSelector
 from frasian.tilting.power_law import PowerLawTilting
 
 
@@ -31,11 +30,15 @@ class TestDynamicTiltedPvalue:
         for eta in (-0.4, 0.0, 0.5, 0.9):
             eta_arr = np.full_like(thetas, eta)
             dyn = scheme.dynamic_tilted_pvalue(
-                thetas, 1.5, model, prior, "waldo", eta_arr,
+                thetas,
+                1.5,
+                model,
+                prior,
+                "waldo",
+                eta_arr,
             )
             for i, th in enumerate(thetas):
-                static = scheme.tilted_pvalue(float(th), 1.5, model, prior,
-                                                eta, "waldo")
+                static = scheme.tilted_pvalue(float(th), 1.5, model, prior, eta, "waldo")
                 np.testing.assert_allclose(dyn[i], static, atol=1e-12)
 
     def test_wald_dynamic_equals_static(self):
@@ -49,7 +52,12 @@ class TestDynamicTiltedPvalue:
         rng = np.random.default_rng(0)
         eta_arr = rng.uniform(-0.4, 0.9, size=thetas.size)
         dyn = scheme.dynamic_tilted_pvalue(
-            thetas, 1.0, model, prior, "wald", eta_arr,
+            thetas,
+            1.0,
+            model,
+            prior,
+            "wald",
+            eta_arr,
         )
         for i, th in enumerate(thetas):
             expected = 2.0 * stats.norm.sf(abs(1.0 - float(th)))
@@ -61,7 +69,11 @@ class TestDynamicTiltedPvalue:
         scheme = PowerLawTilting()
         with pytest.raises(ValueError):
             scheme.dynamic_tilted_pvalue(
-                np.array([0.0, 1.0]), 1.0, model, prior, "waldo",
+                np.array([0.0, 1.0]),
+                1.0,
+                model,
+                prior,
+                "waldo",
                 np.array([0.0]),  # wrong shape
             )
 
@@ -75,8 +87,14 @@ class TestDynamicTiltedConfidenceInterval:
         scheme = PowerLawTilting()
         selector = NumericalEtaSelector(sigma=1.0, mu0=0.0)
         regions, total, n_reg = scheme.dynamic_tilted_confidence_interval(
-            0.05, 1.5, model, prior, "wald", selector,
-            n_grid=201, coarse_n=11,
+            0.05,
+            1.5,
+            model,
+            prior,
+            "wald",
+            selector,
+            n_grid=201,
+            coarse_n=11,
         )
         assert n_reg == 1
         z = stats.norm.ppf(0.975)
@@ -92,8 +110,14 @@ class TestDynamicTiltedConfidenceInterval:
         selector = NumericalEtaSelector(sigma=1.0, mu0=0.0)
         alpha = 0.05
         regions, _, _ = scheme.dynamic_tilted_confidence_interval(
-            alpha, 1.5, model, prior, "waldo", selector,
-            n_grid=201, coarse_n=11,
+            alpha,
+            1.5,
+            model,
+            prior,
+            "waldo",
+            selector,
+            n_grid=201,
+            coarse_n=11,
         )
         assert len(regions) >= 1
         # Recompute p at each endpoint via the same dynamic procedure.
@@ -103,14 +127,17 @@ class TestDynamicTiltedConfidenceInterval:
                 ad = abs((1 - 0.5) * (0.0 - theta) / 1.0)
                 # Use the same coarse grid as the inversion did
                 from frasian.tilting.eta_selectors import _NamedStatistic
+
                 coarse = np.linspace(0.0, 8.0, 11)
                 eta_grid = selector.select_grid(
-                    coarse, scheme,
-                    statistic=_NamedStatistic("waldo"), w=0.5, alpha=alpha,
+                    coarse,
+                    scheme,
+                    statistic=_NamedStatistic("waldo"),
+                    w=0.5,
+                    alpha=alpha,
                 )
                 eta = float(np.interp(ad, coarse, eta_grid))
-                p = float(scheme.tilted_pvalue(theta, 1.5, model, prior,
-                                                eta, "waldo"))
+                p = float(scheme.tilted_pvalue(theta, 1.5, model, prior, eta, "waldo"))
                 assert abs(p - alpha) < 0.02
 
     def test_returns_at_least_one_region(self):
@@ -120,8 +147,14 @@ class TestDynamicTiltedConfidenceInterval:
         selector = NumericalEtaSelector(sigma=1.0, mu0=0.0)
         for D in (-3.0, 0.0, 2.0, 6.0):
             regions, _, n_reg = scheme.dynamic_tilted_confidence_interval(
-                0.05, D, model, prior, "waldo", selector,
-                n_grid=151, coarse_n=11,
+                0.05,
+                D,
+                model,
+                prior,
+                "waldo",
+                selector,
+                n_grid=151,
+                coarse_n=11,
             )
             assert n_reg >= 1, f"empty CI at D={D}"
             for lo, hi in regions:
@@ -151,11 +184,14 @@ class TestDynamicNumericalEtaSelectorCache:
         # cache stays bounded (typically ≤ 6 entries on this range).
         for D in np.linspace(-3, 3, 30):
             scheme.confidence_interval(
-                0.05, np.asarray([float(D)]), model, prior, stat,
+                0.05,
+                np.asarray([float(D)]),
+                model,
+                prior,
+                stat,
             )
         assert 1 <= len(sel._cache) <= 6, (
-            f"cache should fall in a small number of ad_max bins, got "
-            f"{len(sel._cache)}"
+            f"cache should fall in a small number of ad_max bins, got " f"{len(sel._cache)}"
         )
 
     def test_cache_order_independence(self):
@@ -175,11 +211,9 @@ class TestDynamicNumericalEtaSelectorCache:
         Ds = list(np.linspace(-3, 3, 12))
         # sel_a sees Ds in forward order; sel_b in reverse.
         for D in Ds:
-            scheme_a.confidence_interval(0.05, np.asarray([float(D)]),
-                                           model, prior, stat)
+            scheme_a.confidence_interval(0.05, np.asarray([float(D)]), model, prior, stat)
         for D in reversed(Ds):
-            scheme_b.confidence_interval(0.05, np.asarray([float(D)]),
-                                           model, prior, stat)
+            scheme_b.confidence_interval(0.05, np.asarray([float(D)]), model, prior, stat)
         # Same set of cache keys.
         assert set(sel_a._cache) == set(sel_b._cache)
         # Same cached grid + η values per key.
@@ -198,6 +232,10 @@ class TestDynamicNumericalEtaSelectorCache:
         for sigma0 in (0.5, 1.0, 2.0):
             prior = NormalDistribution(loc=0.0, scale=sigma0)
             scheme.confidence_interval(
-                0.05, np.asarray([1.0]), model, prior, stat,
+                0.05,
+                np.asarray([1.0]),
+                model,
+                prior,
+                stat,
             )
         assert len(sel._cache) == 3

@@ -11,9 +11,10 @@ Registration also records the relative path to the method's brief markdown so
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator, Literal, TypeVar
+from typing import Any, Callable, Literal, TypeVar
 
 from ._errors import RegistryConflictError
 
@@ -68,8 +69,9 @@ class _Slice:
         completeness checker that needs the brief path / status / source file."""
         return list(self._entries.values())
 
-    def where(self, *, status: Status | None = None,
-              name__in: Iterable[str] | None = None) -> list[Any]:
+    def where(
+        self, *, status: Status | None = None, name__in: Iterable[str] | None = None
+    ) -> list[Any]:
         """Filter the slice by `status` and/or `name__in`. Both are optional;
         when neither is supplied, behaves as `all()`."""
         names = set(name__in) if name__in is not None else None
@@ -111,8 +113,7 @@ class Registry:
     def all_entries(self) -> list[RegistryEntry]:
         """Concat of every slice's entries — used by the completeness checker."""
         out: list[RegistryEntry] = []
-        for s in (self.models, self.tiltings, self.statistics,
-                  self.experiments, self.diagnostics):
+        for s in (self.models, self.tiltings, self.statistics, self.experiments, self.diagnostics):
             out.extend(s.entries())
         return out
 
@@ -129,8 +130,9 @@ registry = Registry()
 
 
 def _make_decorator(kind: Kind) -> Callable[..., Callable[[type[T]], type[T]]]:
-    def decorator(*, name: str, brief: str, status: Status = "implemented"
-                  ) -> Callable[[type[T]], type[T]]:
+    def decorator(
+        *, name: str, brief: str, status: Status = "implemented"
+    ) -> Callable[[type[T]], type[T]]:
         def wrap(cls: type[T]) -> type[T]:
             source_file = ""
             try:

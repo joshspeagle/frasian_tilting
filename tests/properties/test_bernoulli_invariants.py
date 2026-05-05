@@ -38,22 +38,20 @@ class TestBernoulliModelInvariants:
 
     @given(alpha=_ALPHA, beta=_BETA, n_success=st.integers(0, 20))
     @settings(max_examples=30, deadline=None)
-    def test_posterior_mean_between_prior_and_mle(self, alpha, beta,
-                                                     n_success):
+    def test_posterior_mean_between_prior_and_mle(self, alpha, beta, n_success):
         """The Beta posterior mean lies between prior mean and MLE."""
         n_total = 20
         model = BernoulliModel()
         prior = BetaDistribution(alpha=alpha, beta=beta)
-        data = np.concatenate([np.ones(n_success),
-                                np.zeros(n_total - n_success)])
+        data = np.concatenate([np.ones(n_success), np.zeros(n_total - n_success)])
         post = model.posterior(data, prior)
         prior_mean = prior.mean()
         mle = float(model.mle(data))
         post_mean = post.mean()
         lo, hi = (prior_mean, mle) if prior_mean <= mle else (mle, prior_mean)
-        assert lo - 1e-9 <= post_mean <= hi + 1e-9, (
-            f"posterior mean {post_mean} outside [{lo}, {hi}]"
-        )
+        assert (
+            lo - 1e-9 <= post_mean <= hi + 1e-9
+        ), f"posterior mean {post_mean} outside [{lo}, {hi}]"
 
     @given(alpha=_ALPHA, beta=_BETA, theta=_THETA)
     @settings(max_examples=10, deadline=None)
@@ -85,26 +83,27 @@ class TestBernoulliPairingsRaise:
 
     def test_wald_pvalue_raises(self):
         with pytest.raises(NotImplementedError, match="NormalNormalModel"):
-            WaldStatistic().pvalue(0.5, np.array([1.0, 0.0]),
-                                     BernoulliModel())
+            WaldStatistic().pvalue(0.5, np.array([1.0, 0.0]), BernoulliModel())
 
     def test_wald_ci_raises(self):
         with pytest.raises(NotImplementedError, match="NormalNormalModel"):
             WaldStatistic().confidence_interval(
-                0.05, np.array([1.0, 0.0]), BernoulliModel(),
+                0.05,
+                np.array([1.0, 0.0]),
+                BernoulliModel(),
             )
 
     def test_waldo_pvalue_raises(self):
         prior = BetaDistribution(alpha=2.0, beta=2.0)
         with pytest.raises(NotImplementedError, match="NormalNormalModel"):
-            WaldoStatistic().pvalue(0.5, np.array([1.0, 0.0]),
-                                      BernoulliModel(), prior)
+            WaldoStatistic().pvalue(0.5, np.array([1.0, 0.0]), BernoulliModel(), prior)
 
     def test_power_law_tilt_raises(self):
         prior = BetaDistribution(alpha=2.0, beta=2.0)
         model = BernoulliModel()
         post = model.posterior(np.array([1.0, 0.0]), prior)
         from frasian.models.distributions import BernoulliLikelihood
+
         lik = BernoulliLikelihood(n_success=1, n_total=2)
         with pytest.raises(NotImplementedError):
             PowerLawTilting().tilt(post, prior, lik, 0.0)

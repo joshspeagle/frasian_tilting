@@ -52,8 +52,8 @@ class CDValidityIssue:
     or the illustration script).
     """
 
-    code: str       # short tag, e.g. "non-monotone-signed-confidence"
-    message: str    # human-readable description
+    code: str  # short tag, e.g. "non-monotone-signed-confidence"
+    message: str  # human-readable description
     severity: str = "warning"  # "warning" | "error"
 
 
@@ -109,15 +109,23 @@ class GridConfidenceDistribution:
 
     def pdf(self, theta: ArrayLike) -> NDArray[np.float64]:
         """pdf interpolated at `theta` (linear)."""
-        return np.interp(np.asarray(theta, dtype=np.float64),
-                         self.theta_grid, self.pdf_values,
-                         left=0.0, right=0.0)
+        return np.interp(
+            np.asarray(theta, dtype=np.float64),
+            self.theta_grid,
+            self.pdf_values,
+            left=0.0,
+            right=0.0,
+        )
 
     def cdf(self, theta: ArrayLike) -> NDArray[np.float64]:
         """cdf interpolated at `theta` (linear). Always monotone."""
-        return np.interp(np.asarray(theta, dtype=np.float64),
-                         self.theta_grid, self.cdf_values,
-                         left=0.0, right=float(self.cdf_values[-1]))
+        return np.interp(
+            np.asarray(theta, dtype=np.float64),
+            self.theta_grid,
+            self.cdf_values,
+            left=0.0,
+            right=float(self.cdf_values[-1]),
+        )
 
     def quantile(self, q: ArrayLike) -> NDArray[np.float64]:
         """Inverse-cdf at probability `q ∈ [0, 1]`, linear interpolation.
@@ -129,9 +137,13 @@ class GridConfidenceDistribution:
         # Strictly monotonise to handle plateaus where cdf is flat (zero
         # density). np.interp treats ties by returning the leftmost match,
         # which is the correct inverse-cdf in that case.
-        return np.interp(q_arr, self.cdf_values, self.theta_grid,
-                         left=float(self.theta_grid[0]),
-                         right=float(self.theta_grid[-1]))
+        return np.interp(
+            q_arr,
+            self.cdf_values,
+            self.theta_grid,
+            left=float(self.theta_grid[0]),
+            right=float(self.theta_grid[-1]),
+        )
 
     def interval(self, alpha: float) -> tuple[float, float]:
         """Equal-tailed (1−α) interval: (quantile(α/2), quantile(1−α/2))."""
@@ -145,8 +157,7 @@ class GridConfidenceDistribution:
 
     def mean(self) -> float:
         """CD-mean: ∫θ pdf(θ) dθ via trapezoidal integration."""
-        return float(np.trapezoid(self.theta_grid * self.pdf_values,
-                                   self.theta_grid))
+        return float(np.trapezoid(self.theta_grid * self.pdf_values, self.theta_grid))
 
     def median(self) -> float:
         """CD-median: quantile(0.5). Reparametrisation-invariant."""
@@ -157,8 +168,7 @@ class GridConfidenceDistribution:
         idx = int(np.argmax(self.pdf_values))
         return float(self.theta_grid[idx])
 
-    def secondary_modes(self, *, prominence_frac: float = 0.1
-                         ) -> list[float]:
+    def secondary_modes(self, *, prominence_frac: float = 0.1) -> list[float]:
         """Local maxima other than the global mode whose prominence
         (peak height − adjacent valley) exceeds `prominence_frac` of the
         global maximum. Useful for detecting multimodal CDs."""
@@ -203,51 +213,65 @@ class GridConfidenceDistribution:
 
         # Shape consistency.
         if self.theta_grid.size != self.pdf_values.size:
-            issues.append(CDValidityIssue(
-                code="shape-mismatch",
-                message=(f"theta_grid (size {self.theta_grid.size}) and "
-                         f"pdf_values (size {self.pdf_values.size}) "
-                         f"must match"),
-                severity="error",
-            ))
+            issues.append(
+                CDValidityIssue(
+                    code="shape-mismatch",
+                    message=(
+                        f"theta_grid (size {self.theta_grid.size}) and "
+                        f"pdf_values (size {self.pdf_values.size}) "
+                        f"must match"
+                    ),
+                    severity="error",
+                )
+            )
             return issues
 
         # pdf non-negativity.
         min_pdf = float(self.pdf_values.min())
         if min_pdf < -1e-9:
-            issues.append(CDValidityIssue(
-                code="negative-pdf",
-                message=f"pdf has negative values; min = {min_pdf:.3e}",
-                severity="error",
-            ))
+            issues.append(
+                CDValidityIssue(
+                    code="negative-pdf",
+                    message=f"pdf has negative values; min = {min_pdf:.3e}",
+                    severity="error",
+                )
+            )
 
         # Integration mass.
         mass = float(np.trapezoid(self.pdf_values, self.theta_grid))
         if abs(mass - 1.0) > 1e-2:
-            issues.append(CDValidityIssue(
-                code="mass-not-unit",
-                message=f"pdf integrates to {mass:.4f}, not ≈ 1",
-                severity="warning",
-            ))
+            issues.append(
+                CDValidityIssue(
+                    code="mass-not-unit",
+                    message=f"pdf integrates to {mass:.4f}, not ≈ 1",
+                    severity="warning",
+                )
+            )
 
         # Strictly increasing theta_grid.
         if not np.all(np.diff(self.theta_grid) > 0):
-            issues.append(CDValidityIssue(
-                code="non-monotone-grid",
-                message="theta_grid must be strictly increasing",
-                severity="error",
-            ))
+            issues.append(
+                CDValidityIssue(
+                    code="non-monotone-grid",
+                    message="theta_grid must be strictly increasing",
+                    severity="error",
+                )
+            )
 
         # Signed-confidence monotonicity (the smoothness-pathology flag).
         if self.signed_confidence is not None and not self.is_monotone_inversion():
-            issues.append(CDValidityIssue(
-                code="non-monotone-signed-confidence",
-                message=("inversion-based C(θ) is non-monotone; the "
-                         "underlying p-value is multimodal (e.g. Dyn-WALDO "
-                         "under conflict). Distance metrics still work on "
-                         "the density-derived cdf, but this flags the "
-                         "diagnostic for downstream consumers."),
-                severity="warning",
-            ))
+            issues.append(
+                CDValidityIssue(
+                    code="non-monotone-signed-confidence",
+                    message=(
+                        "inversion-based C(θ) is non-monotone; the "
+                        "underlying p-value is multimodal (e.g. Dyn-WALDO "
+                        "under conflict). Distance metrics still work on "
+                        "the density-derived cdf, but this flags the "
+                        "diagnostic for downstream consumers."
+                    ),
+                    severity="warning",
+                )
+            )
 
         return issues

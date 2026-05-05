@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any
 
 import numpy as np
 from numpy.random import Generator
@@ -29,8 +30,8 @@ class RawSamples:
     """
 
     name: str
-    D: NDArray[np.float64]                  # shape (n_theta, n_reps)
-    theta_grid: NDArray[np.float64]         # shape (n_theta,)
+    D: NDArray[np.float64]  # shape (n_theta, n_reps)
+    theta_grid: NDArray[np.float64]  # shape (n_theta,)
     sigma: float
     seed: int
     metadata: Mapping[str, Any] = field(default_factory=dict)

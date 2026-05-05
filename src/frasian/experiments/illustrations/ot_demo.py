@@ -26,8 +26,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from frasian.models.distributions import (BetaDistribution, GaussianLikelihood,
-                                            NormalDistribution)
+from frasian.models.distributions import BetaDistribution, GaussianLikelihood, NormalDistribution
 from frasian.models.normal_normal import NormalNormalModel
 from frasian.tilting.ot import OTTilting
 from frasian.tilting.quantile_mixture import QuantileMixturePath
@@ -52,20 +51,20 @@ def main(smoke: bool = False, out: Path | None = None) -> Path:
     fig, (ax_a, ax_b) = plt.subplots(1, 2, figsize=(11.0, 3.7))
 
     # Panel A: Gaussian fast path on the Normal-Normal sandbox.
-    cmap = plt.cm.viridis
+    cmap = plt.get_cmap("viridis")
     for i, eta in enumerate(etas):
         tilted = scheme.tilt(posterior, prior, likelihood, float(eta))
         color = cmap(i / max(1, len(etas) - 1))
         label = (
-            r"$\eta=0$ (WALDO)" if eta == 0.0 else
-            r"$\eta=1$ (Wald)" if eta == 1.0 else
-            fr"$\eta={eta:.1f}$"
+            r"$\eta=0$ (WALDO)"
+            if eta == 0.0
+            else r"$\eta=1$ (Wald)" if eta == 1.0 else rf"$\eta={eta:.1f}$"
         )
         ax_a.plot(thetas, tilted.pdf(thetas), color=color, lw=1.6, label=label)
     ax_a.set_xlabel(r"$\theta$")
     ax_a.set_ylabel("density")
     ax_a.set_title(
-        fr"OT (Gaussian fast path): linear in $(\mu, \sigma)$, no clamp"
+        rf"OT (Gaussian fast path): linear in $(\mu, \sigma)$, no clamp"
         f"\n$D={D}$, $\\sigma_0={sigma0}$"
     )
     ax_a.legend(loc="upper right", frameon=False, fontsize=8)
@@ -73,7 +72,6 @@ def main(smoke: bool = False, out: Path | None = None) -> Path:
     # Panel B: General 1D quantile-mixture between two Betas.
     p = BetaDistribution(alpha=2.0, beta=5.0)
     q = BetaDistribution(alpha=5.0, beta=2.0)
-    xs = np.linspace(0.001, 0.999, 401 if smoke else 801)
     for i, t in enumerate(etas):
         path = QuantileMixturePath(p=p, q=q, t=float(t))
         color = cmap(i / max(1, len(etas) - 1))
@@ -81,8 +79,7 @@ def main(smoke: bool = False, out: Path | None = None) -> Path:
         # clarity on Beta endpoints — pdf computation requires numerical
         # CDF inversion at every theta and is ~1000x slower than quantile.
         u = np.linspace(0.001, 0.999, 201)
-        ax_b.plot(u, path.quantile(u), color=color, lw=1.6,
-                   label=fr"$t={t:.1f}$")
+        ax_b.plot(u, path.quantile(u), color=color, lw=1.6, label=rf"$t={t:.1f}$")
     ax_b.set_xlabel(r"$u$ (uniform parameter)")
     ax_b.set_ylabel(r"$F_t^{-1}(u)$")
     ax_b.set_title(

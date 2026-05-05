@@ -47,9 +47,7 @@ class QuantileMixturePath:
 
     def __post_init__(self) -> None:
         if not (0.0 <= float(self.t) <= 1.0):
-            raise ValueError(
-                f"t must lie in [0, 1], got {self.t!r}."
-            )
+            raise ValueError(f"t must lie in [0, 1], got {self.t!r}.")
 
     # ----- Closed-form pieces -----
 
@@ -82,7 +80,10 @@ class QuantileMixturePath:
         x_arr = np.atleast_1d(np.asarray(x, dtype=np.float64))
         out = np.empty_like(x_arr)
         for i, xi in enumerate(x_arr):
-            f = lambda u, xi=xi: float(self.quantile(np.asarray(u))) - float(xi)
+
+            def f(u: float, xi: float = xi) -> float:
+                return float(self.quantile(np.asarray(u))) - float(xi)
+
             try:
                 u_star = optimize.brentq(f, eps, 1.0 - eps, xtol=1e-10)
             except ValueError:
@@ -99,14 +100,13 @@ class QuantileMixturePath:
                         f"x={xi!r}: f(eps={eps!r})={f_eps!r} is non-finite. "
                         f"Endpoint quantile() likely returned NaN/Inf at "
                         f"the support boundary."
-                    )
+                    ) from None
                 out[i] = 0.0 if f_eps > 0.0 else 1.0
                 continue
             out[i] = u_star
         return out if x_arr.size > 1 else np.asarray(float(out[0]))
 
-    def _outside_support_mask(self, x_arr: NDArray[np.float64]
-                              ) -> NDArray[np.bool_]:
+    def _outside_support_mask(self, x_arr: NDArray[np.float64]) -> NDArray[np.bool_]:
         """True at indices where `x_arr[i]` lies outside the path's support.
 
         Symmetric with `cdf`'s boundary detector: an x lies outside the
@@ -117,10 +117,8 @@ class QuantileMixturePath:
         might change `cdf`'s exact-boundary return value.
         """
         eps = 1e-12
-        q_lo = float(np.asarray(self.quantile(np.asarray(eps)),
-                                  dtype=np.float64))
-        q_hi = float(np.asarray(self.quantile(np.asarray(1.0 - eps)),
-                                  dtype=np.float64))
+        q_lo = float(np.asarray(self.quantile(np.asarray(eps)), dtype=np.float64))
+        q_hi = float(np.asarray(self.quantile(np.asarray(1.0 - eps)), dtype=np.float64))
         return (x_arr < q_lo) | (x_arr > q_hi)
 
     def pdf(self, x: ArrayLike) -> NDArray[np.float64]:
@@ -145,8 +143,9 @@ class QuantileMixturePath:
         fp = np.asarray(self.p.pdf(xp), dtype=np.float64)
         fq = np.asarray(self.q.pdf(xq), dtype=np.float64)
         # Guard against division by zero at endpoints — return 0 density there.
-        denom = np.where(fp > 0, (1.0 - self.t) / np.where(fp > 0, fp, 1.0), 0.0) \
-              + np.where(fq > 0, self.t / np.where(fq > 0, fq, 1.0), 0.0)
+        denom = np.where(fp > 0, (1.0 - self.t) / np.where(fp > 0, fp, 1.0), 0.0) + np.where(
+            fq > 0, self.t / np.where(fq > 0, fq, 1.0), 0.0
+        )
         out = np.where(denom > 0, 1.0 / np.where(denom > 0, denom, 1.0), 0.0)
         out = np.where(outside, 0.0, out)
         return out if x_arr.size > 1 else np.asarray(float(out[0]))

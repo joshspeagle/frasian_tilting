@@ -76,12 +76,8 @@ class TestScaledConflict:
 @pytest.mark.L0
 class TestPriorResidual:
     def test_formula(self):
-        np.testing.assert_allclose(
-            prior_residual(theta=2.0, mu0=0.0, sigma0=1.0), 2.0, atol=1e-12
-        )
-        np.testing.assert_allclose(
-            prior_residual(theta=4.0, mu0=2.0, sigma0=2.0), 1.0, atol=1e-12
-        )
+        np.testing.assert_allclose(prior_residual(theta=2.0, mu0=0.0, sigma0=1.0), 2.0, atol=1e-12)
+        np.testing.assert_allclose(prior_residual(theta=4.0, mu0=2.0, sigma0=2.0), 1.0, atol=1e-12)
 
 
 @pytest.mark.L0
@@ -108,13 +104,12 @@ class TestNormalNormalModel:
 
     def test_mle_is_data_mean(self):
         model = NormalNormalModel(sigma=1.0)
-        np.testing.assert_allclose(model.mle(np.asarray([1.0, 2.0, 3.0])), 2.0,
-                                    atol=1e-12)
+        np.testing.assert_allclose(model.mle(np.asarray([1.0, 2.0, 3.0])), 2.0, atol=1e-12)
 
     def test_fisher_information_is_inverse_variance(self):
         model = NormalNormalModel(sigma=2.0)
-        I = model.fisher_information(0.0)
-        np.testing.assert_allclose(I, 0.25, atol=1e-12)
+        info = model.fisher_information(0.0)
+        np.testing.assert_allclose(info, 0.25, atol=1e-12)
 
     def test_sigma_must_be_positive(self):
         with pytest.raises(ValueError):

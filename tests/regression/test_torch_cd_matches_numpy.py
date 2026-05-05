@@ -33,12 +33,20 @@ def test_cd_density_torch_matches_numpy(D, sigma0):
     prior = NormalDistribution(loc=mu0, scale=sigma0)
 
     cd = build_cd_from_pvalue(
-        IdentityTilting(), WaldoStatistic(), float(D), model, prior,
-        n_grid=201, half_width_sigma=6.0,
+        IdentityTilting(),
+        WaldoStatistic(),
+        float(D),
+        model,
+        prior,
+        n_grid=201,
+        half_width_sigma=6.0,
     )
     theta_grid_np = cd.theta_grid
     p_theta_np = WaldoStatistic().pvalue(
-        theta_grid_np, np.asarray([float(D)]), model, prior,
+        theta_grid_np,
+        np.asarray([float(D)]),
+        model,
+        prior,
     )
     p_theta_np = np.clip(p_theta_np, 0.0, 1.0)
 
@@ -57,6 +65,7 @@ def test_cd_density_torch_integrates_to_one():
     a = (theta - 1.0).abs() / 0.7
     b = -0.3 * (theta - 0.0)
     from torch.distributions import Normal
+
     n = Normal(0.0, 1.0)
     p = n.cdf(b - a) + n.cdf(-a - b)
     p = p.unsqueeze(0).expand(3, -1)  # batch of 3 identical rows
@@ -85,8 +94,7 @@ def test_cd_density_torch_per_sample_grid():
     theta_1d = torch.linspace(-3.0, 3.0, 51, dtype=torch.float64)
     theta_2d = theta_1d.unsqueeze(0).expand(4, -1).contiguous()
     # Synthetic well-behaved p-value.
-    p = torch.sigmoid(-(theta_1d - 0.5) ** 2 + 0.5).unsqueeze(0).expand(4, -1)
+    p = torch.sigmoid(-((theta_1d - 0.5) ** 2) + 0.5).unsqueeze(0).expand(4, -1)
     pdf_shared = cd_density_torch(p, theta_1d)
     pdf_per = cd_density_torch(p, theta_2d)
-    np.testing.assert_allclose(pdf_per.numpy(), pdf_shared.numpy(),
-                                 atol=1e-12)
+    np.testing.assert_allclose(pdf_per.numpy(), pdf_shared.numpy(), atol=1e-12)

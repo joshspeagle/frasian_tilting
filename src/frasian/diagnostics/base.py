@@ -13,12 +13,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, runtime_checkable
-
-import pandas as pd
 
 # Avoid circular import: forward declare RawResult via TYPE_CHECKING.
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
+
+import pandas as pd
 
 if TYPE_CHECKING:
     from ..experiments.base import RawResult
@@ -38,7 +37,8 @@ class DiagnosticTable:
 class Diagnostic(Protocol):
     """Pure function from RawResult to DiagnosticTable + figure."""
 
-    name: str
+    @property
+    def name(self) -> str: ...
 
-    def compute(self, raw: "RawResult") -> DiagnosticTable: ...
+    def compute(self, raw: RawResult) -> DiagnosticTable: ...
     def render(self, table: DiagnosticTable, fig_dir: Path) -> Path: ...

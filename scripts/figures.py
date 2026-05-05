@@ -14,12 +14,11 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Iterable
 
 import pandas as pd
 
-from frasian._registry_bootstrap import bootstrap
 from frasian._registry import registry
+from frasian._registry_bootstrap import bootstrap
 from frasian.experiments.base import RawResult
 from frasian.simulation.storage import load_result
 
@@ -38,15 +37,16 @@ def _load_cells(manifest_path: Path) -> tuple[str, list[RawResult]]:
         stored = load_result(path)
         # Strip the `_cache_key` and `_schema_version` keys; everything else
         # was the experiment's RawResult.metadata at write time.
-        meta = {k: v for k, v in stored.metadata.items()
-                if not k.startswith("_")}
-        raw_results.append(RawResult(
-            experiment=experiment_name,
-            tilting=cell["tilting"],
-            statistic=cell["statistic"],
-            arrays=stored.arrays,
-            metadata=meta,
-        ))
+        meta = {k: v for k, v in stored.metadata.items() if not k.startswith("_")}
+        raw_results.append(
+            RawResult(
+                experiment=experiment_name,
+                tilting=cell["tilting"],
+                statistic=cell["statistic"],
+                arrays=stored.arrays,
+                metadata=meta,
+            )
+        )
     return experiment_name, raw_results
 
 
@@ -71,7 +71,9 @@ def regenerate(results_dir: Path) -> list[Path]:
         from frasian.diagnostics.base import DiagnosticTable
 
         merged = DiagnosticTable(
-            name=diag.name, table=merged_df, units=tables[0].units,
+            name=diag.name,
+            table=merged_df,
+            units=tables[0].units,
             metadata=tables[0].metadata,
         )
         merged_df.to_csv(results_dir / f"{diag.name}.csv", index=False)

@@ -49,9 +49,7 @@ def brentq_with_doubling(
     if direction not in (-1, 1):
         raise ValueError(f"direction must be +1 or -1, got {direction!r}")
     if initial_half_width <= 0:
-        raise ValueError(
-            f"initial_half_width must be positive, got {initial_half_width!r}"
-        )
+        raise ValueError(f"initial_half_width must be positive, got {initial_half_width!r}")
 
     f_mid = f(midpoint)
     half = initial_half_width
@@ -60,8 +58,7 @@ def brentq_with_doubling(
         f_end = f(endpoint)
         if np.isfinite(f_mid) and np.isfinite(f_end) and f_mid * f_end <= 0.0:
             a, b = (endpoint, midpoint) if direction < 0 else (midpoint, endpoint)
-            return float(optimize.brentq(f, a, b, xtol=xtol, rtol=rtol,
-                                         maxiter=maxiter))
+            return float(optimize.brentq(f, a, b, xtol=xtol, rtol=rtol, maxiter=maxiter))
         half *= 2.0
 
     raise BracketingFailed(

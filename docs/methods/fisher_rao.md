@@ -65,7 +65,7 @@ Strapasson & Costa 2020 §3). In raw coordinates, `K = -1/2`.
   rescaled-coordinate endpoints; the arc is parameterised by angle
   linear in `t` (constant-speed geodesic in arc-length).
 
-The closed-form *distance* is given in Costa et al. 2015 Eq. 12 (= 
+The closed-form *distance* is given in Costa et al. 2015 Eq. 12 (=
 Pinele et al. 2020 Eq. 22):
 
 ```

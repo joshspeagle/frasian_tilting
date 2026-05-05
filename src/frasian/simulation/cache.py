@@ -20,10 +20,11 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable
 
 from numpy.typing import NDArray
 
@@ -43,15 +44,18 @@ class CacheKey:
     extra: Mapping[str, Any] = field(default_factory=dict)
 
     def digest(self) -> str:
-        payload = json.dumps({
-            "experiment": self.experiment,
-            "tilting": self.tilting,
-            "statistic": self.statistic,
-            "config": self.config_fingerprint,
-            "git": self.git_sha,
-            "raw": self.raw_fingerprint,
-            "extra": dict(self.extra),
-        }, sort_keys=True).encode()
+        payload = json.dumps(
+            {
+                "experiment": self.experiment,
+                "tilting": self.tilting,
+                "statistic": self.statistic,
+                "config": self.config_fingerprint,
+                "git": self.git_sha,
+                "raw": self.raw_fingerprint,
+                "extra": dict(self.extra),
+            },
+            sort_keys=True,
+        ).encode()
         return hashlib.sha256(payload).hexdigest()[:24]
 
     def is_dirty(self) -> bool:
@@ -75,12 +79,18 @@ def git_sha(repo_root: Path | None = None) -> str:
     try:
         sha = subprocess.run(
             ["git", "rev-parse", "HEAD"],
-            cwd=cwd, check=True, capture_output=True, text=True,
+            cwd=cwd,
+            check=True,
+            capture_output=True,
+            text=True,
         ).stdout.strip()
         # Detect dirty tree: any unstaged or staged changes.
         status = subprocess.run(
             ["git", "status", "--porcelain"],
-            cwd=cwd, check=True, capture_output=True, text=True,
+            cwd=cwd,
+            check=True,
+            capture_output=True,
+            text=True,
         ).stdout
         if status.strip():
             tree = hashlib.sha256(status.encode()).hexdigest()[:8]
@@ -136,8 +146,7 @@ def clear_cache(cache_root: Path, *, experiment: str | None = None) -> int:
     cache_root = Path(cache_root)
     if not cache_root.exists():
         return 0
-    targets = ([cache_root / experiment] if experiment is not None
-               else list(cache_root.iterdir()))
+    targets = [cache_root / experiment] if experiment is not None else list(cache_root.iterdir())
     n = 0
     for target in targets:
         if not target.exists() or not target.is_dir():

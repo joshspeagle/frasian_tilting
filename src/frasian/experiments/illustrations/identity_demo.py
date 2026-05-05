@@ -45,14 +45,18 @@ def main(smoke: bool = False, out: Path | None = None) -> Path:
     ci_waldo = ident.confidence_interval(alpha, np.asarray([D]), model, prior, waldo)
 
     fig, axes = plt.subplots(1, 2, figsize=(10, 3.6))
-    for ax, (p, ci, color, label) in zip(axes, [
-        (p_wald, ci_wald, "#DC3545", "Wald"),
-        (p_waldo, ci_waldo, "#2E86AB", "WALDO"),
-    ]):
-        ax.plot(thetas, p, color=color, lw=2, label=fr"$p(\theta)$")
-        ax.axhline(alpha, ls="--", color="0.5", lw=1, label=fr"$\alpha={alpha}$")
-        ax.axvspan(ci[0], ci[1], color=color, alpha=0.12,
-                   label=f"95% CI [{ci[0]:.2f}, {ci[1]:.2f}]")
+    for ax, (p, ci, color, label) in zip(
+        axes,
+        [
+            (p_wald, ci_wald, "#DC3545", "Wald"),
+            (p_waldo, ci_waldo, "#2E86AB", "WALDO"),
+        ],
+    ):
+        ax.plot(thetas, p, color=color, lw=2, label=r"$p(\theta)$")
+        ax.axhline(alpha, ls="--", color="0.5", lw=1, label=rf"$\alpha={alpha}$")
+        ax.axvspan(
+            ci[0], ci[1], color=color, alpha=0.12, label=f"95% CI [{ci[0]:.2f}, {ci[1]:.2f}]"
+        )
         ax.axvline(D, color="0.2", lw=1, ls=":", label=f"D={D}")
         ax.set_xlabel(r"$\theta$")
         ax.set_ylabel(r"$p(\theta)$")
@@ -71,8 +75,7 @@ def main(smoke: bool = False, out: Path | None = None) -> Path:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--smoke", action="store_true",
-                        help="fast mode used by CI")
+    parser.add_argument("--smoke", action="store_true", help="fast mode used by CI")
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args()
     path = main(smoke=args.smoke, out=args.out)

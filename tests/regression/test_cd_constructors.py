@@ -27,10 +27,7 @@ from frasian.models.distributions import NormalDistribution
 from frasian.models.normal_normal import NormalNormalModel
 from frasian.statistics.wald import WaldStatistic
 from frasian.statistics.waldo import WaldoStatistic
-from frasian.tilting.eta_selectors import (
-    DynamicNumericalEtaSelector,
-    FixedEtaSelector,
-)
+from frasian.tilting.eta_selectors import DynamicNumericalEtaSelector, FixedEtaSelector
 from frasian.tilting.identity import IdentityTilting
 from frasian.tilting.power_law import PowerLawTilting
 
@@ -50,7 +47,11 @@ class TestUniversalAgreesWithClosedFormWald:
         # Use the same θ-grid for both so cdf values are comparable.
         theta = np.linspace(D - 8, D + 8, 1001)
         actual = build_cd_from_pvalue(
-            IdentityTilting(), WaldStatistic(), D, m, prior,
+            IdentityTilting(),
+            WaldStatistic(),
+            D,
+            m,
+            prior,
             theta_grid=theta,
         )
         expected = wald_cd(D, m.sigma, theta_grid=theta)
@@ -58,15 +59,21 @@ class TestUniversalAgreesWithClosedFormWald:
         # introduces ~3e-3 truncation error at the |D−θ| kink. 5e-3 atol is
         # the realistic agreement threshold.
         np.testing.assert_allclose(
-            actual.cdf_values, expected.cdf_values, atol=5e-3,
+            actual.cdf_values,
+            expected.cdf_values,
+            atol=5e-3,
         )
         # pdf agreement (looser since FD vs closed-form).
         np.testing.assert_allclose(
-            actual.pdf_values, expected.pdf_values, atol=5e-3,
+            actual.pdf_values,
+            expected.pdf_values,
+            atol=5e-3,
         )
         # Inversion-based C(θ) should match too (Wald is unimodal).
         np.testing.assert_allclose(
-            actual.signed_confidence, expected.signed_confidence, atol=5e-3,
+            actual.signed_confidence,
+            expected.signed_confidence,
+            atol=5e-3,
         )
 
     @pytest.mark.parametrize("D", [-1.0, 1.5])
@@ -74,7 +81,11 @@ class TestUniversalAgreesWithClosedFormWald:
         m, prior = _model_prior()
         theta = np.linspace(D - 8, D + 8, 1001)
         cd = build_cd_from_pvalue(
-            IdentityTilting(), WaldStatistic(), D, m, prior,
+            IdentityTilting(),
+            WaldStatistic(),
+            D,
+            m,
+            prior,
             theta_grid=theta,
         )
         assert cd.is_monotone_inversion()
@@ -89,15 +100,23 @@ class TestUniversalAgreesWithClosedFormWaldo:
         m, prior = _model_prior()
         theta = np.linspace(D - 8, D + 8, 1001)
         actual = build_cd_from_pvalue(
-            IdentityTilting(), WaldoStatistic(), D, m, prior,
+            IdentityTilting(),
+            WaldoStatistic(),
+            D,
+            m,
+            prior,
             theta_grid=theta,
         )
         expected = waldo_cd(D, m, prior, theta_grid=theta)
         np.testing.assert_allclose(
-            actual.cdf_values, expected.cdf_values, atol=1e-3,
+            actual.cdf_values,
+            expected.cdf_values,
+            atol=1e-3,
         )
         np.testing.assert_allclose(
-            actual.pdf_values, expected.pdf_values, atol=5e-3,
+            actual.pdf_values,
+            expected.pdf_values,
+            atol=5e-3,
         )
 
     def test_power_law_fixed_eta_zero_matches_waldo(self):
@@ -107,13 +126,25 @@ class TestUniversalAgreesWithClosedFormWaldo:
         theta = np.linspace(D - 8, D + 8, 1001)
         plain = PowerLawTilting(selector=FixedEtaSelector(eta=0.0))
         cd_pl = build_cd_from_pvalue(
-            plain, WaldoStatistic(), D, m, prior, theta_grid=theta,
+            plain,
+            WaldoStatistic(),
+            D,
+            m,
+            prior,
+            theta_grid=theta,
         )
         cd_id = build_cd_from_pvalue(
-            IdentityTilting(), WaldoStatistic(), D, m, prior, theta_grid=theta,
+            IdentityTilting(),
+            WaldoStatistic(),
+            D,
+            m,
+            prior,
+            theta_grid=theta,
         )
         np.testing.assert_allclose(
-            cd_pl.pdf_values, cd_id.pdf_values, atol=1e-9,
+            cd_pl.pdf_values,
+            cd_id.pdf_values,
+            atol=1e-9,
         )
 
 
@@ -129,11 +160,18 @@ class TestUniversalAgreesWithClosedFormTiltedWaldo:
         theta = np.linspace(D - 8, D + 8, 1001)
         scheme = PowerLawTilting(selector=FixedEtaSelector(eta=eta))
         actual = build_cd_from_pvalue(
-            scheme, WaldoStatistic(), D, m, prior, theta_grid=theta,
+            scheme,
+            WaldoStatistic(),
+            D,
+            m,
+            prior,
+            theta_grid=theta,
         )
         expected = tilted_waldo_cd(D, m, prior, eta, theta_grid=theta)
         np.testing.assert_allclose(
-            actual.cdf_values, expected.cdf_values, atol=1e-3,
+            actual.cdf_values,
+            expected.cdf_values,
+            atol=1e-3,
         )
 
 
@@ -151,12 +189,16 @@ class TestDynWaldoConstructor:
     @pytest.mark.parametrize("D", [2.0, 3.0])
     def test_dyn_waldo_cd_is_valid_probability_distribution(self, D):
         m, prior = _model_prior()
-        sel = DynamicNumericalEtaSelector(sigma=1.0, mu0=0.0,
-                                            n_grid=401, coarse_n=25)
+        sel = DynamicNumericalEtaSelector(sigma=1.0, mu0=0.0, n_grid=401, coarse_n=25)
         scheme = PowerLawTilting(selector=sel)
         theta = np.linspace(D - 10, D + 10, 2001)
         cd = build_cd_from_pvalue(
-            scheme, WaldoStatistic(), D, m, prior, theta_grid=theta,
+            scheme,
+            WaldoStatistic(),
+            D,
+            m,
+            prior,
+            theta_grid=theta,
         )
 
         # pdf non-negative.
@@ -175,27 +217,35 @@ class TestDynWaldoConstructor:
         signed_confidence is non-monotone — the smoothness pathology
         surfaces directly in the CD."""
         m, prior = _model_prior()
-        sel = DynamicNumericalEtaSelector(sigma=1.0, mu0=0.0,
-                                            n_grid=401, coarse_n=25)
+        sel = DynamicNumericalEtaSelector(sigma=1.0, mu0=0.0, n_grid=401, coarse_n=25)
         scheme = PowerLawTilting(selector=sel)
         D = 3.0
         theta = np.linspace(D - 10, D + 10, 2001)
         cd = build_cd_from_pvalue(
-            scheme, WaldoStatistic(), D, m, prior, theta_grid=theta,
+            scheme,
+            WaldoStatistic(),
+            D,
+            m,
+            prior,
+            theta_grid=theta,
         )
-        assert not cd.is_monotone_inversion(), (
-            "expected non-monotone signed_confidence for Dyn-WALDO at D=3"
-        )
+        assert (
+            not cd.is_monotone_inversion()
+        ), "expected non-monotone signed_confidence for Dyn-WALDO at D=3"
 
     def test_dyn_waldo_cd_validate_flags_nonmonotone(self):
         m, prior = _model_prior()
-        sel = DynamicNumericalEtaSelector(sigma=1.0, mu0=0.0,
-                                            n_grid=401, coarse_n=25)
+        sel = DynamicNumericalEtaSelector(sigma=1.0, mu0=0.0, n_grid=401, coarse_n=25)
         scheme = PowerLawTilting(selector=sel)
         D = 3.0
         theta = np.linspace(D - 10, D + 10, 2001)
         cd = build_cd_from_pvalue(
-            scheme, WaldoStatistic(), D, m, prior, theta_grid=theta,
+            scheme,
+            WaldoStatistic(),
+            D,
+            m,
+            prior,
+            theta_grid=theta,
         )
         codes = [i.code for i in cd.validate()]
         assert "non-monotone-signed-confidence" in codes
@@ -209,7 +259,8 @@ class TestClosedFormAgreesWithScipy:
         cd = wald_cd(1.5, 1.0, n_grid=4001)
         for q in [0.05, 0.5, 0.95]:
             assert cd.quantile(q) == pytest.approx(
-                stats.norm.ppf(q, loc=1.5, scale=1.0), abs=1e-3,
+                stats.norm.ppf(q, loc=1.5, scale=1.0),
+                abs=1e-3,
             )
 
     def test_wald_cd_interval_matches_z_form(self):

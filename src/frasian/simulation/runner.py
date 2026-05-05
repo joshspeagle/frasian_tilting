@@ -8,8 +8,9 @@ The framework's experiments (`coverage`, `width`, `smoothness`,
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from numpy.typing import NDArray
 
@@ -69,8 +70,9 @@ def persist_cell(
     def compute() -> tuple[Mapping[str, NDArray], Mapping[str, Any]]:
         return raw_result.arrays, dict(raw_result.metadata)
 
-    get_or_compute(key, compute, cache_root=cache_root,
-                   enabled=enabled and config.cache_enabled, force=force)
+    get_or_compute(
+        key, compute, cache_root=cache_root, enabled=enabled and config.cache_enabled, force=force
+    )
     from .cache import cache_path
 
     return cache_path(cache_root, key)

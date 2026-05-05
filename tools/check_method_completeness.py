@@ -45,15 +45,12 @@ ILLUSTRATED_KINDS = {"tilting", "statistic"}
 def _check_brief(entry, errors: list[str]) -> None:
     brief_path = REPO_ROOT / entry.brief
     if not brief_path.exists():
-        errors.append(
-            f"  - {entry.kind} '{entry.name}': brief missing at {entry.brief!r}"
-        )
+        errors.append(f"  - {entry.kind} '{entry.name}': brief missing at {entry.brief!r}")
         return
     text = brief_path.read_text()
     for section in REQUIRED_SECTIONS:
         # Match Markdown header `## <section>` (case-insensitive, exact).
-        pattern = re.compile(rf"^##\s+{re.escape(section)}\s*$",
-                              re.IGNORECASE | re.MULTILINE)
+        pattern = re.compile(rf"^##\s+{re.escape(section)}\s*$", re.IGNORECASE | re.MULTILINE)
         if not pattern.search(text):
             errors.append(
                 f"  - {entry.kind} '{entry.name}': brief at {entry.brief!r} "
@@ -68,22 +65,20 @@ def _check_property_tests(entry, errors: list[str]) -> None:
     # Different test directories for different kinds.
     if entry.kind == "experiment":
         # Experiments are structural; their tests live in tests/experiments/.
-        candidates = list((REPO_ROOT / "tests" / "experiments").glob(
-            f"test_*{entry.name}*.py"
-        ))
+        candidates = list((REPO_ROOT / "tests" / "experiments").glob(f"test_*{entry.name}*.py"))
         test_loc = "tests/experiments"
     else:
-        candidates = list((REPO_ROOT / "tests" / "properties").glob(
-            f"test_*{entry.name}*.py"
-        ))
+        candidates = list((REPO_ROOT / "tests" / "properties").glob(f"test_*{entry.name}*.py"))
         test_loc = "tests/properties"
     # Allow the conjugate-Normal model's invariants to live under
     # test_normal_distribution.py (the protocol tests for its constituent
     # NormalDistribution cover the load-bearing properties).
-    if not candidates and entry.name == "normal_normal":
-        if (REPO_ROOT / "tests" / "properties"
-                / "test_normal_distribution.py").exists():
-            return
+    if (
+        not candidates
+        and entry.name == "normal_normal"
+        and (REPO_ROOT / "tests" / "properties" / "test_normal_distribution.py").exists()
+    ):
+        return
     if not candidates:
         errors.append(
             f"  - {entry.kind} '{entry.name}': no test file matching "
@@ -96,8 +91,9 @@ def _check_illustration(entry, errors: list[str]) -> None:
         return
     if entry.status == "stub":
         return
-    illust = (REPO_ROOT / "src" / "frasian" / "experiments" / "illustrations"
-              / f"{entry.name}_demo.py")
+    illust = (
+        REPO_ROOT / "src" / "frasian" / "experiments" / "illustrations" / f"{entry.name}_demo.py"
+    )
     if not illust.exists():
         errors.append(
             f"  - {entry.kind} '{entry.name}': missing illustration at "
@@ -108,7 +104,7 @@ def _check_illustration(entry, errors: list[str]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--verbose", action="store_true")
-    args = parser.parse_args(argv)
+    parser.parse_args(argv)
 
     # Make sure concrete implementations are loaded into the registry.
     from frasian._registry_bootstrap import bootstrap
@@ -130,8 +126,7 @@ def main(argv: list[str] | None = None) -> int:
             parts = e.split("'")
             if len(parts) > 1:
                 offending.add(parts[1])
-        print(f"method-completeness check FAILED on "
-              f"{len(offending)} method(s):")
+        print(f"method-completeness check FAILED on " f"{len(offending)} method(s):")
         for e in errors:
             print(e)
         return 1

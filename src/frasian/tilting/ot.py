@@ -44,8 +44,8 @@ docs/methods/ot.md for the full derivation.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Iterable
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -56,7 +56,7 @@ from .._registry import register_tilting
 from ..models.base import Likelihood, Model, Posterior, Prior
 from ..models.distributions import GaussianLikelihood, NormalDistribution
 from ..statistics.base import TestStatistic
-from .base import ParamSpec, TiltingContext
+from .base import EtaSelector, ParamSpec, TiltingContext
 from .eta_selectors import FixedEtaSelector
 from .quantile_mixture import QuantileMixturePath
 
@@ -75,9 +75,7 @@ class OTTilting:
             "and likelihood-induced Gaussian N(D, sigma^2) (t=1)."
         ),
     )
-    selector: object = field(
-        default_factory=lambda: FixedEtaSelector(eta=0.0)
-    )
+    selector: EtaSelector = field(default_factory=lambda: FixedEtaSelector(eta=0.0))
 
     @property
     def cell_name(self) -> str:
@@ -88,8 +86,9 @@ class OTTilting:
 
     # ----- TiltingScheme protocol -----
 
-    def tilt(self, posterior: Posterior, prior: Prior, likelihood: Likelihood,
-             eta: ArrayLike) -> Posterior:
+    def tilt(
+        self, posterior: Posterior, prior: Prior, likelihood: Likelihood, eta: ArrayLike
+    ) -> Posterior:
         """W2-geodesic tilt between posterior and likelihood-as-distribution."""
         eta_arr = np.asarray(eta, dtype=np.float64)
         if eta_arr.ndim != 0:
@@ -99,13 +98,10 @@ class OTTilting:
             )
         t = float(eta_arr)
         if not (0.0 <= t <= 1.0):
-            raise TiltingDomainError(
-                f"OTTilting requires eta in [0, 1], got {t!r}."
-            )
+            raise TiltingDomainError(f"OTTilting requires eta in [0, 1], got {t!r}.")
 
         # Gaussian fast path: linear interpolation in (mu, sigma).
-        if (isinstance(posterior, NormalDistribution)
-                and isinstance(likelihood, GaussianLikelihood)):
+        if isinstance(posterior, NormalDistribution) and isinstance(likelihood, GaussianLikelihood):
             mu_a, sigma_a = posterior.loc, posterior.scale
             mu_b, sigma_b = float(likelihood.D), float(likelihood.sigma)
             return NormalDistribution(
@@ -127,8 +123,9 @@ class OTTilting:
             "extension."
         )
 
-    def path(self, posterior: Posterior, prior: Prior, likelihood: Likelihood,
-             ts: NDArray[np.float64]) -> Iterable[Posterior]:
+    def path(
+        self, posterior: Posterior, prior: Prior, likelihood: Likelihood, ts: NDArray[np.float64]
+    ) -> Iterable[Posterior]:
         for t in np.asarray(ts, dtype=np.float64):
             yield self.tilt(posterior, prior, likelihood, float(t))
 
@@ -140,9 +137,15 @@ class OTTilting:
 
     # ----- (TiltingScheme, TestStatistic) cross-product specialisations -----
 
-    def tilted_pvalue(self, theta: ArrayLike, D: float, model: Model,
-                      prior: NormalDistribution, eta: float,
-                      statistic_name: str) -> NDArray[np.float64]:
+    def tilted_pvalue(
+        self,
+        theta: ArrayLike,
+        D: float,
+        model: Model,
+        prior: NormalDistribution,
+        eta: float,
+        statistic_name: str,
+    ) -> NDArray[np.float64]:
         """Tilted p-value evaluated against the W2-tilted Gaussian.
 
         Specialized for (ot, waldo) and (ot, wald) on Normal-Normal:
@@ -168,7 +171,7 @@ class OTTilting:
         sigma = float(model.sigma)
         mu0 = float(prior.loc)
         sigma0 = float(prior.scale)
-        w = sigma0 ** 2 / (sigma ** 2 + sigma0 ** 2)
+        w = sigma0**2 / (sigma**2 + sigma0**2)
 
         # Mirror the admissibility check in `tilt()` (line 101): η outside
         # [0, 1] makes the W2 interpolation a non-distribution and yields
@@ -177,8 +180,7 @@ class OTTilting:
         eta_f = float(eta)
         if not (0.0 <= eta_f <= 1.0):
             raise TiltingDomainError(
-                f"OTTilting.tilted_pvalue requires eta in [0, 1], got "
-                f"{eta_f!r}."
+                f"OTTilting.tilted_pvalue requires eta in [0, 1], got " f"{eta_f!r}."
             )
 
         theta_arr = np.asarray(theta, dtype=np.float64)
@@ -204,8 +206,13 @@ class OTTilting:
         )
 
     def tilted_confidence_interval(
-        self, alpha: float, D: float, model: Model,
-        prior: NormalDistribution, eta: float, statistic_name: str,
+        self,
+        alpha: float,
+        D: float,
+        model: Model,
+        prior: NormalDistribution,
+        eta: float,
+        statistic_name: str,
     ) -> tuple[float, float]:
         """Numerical CI inversion of `tilted_pvalue` via brentq_with_doubling."""
         from ..models.normal_normal import NormalNormalModel
@@ -213,8 +220,7 @@ class OTTilting:
 
         if not isinstance(model, NormalNormalModel):
             raise NotImplementedError(
-                "OTTilting.tilted_confidence_interval currently requires "
-                "NormalNormalModel."
+                "OTTilting.tilted_confidence_interval currently requires " "NormalNormalModel."
             )
         if not isinstance(prior, NormalDistribution):
             raise NotImplementedError(
@@ -224,31 +230,31 @@ class OTTilting:
         sigma = float(model.sigma)
         mu0 = float(prior.loc)
         sigma0 = float(prior.scale)
-        w = sigma0 ** 2 / (sigma ** 2 + sigma0 ** 2)
+        w = sigma0**2 / (sigma**2 + sigma0**2)
         mu_n = w * D + (1.0 - w) * mu0
 
-        if statistic_name == "wald":
-            mid = float(D)
-        else:  # waldo
-            mid = float((1.0 - eta) * mu_n + eta * D)
+        mid = float(D) if statistic_name == "wald" else float((1.0 - eta) * mu_n + eta * D)  # waldo
 
         def f(theta_val: float) -> float:
-            return float(self.tilted_pvalue(
-                float(theta_val), D, model, prior, eta, statistic_name
-            )) - alpha
+            return (
+                float(self.tilted_pvalue(float(theta_val), D, model, prior, eta, statistic_name))
+                - alpha
+            )
 
         half = 4.0 * sigma
-        lo = brentq_with_doubling(f, midpoint=mid,
-                                    initial_half_width=half, direction=-1)
-        hi = brentq_with_doubling(f, midpoint=mid,
-                                    initial_half_width=half, direction=+1)
+        lo = brentq_with_doubling(f, midpoint=mid, initial_half_width=half, direction=-1)
+        hi = brentq_with_doubling(f, midpoint=mid, initial_half_width=half, direction=+1)
         return (lo, hi)
 
-    def dynamic_tilted_pvalue(self, theta: ArrayLike, D: float,
-                                model: Model, prior: NormalDistribution,
-                                statistic_name: str,
-                                eta_at_theta: ArrayLike,
-                                ) -> NDArray[np.float64]:
+    def dynamic_tilted_pvalue(
+        self,
+        theta: ArrayLike,
+        D: float,
+        model: Model,
+        prior: NormalDistribution,
+        statistic_name: str,
+        eta_at_theta: ArrayLike,
+    ) -> NDArray[np.float64]:
         """p(theta) with eta varying per theta via a precomputed lookup."""
         theta_arr = np.atleast_1d(np.asarray(theta, dtype=np.float64))
         eta_arr = np.atleast_1d(np.asarray(eta_at_theta, dtype=np.float64))
@@ -269,17 +275,29 @@ class OTTilting:
             )
         out = np.empty_like(theta_arr)
         for i in range(theta_arr.size):
-            out[i] = float(self.tilted_pvalue(
-                float(theta_arr[i]), D, model, prior, float(eta_arr[i]),
-                statistic_name,
-            ))
+            out[i] = float(
+                self.tilted_pvalue(
+                    float(theta_arr[i]),
+                    D,
+                    model,
+                    prior,
+                    float(eta_arr[i]),
+                    statistic_name,
+                )
+            )
         return out if out.size > 1 else np.asarray(float(out.item()))
 
     def dynamic_tilted_confidence_interval(
-        self, alpha: float, D: float, model: Model,
-        prior: NormalDistribution, statistic_name: str,
+        self,
+        alpha: float,
+        D: float,
+        model: Model,
+        prior: NormalDistribution,
+        statistic_name: str,
         eta_selector,
-        n_grid: int = 401, coarse_n: int = 25, search_mult: float = 8.0,
+        n_grid: int = 401,
+        coarse_n: int = 25,
+        search_mult: float = 8.0,
     ) -> tuple[list[tuple[float, float]], float, int]:
         """Dynamic-eta CI: eta = eta*(|Delta(theta)|) per theta.
 
@@ -298,19 +316,33 @@ class OTTilting:
         sigma = float(model.sigma)
         mu0 = float(prior.loc)
         sigma0 = float(prior.scale)
-        w = sigma0 ** 2 / (sigma ** 2 + sigma0 ** 2)
+        w = sigma0**2 / (sigma**2 + sigma0**2)
 
         def _tilted_pvalue_fn(theta: float, eta: float) -> float:
-            return float(self.tilted_pvalue(
-                theta, D, model, prior, eta, statistic_name,
-            ))
+            return float(
+                self.tilted_pvalue(
+                    theta,
+                    D,
+                    model,
+                    prior,
+                    eta,
+                    statistic_name,
+                )
+            )
 
         return dynamic_ci_scan(
             tilted_pvalue_fn=_tilted_pvalue_fn,
-            alpha=alpha, D=D, w=w, mu0=mu0, sigma=sigma,
-            eta_selector=eta_selector, scheme=self,
+            alpha=alpha,
+            D=D,
+            w=w,
+            mu0=mu0,
+            sigma=sigma,
+            eta_selector=eta_selector,
+            scheme=self,
             statistic_name=statistic_name,
-            n_grid=n_grid, coarse_n=coarse_n, search_mult=search_mult,
+            n_grid=n_grid,
+            coarse_n=coarse_n,
+            search_mult=search_mult,
             model_fingerprint=model.fingerprint(),
             prior_fingerprint=prior.fingerprint(),
         )
@@ -319,6 +351,7 @@ class OTTilting:
 
     def _require_normal_sandbox(self, model: Model, prior: Prior) -> None:
         from ..models.normal_normal import NormalNormalModel
+
         if not isinstance(model, NormalNormalModel):
             raise NotImplementedError(
                 f"OTTilting requires NormalNormalModel for the uniform CI "
@@ -326,53 +359,85 @@ class OTTilting:
             )
         if not isinstance(prior, NormalDistribution):
             raise NotImplementedError(
-                f"OTTilting requires a NormalDistribution prior; "
-                f"got {type(prior).__name__!r}."
+                f"OTTilting requires a NormalDistribution prior; " f"got {type(prior).__name__!r}."
             )
 
-    def confidence_regions(self, alpha: float, data: NDArray[np.float64],
-                            model: Model, prior: Prior,
-                            statistic: TestStatistic
-                            ) -> list[tuple[float, float]]:
+    def confidence_regions(
+        self,
+        alpha: float,
+        data: NDArray[np.float64],
+        model: Model,
+        prior: Prior,
+        statistic: TestStatistic,
+    ) -> list[tuple[float, float]]:
         self._require_normal_sandbox(model, prior)
+        # Narrow types after the dispatch check (mypy can't infer through it).
+        from ..models.normal_normal import NormalNormalModel
+
+        assert isinstance(model, NormalNormalModel)
+        assert isinstance(prior, NormalDistribution)
         D = float(np.atleast_1d(np.asarray(data, dtype=np.float64)).mean())
         sigma = float(model.sigma)
         sigma0 = float(prior.scale)
-        w = sigma0 ** 2 / (sigma ** 2 + sigma0 ** 2)
+        w = sigma0**2 / (sigma**2 + sigma0**2)
         abs_delta = abs((1.0 - w) * (prior.loc - D) / sigma)
         ctx = TiltingContext(w=w, abs_delta=abs_delta, alpha=alpha)
 
         if getattr(self.selector, "is_dynamic", False):
             regions, _, _ = self.dynamic_tilted_confidence_interval(
-                alpha, D, model, prior, statistic.name, self.selector,
+                alpha,
+                D,
+                model,
+                prior,
+                statistic.name,
+                self.selector,
                 n_grid=getattr(self.selector, "n_grid", 401),
                 coarse_n=getattr(self.selector, "coarse_n", 25),
                 search_mult=getattr(self.selector, "search_mult", 8.0),
             )
             if not regions:
-                raise RuntimeError(
-                    f"dynamic CI inversion produced no regions at D={D!r}"
-                )
+                raise RuntimeError(f"dynamic CI inversion produced no regions at D={D!r}")
             return regions
 
         eta = float(self.selector.select(ctx, self, statistic=statistic))
-        return [self.tilted_confidence_interval(
-            alpha, D, model, prior, eta, statistic.name,
-        )]
+        return [
+            self.tilted_confidence_interval(
+                alpha,
+                D,
+                model,
+                prior,
+                eta,
+                statistic.name,
+            )
+        ]
 
-    def confidence_interval(self, alpha: float, data: NDArray[np.float64],
-                            model: Model, prior: Prior,
-                            statistic: TestStatistic
-                            ) -> tuple[float, float]:
+    def confidence_interval(
+        self,
+        alpha: float,
+        data: NDArray[np.float64],
+        model: Model,
+        prior: Prior,
+        statistic: TestStatistic,
+    ) -> tuple[float, float]:
         regions = self.confidence_regions(alpha, data, model, prior, statistic)
         lo = float(min(r[0] for r in regions))
         hi = float(max(r[1] for r in regions))
         return (lo, hi)
 
-    def pvalue(self, theta: ArrayLike, data: NDArray[np.float64],
-               model: Model, prior: Prior,
-               statistic: TestStatistic) -> NDArray[np.float64]:
+    def pvalue(
+        self,
+        theta: ArrayLike,
+        data: NDArray[np.float64],
+        model: Model,
+        prior: Prior,
+        statistic: TestStatistic,
+    ) -> NDArray[np.float64]:
         self._require_normal_sandbox(model, prior)
+        # Narrow types after the dispatch check (mypy can't infer through it).
+        from ..models.normal_normal import NormalNormalModel
+
+        assert isinstance(model, NormalNormalModel)
+        assert isinstance(prior, NormalDistribution)
         from ..config import Config
         from .eta_selectors import _NamedStatistic
 
@@ -381,7 +446,7 @@ class OTTilting:
         theta_arr = np.atleast_1d(np.asarray(theta, dtype=np.float64))
         sigma = float(model.sigma)
         sigma0 = float(prior.scale)
-        w = sigma0 ** 2 / (sigma ** 2 + sigma0 ** 2)
+        w = sigma0**2 / (sigma**2 + sigma0**2)
 
         if getattr(self.selector, "is_dynamic", False):
             abs_delta_theta = np.abs((1.0 - w) * (prior.loc - theta_arr) / sigma)
@@ -390,27 +455,35 @@ class OTTilting:
             coarse_grid = np.linspace(0.0, ad_max, coarse_n)
             select_kwargs = dict(
                 statistic=_NamedStatistic(statistic.name),
-                w=w, alpha=alpha,
+                w=w,
+                alpha=alpha,
             )
             try:
                 import inspect
-                sig = inspect.signature(self.selector.select_grid)
+
+                sig = inspect.signature(self.selector.select_grid)  # type: ignore[attr-defined]
                 if "model_fingerprint" in sig.parameters:
                     select_kwargs["model_fingerprint"] = model.fingerprint()
                 if "prior_fingerprint" in sig.parameters:
                     select_kwargs["prior_fingerprint"] = prior.fingerprint()
             except (TypeError, ValueError):
                 pass
-            coarse_eta = self.selector.select_grid(
-                coarse_grid, self, **select_kwargs,
+            coarse_eta = self.selector.select_grid(  # type: ignore[attr-defined]
+                coarse_grid,
+                self,
+                **select_kwargs,
             )
             eta_at_theta = np.interp(abs_delta_theta, coarse_grid, coarse_eta)
             return self.dynamic_tilted_pvalue(
-                theta_arr, D, model, prior, statistic.name, eta_at_theta,
+                theta_arr,
+                D,
+                model,
+                prior,
+                statistic.name,
+                eta_at_theta,
             )
 
         abs_delta = abs((1.0 - w) * (prior.loc - D) / sigma)
         ctx = TiltingContext(w=w, abs_delta=abs_delta, alpha=alpha)
         eta = float(self.selector.select(ctx, self, statistic=statistic))
-        return self.tilted_pvalue(theta_arr, D, model, prior, eta,
-                                    statistic.name)
+        return self.tilted_pvalue(theta_arr, D, model, prior, eta, statistic.name)

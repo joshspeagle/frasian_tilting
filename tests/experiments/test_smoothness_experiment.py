@@ -31,8 +31,7 @@ def _smoothness_config() -> Config:
 
 @pytest.mark.L4
 class TestSmoothnessExperimentEndToEnd:
-    def test_runs_and_produces_manifest(self, tmp_path: Path,
-                                          bootstrapped_registry):
+    def test_runs_and_produces_manifest(self, tmp_path: Path, bootstrapped_registry):
         experiment = registry.experiments["smoothness"]()
         run_experiment(
             experiment=experiment,
@@ -46,16 +45,14 @@ class TestSmoothnessExperimentEndToEnd:
         # 3 tiltings × 2 statistics = 6 cells; (wald × power_law) and
         # (wald × ot) gated out as incompatible.
         ok = [c for c in manifest["cells"] if c["status"] == "ok"]
-        skipped = [c for c in manifest["cells"]
-                   if c["status"] == "incompatible"]
+        skipped = [c for c in manifest["cells"] if c["status"] == "incompatible"]
         assert len(ok) == 4
         assert len(skipped) == 2
         assert "smoothness" in manifest["diagnostics"]
         assert (tmp_path / "figures" / "smoothness_metrics.png").exists()
         assert (tmp_path / "smoothness.csv").exists()
 
-    def test_waldo_cell_detects_discontinuity(self, tmp_path: Path,
-                                                  bootstrapped_registry):
+    def test_waldo_cell_detects_discontinuity(self, tmp_path: Path, bootstrapped_registry):
         """The framework's central diagnostic: (power_law, waldo) must show
         a high Lipschitz, positive TV, and >0 discontinuity count."""
         experiment = registry.experiments["smoothness"]()
@@ -73,8 +70,7 @@ class TestSmoothnessExperimentEndToEnd:
 
         lip = float(sub[sub["metric"] == "lipschitz_eta"]["value"].iloc[0])
         tv = float(sub[sub["metric"] == "total_variation_eta"]["value"].iloc[0])
-        disc = float(sub[sub["metric"] == "discontinuity_count_eta"]
-                       ["value"].iloc[0])
+        disc = float(sub[sub["metric"] == "discontinuity_count_eta"]["value"].iloc[0])
 
         # The kink near |Delta| ~ 0.3-0.7 should produce a Lipschitz spike;
         # the empirical demo run shows ~17 at 51 grid points.
@@ -85,12 +81,12 @@ class TestSmoothnessExperimentEndToEnd:
         # At least one outlier 2nd-difference at the kink.
         assert disc >= 1, f"discontinuity_count too low: {disc}"
 
-    def test_identity_wald_cell_is_smooth_baseline(self, tmp_path: Path,
-                                                      bootstrapped_registry):
+    def test_identity_wald_cell_is_smooth_baseline(self, tmp_path: Path, bootstrapped_registry):
         """The (identity, wald) cell is the smoothness floor: ~0 Lipschitz,
         ~0 TV, 0 discontinuities — η is constant 0 by construction."""
         experiment = registry.experiments["smoothness"]()
         from frasian.tilting.identity import IdentityTilting
+
         run_experiment(
             experiment=experiment,
             tiltings=[IdentityTilting()],
@@ -102,14 +98,12 @@ class TestSmoothnessExperimentEndToEnd:
         sub = df[df["statistic"] == "wald"]
         lip = float(sub[sub["metric"] == "lipschitz_eta"]["value"].iloc[0])
         tv = float(sub[sub["metric"] == "total_variation_eta"]["value"].iloc[0])
-        disc = float(sub[sub["metric"] == "discontinuity_count_eta"]
-                       ["value"].iloc[0])
+        disc = float(sub[sub["metric"] == "discontinuity_count_eta"]["value"].iloc[0])
         assert lip < 1e-3
         assert tv < 1e-3
         assert disc == 0
 
-    def test_eta_star_within_admissible_range(self, tmp_path: Path,
-                                                  bootstrapped_registry):
+    def test_eta_star_within_admissible_range(self, tmp_path: Path, bootstrapped_registry):
         experiment = registry.experiments["smoothness"]()
         run_experiment(
             experiment=experiment,
@@ -120,9 +114,11 @@ class TestSmoothnessExperimentEndToEnd:
         )
         manifest = json.loads((tmp_path / "manifest.json").read_text())
         # Pick the power_law cell — identity records constant eta=0.
-        cell = next(c for c in manifest["cells"]
-                     if c["status"] == "ok"
-                     and c["tilting"].startswith("power_law"))
+        cell = next(
+            c
+            for c in manifest["cells"]
+            if c["status"] == "ok" and c["tilting"].startswith("power_law")
+        )
         result = load_result(tmp_path / cell["cache_path"])
         eta = result.arrays["eta_star"]
         finite = eta[np.isfinite(eta)]

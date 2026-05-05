@@ -85,7 +85,7 @@ class TestWaldoEvaluate:
         thetas = np.array([-1.0, 0.0, 1.0, 2.0])
         tau = stat.evaluate(thetas, np.asarray([D]), model, prior)
         mu_n, sigma_n, _ = posterior_params(D, mu0, sigma, sigma0)
-        expected = (mu_n - thetas) ** 2 / sigma_n ** 2
+        expected = (mu_n - thetas) ** 2 / sigma_n**2
         np.testing.assert_allclose(tau, expected, atol=1e-12)
 
     def test_zero_at_mu_n(self):
@@ -93,8 +93,7 @@ class TestWaldoEvaluate:
         model = NormalNormalModel(sigma=1.0)
         prior = NormalDistribution(loc=0.0, scale=1.0)
         mu_n, _, _ = posterior_params(2.0, 0.0, 1.0, 1.0)
-        tau = WaldoStatistic().evaluate(float(mu_n), np.asarray([2.0]),
-                                          model, prior)
+        tau = WaldoStatistic().evaluate(float(mu_n), np.asarray([2.0]), model, prior)
         np.testing.assert_allclose(tau, 0.0, atol=1e-24)
 
 
@@ -146,6 +145,5 @@ class TestWaldStatistic:
         model = NormalNormalModel(sigma=2.0)
         stat = WaldStatistic()
         lo, hi = stat.acceptance_region(0.05, 1.0, model)
-        np.testing.assert_allclose(hi - lo, 2 * stats.norm.ppf(0.975) * 2.0,
-                                    atol=1e-12)
+        np.testing.assert_allclose(hi - lo, 2 * stats.norm.ppf(0.975) * 2.0, atol=1e-12)
         np.testing.assert_allclose((lo + hi) / 2.0, 1.0, atol=1e-12)

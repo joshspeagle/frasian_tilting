@@ -13,7 +13,8 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from frasian.learned.training.pvalue_torch import (
-    ot_tilted_pvalue_torch, power_law_tilted_pvalue_torch,
+    ot_tilted_pvalue_torch,
+    power_law_tilted_pvalue_torch,
 )
 from frasian.models.distributions import NormalDistribution
 from frasian.models.normal_normal import NormalNormalModel
@@ -28,7 +29,7 @@ from frasian.tilting.power_law import PowerLawTilting
 @pytest.mark.parametrize("eta", [0.0, 0.3, 0.7, 0.95])
 def test_power_law_torch_matches_numpy(statistic_name, D, sigma0, eta):
     sigma, mu0 = 1.0, 0.0
-    w = sigma0 ** 2 / (sigma ** 2 + sigma0 ** 2)
+    w = sigma0**2 / (sigma**2 + sigma0**2)
     model = NormalNormalModel(sigma=sigma)
     prior = NormalDistribution(loc=mu0, scale=sigma0)
     scheme = PowerLawTilting()
@@ -57,7 +58,7 @@ def test_power_law_torch_matches_numpy(statistic_name, D, sigma0, eta):
 @pytest.mark.parametrize("eta", [0.0, 0.3, 0.7, 1.0])
 def test_ot_torch_matches_numpy(statistic_name, D, sigma0, eta):
     sigma, mu0 = 1.0, 0.0
-    w = sigma0 ** 2 / (sigma ** 2 + sigma0 ** 2)
+    w = sigma0**2 / (sigma**2 + sigma0**2)
     model = NormalNormalModel(sigma=sigma)
     prior = NormalDistribution(loc=mu0, scale=sigma0)
     scheme = OTTilting()
@@ -83,8 +84,14 @@ def test_ot_torch_matches_numpy(statistic_name, D, sigma0, eta):
 def test_unknown_statistic_raises():
     """Both torch p-value functions raise NotImplementedError on unknown stats."""
     theta = torch.zeros(3, dtype=torch.float64)
-    args = (theta, torch.tensor(0.0), torch.tensor(0.5),
-            torch.tensor(0.0), torch.tensor(1.0), torch.tensor(0.5))
+    args = (
+        theta,
+        torch.tensor(0.0),
+        torch.tensor(0.5),
+        torch.tensor(0.0),
+        torch.tensor(1.0),
+        torch.tensor(0.5),
+    )
     with pytest.raises(NotImplementedError):
         power_law_tilted_pvalue_torch(*args, "lrt")
     with pytest.raises(NotImplementedError):
@@ -94,5 +101,6 @@ def test_unknown_statistic_raises():
 @pytest.mark.L0
 def test_get_torch_tilted_pvalue_unknown_scheme_raises():
     from frasian.learned.training.pvalue_torch import get_torch_tilted_pvalue
+
     with pytest.raises(NotImplementedError):
         get_torch_tilted_pvalue("fisher_rao")

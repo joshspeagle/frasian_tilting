@@ -27,24 +27,16 @@ import torch.nn.functional as F
 
 from frasian.learned.training.architecture import EtaNet, ValidityNet
 from frasian.learned.training.losses import boundary_penalty_from_validity
-from frasian.learned.training.sampling import (
-    ExperimentConfig,
-    UniformThetaDistribution,
-    lhs_1d,
-)
+from frasian.learned.training.sampling import ExperimentConfig, UniformThetaDistribution, lhs_1d
 from frasian.learned.training.validity import (
     compute_pvalues_per_sample,
     is_pair_valid,
     validity_mask,
 )
-from frasian.models.distributions import (
-    BetaDistribution,
-    NormalDistribution,
-)
-from frasian.models.normal_normal import NormalNormalModel
 from frasian.models.bernoulli import BernoulliModel
+from frasian.models.distributions import BetaDistribution, NormalDistribution
+from frasian.models.normal_normal import NormalNormalModel
 from frasian.tilting.power_law import PowerLawTilting
-
 
 # ---------------------------------------------------------------------------
 # Architecture forward shapes
@@ -123,12 +115,8 @@ def test_boundary_penalty_value_behavior():
     very_valid = torch.tensor([+100.0])
     p_inv = boundary_penalty_from_validity(very_invalid).item()
     p_val = boundary_penalty_from_validity(very_valid).item()
-    assert 99.0 < p_inv < 101.0, (
-        f"penalty for very-invalid logit should be ~100, got {p_inv}"
-    )
-    assert p_val < 1e-6, (
-        f"penalty for very-valid logit should be ~0, got {p_val}"
-    )
+    assert 99.0 < p_inv < 101.0, f"penalty for very-invalid logit should be ~100, got {p_inv}"
+    assert p_val < 1e-6, f"penalty for very-valid logit should be ~0, got {p_val}"
 
 
 @pytest.mark.L1
@@ -168,9 +156,7 @@ def test_boundary_penalty_gradient_alive_at_extremes():
 def test_boundary_penalty_gradcheck():
     """gradcheck against torch.autograd.gradcheck on small input."""
     x = torch.randn(5, dtype=torch.float64, requires_grad=True)
-    assert torch.autograd.gradcheck(
-        boundary_penalty_from_validity, (x,), eps=1e-6, atol=1e-5
-    )
+    assert torch.autograd.gradcheck(boundary_penalty_from_validity, (x,), eps=1e-6, atol=1e-5)
 
 
 @pytest.mark.L1
@@ -185,9 +171,7 @@ def test_boundary_penalty_gradcheck_at_large_logits():
     """
     x = torch.linspace(-30.0, 30.0, 7, dtype=torch.float64)
     x.requires_grad_(True)
-    assert torch.autograd.gradcheck(
-        boundary_penalty_from_validity, (x,), eps=1e-5, atol=1e-3
-    )
+    assert torch.autograd.gradcheck(boundary_penalty_from_validity, (x,), eps=1e-5, atol=1e-3)
 
 
 # ---------------------------------------------------------------------------
@@ -212,13 +196,11 @@ def test_head_b_params_no_grad_from_head_a_loss():
     penalty.backward()
     # EtaNet params should have grad (Head A is what we're training).
     assert any(
-        p.grad is not None and p.grad.abs().sum().item() > 0
-        for p in eta_net.parameters()
+        p.grad is not None and p.grad.abs().sum().item() > 0 for p in eta_net.parameters()
     ), "EtaNet did not receive boundary-penalty gradient"
     # ValidityNet params should NOT have grad — functional_call detach.
     assert all(
-        p.grad is None or p.grad.abs().sum().item() == 0
-        for p in val_net.parameters()
+        p.grad is None or p.grad.abs().sum().item() == 0 for p in val_net.parameters()
     ), "ValidityNet erroneously received gradient through detached call"
 
 
@@ -236,12 +218,10 @@ def test_head_a_params_no_grad_from_head_b_loss():
     loss = F.binary_cross_entropy_with_logits(logits, target)
     loss.backward()
     assert all(
-        p.grad is None or p.grad.abs().sum().item() == 0
-        for p in eta_net.parameters()
+        p.grad is None or p.grad.abs().sum().item() == 0 for p in eta_net.parameters()
     ), "EtaNet erroneously received gradient via Head B loss"
     assert any(
-        p.grad is not None and p.grad.abs().sum().item() > 0
-        for p in val_net.parameters()
+        p.grad is not None and p.grad.abs().sum().item() > 0 for p in val_net.parameters()
     ), "ValidityNet did not receive BCE gradient"
 
 
@@ -304,7 +284,8 @@ def test_compute_pvalues_per_sample_shape_mismatch():
             scheme,
             np.array([0.0, 1.0]),
             np.array([0.0]),
-            model, prior,
+            model,
+            prior,
             np.array([0.5, 0.5]),
             "waldo",
         )
@@ -352,10 +333,7 @@ def test_experiment_config_dict_round_trip(bootstrapped_registry):
     cfg2 = ExperimentConfig.from_dict(d)
     assert cfg2.prior.fingerprint() == cfg.prior.fingerprint()
     assert cfg2.model.fingerprint() == cfg.model.fingerprint()
-    assert (
-        cfg2.theta_distribution.fingerprint()
-        == cfg.theta_distribution.fingerprint()
-    )
+    assert cfg2.theta_distribution.fingerprint() == cfg.theta_distribution.fingerprint()
     assert cfg2.n_grid == cfg.n_grid
     assert cfg2.n_lhs == cfg.n_lhs
     assert cfg2.eta_explore_box == cfg.eta_explore_box
@@ -386,7 +364,7 @@ def test_experiment_config_yaml_round_trip(bootstrapped_registry):
 @pytest.mark.properties
 def test_experiment_config_yaml_shorthand_keys(bootstrapped_registry):
     """YAML may use ``scheme:`` / ``statistic:`` shorthand."""
-    yaml = pytest.importorskip("yaml")
+    pytest.importorskip("yaml")
     text = """
 scheme: power_law
 statistic: waldo
@@ -455,8 +433,7 @@ def test_lhs_1d_stratification():
     strata = np.floor((samples + 3.0) / 6.0 * n).astype(int)
     strata = np.clip(strata, 0, n - 1)
     assert len(np.unique(strata)) == n, (
-        f"LHS not stratified: {n} samples but {len(np.unique(strata))} "
-        f"distinct strata."
+        f"LHS not stratified: {n} samples but {len(np.unique(strata))} " f"distinct strata."
     )
 
 
@@ -498,8 +475,11 @@ def test_fingerprint_equality_invariant():
         (BernoulliModel(), BernoulliModel(), True),
         (NormalDistribution(0.0, 1.0), NormalDistribution(0.0, 1.0), True),
         (NormalDistribution(0.0, 1.0), NormalDistribution(0.0, 2.0), False),
-        (UniformThetaDistribution(low=-1.0, high=1.0),
-         UniformThetaDistribution(low=-1.0, high=1.0), True),
+        (
+            UniformThetaDistribution(low=-1.0, high=1.0),
+            UniformThetaDistribution(low=-1.0, high=1.0),
+            True,
+        ),
     ]
     for a, b, expected_eq in pairs:
         assert (a == b) == expected_eq
@@ -553,9 +533,7 @@ def test_ot_tilted_pvalue_rejects_eta_out_of_admissible_range(
     # Reject η < 0 and η > 1.
     for bad_eta in (-2.0, -1e-6, 1.0 + 1e-6, 5.0):
         with pytest.raises(TiltingDomainError, match="eta in"):
-            scheme.tilted_pvalue(
-                np.array([0.0]), 0.0, model, prior, bad_eta, "waldo"
-            )
+            scheme.tilted_pvalue(np.array([0.0]), 0.0, model, prior, bad_eta, "waldo")
 
 
 @pytest.mark.L1
@@ -573,15 +551,14 @@ def test_ot_tilted_pvalue_invalid_eta_yields_nan_in_validity_helper(
         scheme,
         np.array([0.0, 0.0]),
         np.array([0.0, 0.0]),
-        model, prior,
+        model,
+        prior,
         np.array([0.5, -2.0]),
         "waldo",
     )
     mask = validity_mask(p)
     assert mask[0]
-    assert not mask[1], (
-        f"OT η=-2 should be invalid; helper returned p={p[1]}"
-    )
+    assert not mask[1], f"OT η=-2 should be invalid; helper returned p={p[1]}"
 
 
 # ---------------------------------------------------------------------------
@@ -709,8 +686,13 @@ def test_ot_torch_pvalue_smooth_and_finite_inside_admissible_range():
     # Inside admissible range: finite, in [0, 1].
     for good_eta in (0.0, 0.25, 0.5, 0.75, 1.0):
         p = ot_tilted_pvalue_torch(
-            theta, D, w, mu0, sigma,
-            torch.tensor([[good_eta]]), "waldo",
+            theta,
+            D,
+            w,
+            mu0,
+            sigma,
+            torch.tensor([[good_eta]]),
+            "waldo",
         )
         assert torch.isfinite(p).all()
         assert -1e-6 <= p.item() <= 1.0 + 1e-6
@@ -721,8 +703,13 @@ def test_ot_torch_pvalue_smooth_and_finite_inside_admissible_range():
     # Head B's labels.
     for bad_eta in (-0.1, 1.1):
         p = ot_tilted_pvalue_torch(
-            theta, D, w, mu0, sigma,
-            torch.tensor([[bad_eta]]), "waldo",
+            theta,
+            D,
+            w,
+            mu0,
+            sigma,
+            torch.tensor([[bad_eta]]),
+            "waldo",
         )
         assert torch.isfinite(p).all(), (
             f"OT torch port at η={bad_eta} returned non-finite p="
@@ -743,41 +730,48 @@ def test_width_loss_averages_over_d_batch(bootstrapped_registry):
     from frasian.learned.training.train import _width_loss
 
     cfg = ExperimentConfig(
-        scheme_name="power_law", statistic_name="waldo",
+        scheme_name="power_law",
+        statistic_name="waldo",
         prior=NormalDistribution(0.0, 1.0),
         model=NormalNormalModel(sigma=1.0),
         theta_distribution=UniformThetaDistribution(low=-5.0, high=5.0),
-        n_grid=51, n_lhs=20, eta_explore_box=(-2.0, 2.0),
+        n_grid=51,
+        n_lhs=20,
+        eta_explore_box=(-2.0, 2.0),
     )
     eta_net = EtaNet(theta_dim=1)
     theta_grid_t = torch.as_tensor(cfg.theta_grid, dtype=torch.float32)
 
     # Single D: 1-element loss.
     loss_1 = _width_loss(
-        eta_net=eta_net, theta_grid_t=theta_grid_t,
+        eta_net=eta_net,
+        theta_grid_t=theta_grid_t,
         D_batch_t=torch.tensor([0.0]),
-        config=cfg, loss_kind="integrated_p", alpha=None,
+        config=cfg,
+        loss_kind="integrated_p",
+        alpha=None,
     )
     # Batch of 8 D: scalar (mean over batch).
     loss_8 = _width_loss(
-        eta_net=eta_net, theta_grid_t=theta_grid_t,
+        eta_net=eta_net,
+        theta_grid_t=theta_grid_t,
         D_batch_t=torch.linspace(-2.0, 2.0, 8),
-        config=cfg, loss_kind="integrated_p", alpha=None,
+        config=cfg,
+        loss_kind="integrated_p",
+        alpha=None,
     )
     assert loss_1.dim() == 0
     assert loss_8.dim() == 0
     # Both finite, gradient flows back.
     loss_8.backward()
-    assert any(
-        p.grad is not None and p.grad.abs().sum().item() > 0
-        for p in eta_net.parameters()
-    )
+    assert any(p.grad is not None and p.grad.abs().sum().item() > 0 for p in eta_net.parameters())
 
 
 @pytest.mark.L3
 @pytest.mark.slow
 def test_phase_e_selector_rejects_cross_experiment_use(
-    bootstrapped_registry, tmp_path,
+    bootstrapped_registry,
+    tmp_path,
 ):
     """A Phase E checkpoint trained at (σ₀, σ) is refused for inference
     at any other (σ₀, σ) — even when the derived w matches.
@@ -787,23 +781,33 @@ def test_phase_e_selector_rejects_cross_experiment_use(
     from frasian._errors import MissingArtifactError
     from frasian.learned.eta_artifact import EtaArtifact
     from frasian.learned.training.train import fit_eta_artifact
+    from frasian.statistics.waldo import WaldoStatistic
     from frasian.tilting.eta_selectors import LearnedDynamicEtaSelector
     from frasian.tilting.power_law import PowerLawTilting
-    from frasian.statistics.waldo import WaldoStatistic
 
     # Train a tiny checkpoint at the canonical (μ₀=0, σ₀=σ=1, w=0.5).
     cfg = ExperimentConfig(
-        scheme_name="power_law", statistic_name="waldo",
+        scheme_name="power_law",
+        statistic_name="waldo",
         prior=NormalDistribution(0.0, 1.0),
         model=NormalNormalModel(sigma=1.0),
         theta_distribution=UniformThetaDistribution(low=-3.0, high=3.0),
-        n_grid=21, n_lhs=80, eta_explore_box=(-2.0, 2.0), seed=7,
+        n_grid=21,
+        n_lhs=80,
+        eta_explore_box=(-2.0, 2.0),
+        seed=7,
     )
     out = tmp_path / "ckpt.pt"
     fit_eta_artifact(
-        config=cfg, out_path=out,
-        n_epochs=2, batch_size=20, n_aux=20,
-        lambda_max=1.0, lambda_warmup_frac=0.5, patience=5, verbose=False,
+        config=cfg,
+        out_path=out,
+        n_epochs=2,
+        batch_size=20,
+        n_aux=20,
+        lambda_max=1.0,
+        lambda_warmup_frac=0.5,
+        patience=5,
+        verbose=False,
     )
     art = EtaArtifact(artifact_path=out, name="phase_e_test")
     sel = LearnedDynamicEtaSelector(artifact=art)
@@ -811,7 +815,8 @@ def test_phase_e_selector_rejects_cross_experiment_use(
 
     # Same fingerprints: works.
     scheme.dynamic_tilted_confidence_interval(
-        alpha=0.05, D=0.0,
+        alpha=0.05,
+        D=0.0,
         model=NormalNormalModel(sigma=1.0),
         prior=NormalDistribution(0.0, 1.0),
         statistic_name="waldo",
@@ -820,7 +825,8 @@ def test_phase_e_selector_rejects_cross_experiment_use(
     # Same w (=0.5) but rescaled (σ₀=σ=2): rejected.
     with pytest.raises(MissingArtifactError, match="trained on model"):
         scheme.dynamic_tilted_confidence_interval(
-            alpha=0.05, D=0.0,
+            alpha=0.05,
+            D=0.0,
             model=NormalNormalModel(sigma=2.0),
             prior=NormalDistribution(0.0, 2.0),
             statistic_name="waldo",
@@ -829,7 +835,8 @@ def test_phase_e_selector_rejects_cross_experiment_use(
     # Same (σ, σ₀) but shifted prior (μ₀=1): rejected.
     with pytest.raises(MissingArtifactError, match="trained with prior"):
         scheme.dynamic_tilted_confidence_interval(
-            alpha=0.05, D=0.0,
+            alpha=0.05,
+            D=0.0,
             model=NormalNormalModel(sigma=1.0),
             prior=NormalDistribution(1.0, 1.0),
             statistic_name="waldo",
@@ -843,36 +850,44 @@ def test_lambda_schedule_starts_at_zero():
     """Skeptic E.3 block #4: λ(0) = 0 so Head A's boundary-penalty
     signal is null while Head B trains on its first batch."""
     from frasian.learned.training.train import _lambda_schedule
-    assert _lambda_schedule(0, n_epochs=10, lambda_max=10.0,
-                              warmup_frac=0.3) == 0.0
+
+    assert _lambda_schedule(0, n_epochs=10, lambda_max=10.0, warmup_frac=0.3) == 0.0
     # At warmup_epochs, λ = λ_max.
     warmup_epochs = max(1, int(round(0.3 * 10)))
-    assert _lambda_schedule(warmup_epochs, n_epochs=10, lambda_max=10.0,
-                              warmup_frac=0.3) == 10.0
+    assert _lambda_schedule(warmup_epochs, n_epochs=10, lambda_max=10.0, warmup_frac=0.3) == 10.0
     # Post-warmup, constant at λ_max.
-    assert _lambda_schedule(8, n_epochs=10, lambda_max=10.0,
-                              warmup_frac=0.3) == 10.0
+    assert _lambda_schedule(8, n_epochs=10, lambda_max=10.0, warmup_frac=0.3) == 10.0
 
 
 @pytest.mark.L3
 @pytest.mark.slow
 def test_alpha_required_to_be_none_for_marginalised_loss(
-    bootstrapped_registry, tmp_path,
+    bootstrapped_registry,
+    tmp_path,
 ):
     """Skeptic E.3 block #7: integrated_p / cd_variance reject non-None α."""
     from frasian.learned.training.train import fit_eta_artifact
+
     cfg = ExperimentConfig(
-        scheme_name="power_law", statistic_name="waldo",
+        scheme_name="power_law",
+        statistic_name="waldo",
         prior=NormalDistribution(0.0, 1.0),
         model=NormalNormalModel(sigma=1.0),
         theta_distribution=UniformThetaDistribution(low=-3.0, high=3.0),
-        n_grid=21, n_lhs=20, eta_explore_box=(-2.0, 2.0), seed=7,
+        n_grid=21,
+        n_lhs=20,
+        eta_explore_box=(-2.0, 2.0),
+        seed=7,
     )
     with pytest.raises(ValueError, match="α-marginalised"):
         fit_eta_artifact(
-            config=cfg, out_path=tmp_path / "x.pt",
-            loss_kind="integrated_p", alpha=0.05,  # invalid pairing
-            n_epochs=1, batch_size=10, verbose=False,
+            config=cfg,
+            out_path=tmp_path / "x.pt",
+            loss_kind="integrated_p",
+            alpha=0.05,  # invalid pairing
+            n_epochs=1,
+            batch_size=10,
+            verbose=False,
         )
 
 

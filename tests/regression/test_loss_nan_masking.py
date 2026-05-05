@@ -18,7 +18,9 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from frasian.learned.training.losses import (
-    cd_variance_loss, integrated_pvalue_loss, static_width_loss,
+    cd_variance_loss,
+    integrated_pvalue_loss,
+    static_width_loss,
 )
 
 
@@ -48,9 +50,9 @@ def test_integrated_p_masks_nan_samples():
     # Hand-compute the mean over rows 1..3:
     widths = torch.trapezoid(p[1:], theta, dim=-1)
     expected = float(widths.mean().item())
-    assert abs(loss_masked - expected) < 1e-12, (
-        f"masked loss {loss_masked} ≠ mean of valid rows {expected}"
-    )
+    assert (
+        abs(loss_masked - expected) < 1e-12
+    ), f"masked loss {loss_masked} ≠ mean of valid rows {expected}"
     # Non-finite per-sample loss is dropped (loss should differ from
     # full-batch mean if the NaN row would have contributed).
     assert loss_masked != loss_clean
@@ -101,6 +103,4 @@ def test_masked_mean_preserves_gradient():
     assert torch.isfinite(loss), f"masked loss is not finite: {loss}"
     loss.backward()
     # Gradient of `p` (the rows 1..3 in p_pretend) should be finite.
-    assert torch.all(torch.isfinite(p.grad)), (
-        f"gradient on valid rows contains NaN: {p.grad}"
-    )
+    assert torch.all(torch.isfinite(p.grad)), f"gradient on valid rows contains NaN: {p.grad}"

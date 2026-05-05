@@ -39,17 +39,13 @@ def main(smoke: bool = False, out: Path | None = None) -> Path:
 
     fig, ax = plt.subplots(figsize=(6.4, 3.7))
     ax.plot(thetas, ps, color="#2E86AB", lw=2, label=r"WALDO $p(\theta)$")
-    ax.axhline(alpha, ls="--", color="0.5", lw=1, label=fr"$\alpha={alpha}$")
-    ax.axvline(float(mu_n), color="#2E86AB", ls=":", lw=1.5,
-               label=fr"$\mu_n={float(mu_n):.2f}$")
-    ax.axvline(D, color="#DC3545", ls=":", lw=1.5,
-               label=fr"$D={D}$ (MLE)")
-    ax.axvline(mu0, color="#28A745", ls=":", lw=1.5, label=fr"$\mu_0={mu0}$")
+    ax.axhline(alpha, ls="--", color="0.5", lw=1, label=rf"$\alpha={alpha}$")
+    ax.axvline(float(mu_n), color="#2E86AB", ls=":", lw=1.5, label=rf"$\mu_n={float(mu_n):.2f}$")
+    ax.axvline(D, color="#DC3545", ls=":", lw=1.5, label=rf"$D={D}$ (MLE)")
+    ax.axvline(mu0, color="#28A745", ls=":", lw=1.5, label=rf"$\mu_0={mu0}$")
     ax.set_xlabel(r"$\theta$")
     ax.set_ylabel(r"$p(\theta)$")
-    ax.set_title(
-        fr"WALDO: $D={D}$, $\sigma={sigma}$, $\sigma_0={sigma0}$, $w={w:.2f}$"
-    )
+    ax.set_title(rf"WALDO: $D={D}$, $\sigma={sigma}$, $\sigma_0={sigma0}$, $w={w:.2f}$")
     ax.legend(loc="upper right", frameon=False, fontsize=8)
     ax.set_ylim(-0.02, 1.02)
     fig.tight_layout()

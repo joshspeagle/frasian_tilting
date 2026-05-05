@@ -38,22 +38,22 @@ def main(smoke: bool = False, out: Path | None = None) -> Path:
     n_grid = 401 if smoke else 801
     thetas = np.linspace(-2.5, 5.5, n_grid)
 
-    cmap = plt.cm.viridis
+    cmap = plt.get_cmap("viridis")
     fig, ax = plt.subplots(figsize=(6.4, 3.7))
     for i, eta in enumerate(etas):
         tilted = scheme.tilt(posterior, prior, likelihood, float(eta))
         color = cmap(i / max(1, len(etas) - 1))
         label = (
-            r"$\eta=0$ (WALDO)" if eta == 0.0 else
-            r"$\eta=1$ (Wald)" if eta == 1.0 else
-            fr"$\eta={eta:+.2f}$"
+            r"$\eta=0$ (WALDO)"
+            if eta == 0.0
+            else r"$\eta=1$ (Wald)" if eta == 1.0 else rf"$\eta={eta:+.2f}$"
         )
         ax.plot(thetas, tilted.pdf(thetas), color=color, lw=1.6, label=label)
     ax.set_xlabel(r"$\theta$")
     ax.set_ylabel("density")
     ax.set_title(
-        fr"Power-law tilting: $D={D}$, $\sigma_0={sigma0}$ "
-        fr"(crowding at low $|\Delta|$ is the smoothness concern)"
+        rf"Power-law tilting: $D={D}$, $\sigma_0={sigma0}$ "
+        rf"(crowding at low $|\Delta|$ is the smoothness concern)"
     )
     ax.legend(loc="upper right", frameon=False, fontsize=8)
     fig.tight_layout()

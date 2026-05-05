@@ -23,10 +23,9 @@ differentiable and numerically stable across the float32 range.
 from __future__ import annotations
 
 import math
-from typing import Callable, Dict
+from typing import Callable
 
 import torch
-
 
 _SQRT2 = math.sqrt(2.0)
 
@@ -136,7 +135,7 @@ def ot_tilted_pvalue_torch(
 
 
 # Registry keyed on scheme.name. Add new schemes by registering here.
-TORCH_TILTED_PVALUE: Dict[str, Callable[..., torch.Tensor]] = {
+TORCH_TILTED_PVALUE: dict[str, Callable[..., torch.Tensor]] = {
     "power_law": power_law_tilted_pvalue_torch,
     "ot": ot_tilted_pvalue_torch,
 }

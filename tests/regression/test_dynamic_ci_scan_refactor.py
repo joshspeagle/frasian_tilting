@@ -25,8 +25,7 @@ from scipy import optimize
 from frasian.models.distributions import NormalDistribution
 from frasian.models.normal_normal import NormalNormalModel
 from frasian.statistics.waldo import WaldoStatistic
-from frasian.tilting.eta_selectors import (DynamicNumericalEtaSelector,
-                                              _NamedStatistic)
+from frasian.tilting.eta_selectors import DynamicNumericalEtaSelector, _NamedStatistic
 from frasian.tilting.ot import OTTilting
 from frasian.tilting.power_law import PowerLawTilting
 
@@ -52,7 +51,7 @@ def _reference_inline_dynamic_ci(
     sigma = float(model.sigma)
     mu0 = float(prior.loc)
     sigma0 = float(prior.scale)
-    w = sigma0 ** 2 / (sigma ** 2 + sigma0 ** 2)
+    w = sigma0**2 / (sigma**2 + sigma0**2)
 
     search_half = search_mult * sigma
     theta_lo = D - search_half
@@ -63,39 +62,60 @@ def _reference_inline_dynamic_ci(
     ad_max = float(abs_delta_theta.max()) + 1e-6
     coarse_grid = np.linspace(0.0, ad_max, coarse_n)
     coarse_eta = eta_selector.select_grid(
-        coarse_grid, scheme, statistic=_NamedStatistic(statistic_name),
-        w=w, alpha=alpha,
+        coarse_grid,
+        scheme,
+        statistic=_NamedStatistic(statistic_name),
+        w=w,
+        alpha=alpha,
     )
     eta_at_theta = np.interp(abs_delta_theta, coarse_grid, coarse_eta)
 
     p_theta = np.empty_like(theta_grid)
     for i in range(theta_grid.size):
-        p_theta[i] = float(scheme.tilted_pvalue(
-            float(theta_grid[i]), D, model, prior,
-            float(eta_at_theta[i]), statistic_name,
-        ))
+        p_theta[i] = float(
+            scheme.tilted_pvalue(
+                float(theta_grid[i]),
+                D,
+                model,
+                prior,
+                float(eta_at_theta[i]),
+                statistic_name,
+            )
+        )
 
     diff = p_theta - alpha
     crossings: list[float] = []
     for i in range(theta_grid.size - 1):
         if diff[i] * diff[i + 1] < 0.0:
+
             def _f(theta_val: float, _i=i) -> float:
                 ad = abs((1.0 - w) * (mu0 - theta_val) / sigma)
                 eta = float(np.interp(ad, coarse_grid, coarse_eta))
-                return float(scheme.tilted_pvalue(
-                    theta_val, D, model, prior, eta, statistic_name,
-                )) - alpha
+                return (
+                    float(
+                        scheme.tilted_pvalue(
+                            theta_val,
+                            D,
+                            model,
+                            prior,
+                            eta,
+                            statistic_name,
+                        )
+                    )
+                    - alpha
+                )
+
             try:
                 cross = optimize.brentq(
-                    _f, theta_grid[i], theta_grid[i + 1], xtol=1e-9,
+                    _f,
+                    theta_grid[i],
+                    theta_grid[i + 1],
+                    xtol=1e-9,
                 )
                 crossings.append(float(cross))
             except ValueError:
                 t = diff[i] / (diff[i] - diff[i + 1])
-                crossings.append(
-                    float(theta_grid[i] + t * (theta_grid[i + 1]
-                                                - theta_grid[i]))
-                )
+                crossings.append(float(theta_grid[i] + t * (theta_grid[i + 1] - theta_grid[i])))
 
     regions: list[tuple[float, float]] = []
     if not crossings:
@@ -116,19 +136,30 @@ def _reference_inline_dynamic_ci(
 
 @pytest.mark.L2
 @pytest.mark.parametrize("scheme_factory", [PowerLawTilting, OTTilting])
-@pytest.mark.parametrize("D, sigma0", [
-    # Standard sweep
-    (-2.0, 0.5), (-2.0, 1.0), (-2.0, 2.0),
-    (0.0, 0.5),  (0.0, 1.0),  (0.0, 2.0),
-    (1.5, 0.5),  (1.5, 1.0),  (1.5, 2.0),
-    (4.0, 0.5),  (4.0, 1.0),  (4.0, 2.0),
-    # Extreme conflict — exercises multi-region branch when applicable.
-    # At (D=8, σ0=2.0): w=0.8, |Δ|=0.2·8=1.6; high-conflict territory
-    # where the dynamic p-value can become multimodal.
-    (8.0, 2.0),
-    # At (D=6, σ0=0.5): w=0.2, |Δ|=0.8·6=4.8; very high conflict.
-    (6.0, 0.5),
-])
+@pytest.mark.parametrize(
+    "D, sigma0",
+    [
+        # Standard sweep
+        (-2.0, 0.5),
+        (-2.0, 1.0),
+        (-2.0, 2.0),
+        (0.0, 0.5),
+        (0.0, 1.0),
+        (0.0, 2.0),
+        (1.5, 0.5),
+        (1.5, 1.0),
+        (1.5, 2.0),
+        (4.0, 0.5),
+        (4.0, 1.0),
+        (4.0, 2.0),
+        # Extreme conflict — exercises multi-region branch when applicable.
+        # At (D=8, σ0=2.0): w=0.8, |Δ|=0.2·8=1.6; high-conflict territory
+        # where the dynamic p-value can become multimodal.
+        (8.0, 2.0),
+        # At (D=6, σ0=0.5): w=0.2, |Δ|=0.8·6=4.8; very high conflict.
+        (6.0, 0.5),
+    ],
+)
 def test_extracted_helper_matches_inline(scheme_factory, D, sigma0):
     """`dynamic_ci_scan` produces byte-identical regions to the reference."""
     sigma, mu0, alpha = 1.0, 0.0, 0.05
@@ -140,19 +171,30 @@ def test_extracted_helper_matches_inline(scheme_factory, D, sigma0):
     selector = DynamicNumericalEtaSelector(sigma=sigma, mu0=mu0)
 
     new_regions, new_total, new_n = scheme.dynamic_tilted_confidence_interval(
-        alpha=alpha, D=D, model=model, prior=prior,
-        statistic_name="waldo", eta_selector=selector,
-        n_grid=n_grid, coarse_n=coarse_n, search_mult=search_mult,
+        alpha=alpha,
+        D=D,
+        model=model,
+        prior=prior,
+        statistic_name="waldo",
+        eta_selector=selector,
+        n_grid=n_grid,
+        coarse_n=coarse_n,
+        search_mult=search_mult,
     )
     ref_regions, ref_total, ref_n = _reference_inline_dynamic_ci(
-        scheme=scheme, alpha=alpha, D=D, model=model, prior=prior,
-        statistic_name="waldo", eta_selector=selector,
-        n_grid=n_grid, coarse_n=coarse_n, search_mult=search_mult,
+        scheme=scheme,
+        alpha=alpha,
+        D=D,
+        model=model,
+        prior=prior,
+        statistic_name="waldo",
+        eta_selector=selector,
+        n_grid=n_grid,
+        coarse_n=coarse_n,
+        search_mult=search_mult,
     )
 
-    assert new_n == ref_n, (
-        f"region count differs: new={new_n}, ref={ref_n}"
-    )
+    assert new_n == ref_n, f"region count differs: new={new_n}, ref={ref_n}"
     assert len(new_regions) == len(ref_regions)
     for (n_lo, n_hi), (r_lo, r_hi) in zip(new_regions, ref_regions):
         np.testing.assert_allclose(n_lo, r_lo, atol=1e-12)

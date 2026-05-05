@@ -12,18 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from frasian import (
-    Config,
-    EmptyRegistryError,
-    list_methods,
-    registry,
-    run_experiment,
-)
-from frasian.experiments.base import (
-    Experiment,
-    ExperimentContext,
-    RawResult,
-)
+from frasian import Config, EmptyRegistryError, list_methods, registry, run_experiment
+from frasian.experiments.base import Experiment, ExperimentContext, RawResult
 
 
 @dataclass
@@ -76,9 +66,7 @@ class TestEmptyRegistry:
 
     def test_list_methods_returns_empty_groups(self):
         groups = list_methods()
-        assert set(groups) == {
-            "models", "tiltings", "statistics", "experiments", "diagnostics"
-        }
+        assert set(groups) == {"models", "tiltings", "statistics", "experiments", "diagnostics"}
         assert all(len(v) == 0 for v in groups.values())
 
     def test_protocols_are_importable_without_concrete_impls(self):
@@ -93,9 +81,12 @@ class TestEmptyRegistry:
 
         # Just confirm they are usable as runtime-checkable Protocols.
         for proto in (
-            ConfidenceDistribution, Diagnostic, ExperimentProto,
-            LearnedArtifact, Model, TestStatistic, TiltingScheme,
+            ConfidenceDistribution,
+            Diagnostic,
+            ExperimentProto,
+            LearnedArtifact,
+            Model,
+            TestStatistic,
+            TiltingScheme,
         ):
-            assert hasattr(proto, "_is_runtime_protocol") or hasattr(
-                proto, "_is_protocol"
-            )
+            assert hasattr(proto, "_is_runtime_protocol") or hasattr(proto, "_is_protocol")

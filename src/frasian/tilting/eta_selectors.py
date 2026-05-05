@@ -48,14 +48,14 @@ from dataclasses import dataclass, field
 import numpy as np
 from scipy import optimize
 
+from ..learned.eta_artifact import EtaArtifact
 from ..models.distributions import NormalDistribution
 from ..models.normal_normal import NormalNormalModel
 from ..statistics.base import TestStatistic
 from .base import TiltingContext, TiltingDomainError, TiltingScheme
 
 
-def _D_from_abs_delta(abs_delta: float, w: float, sigma: float, mu0: float
-                      ) -> float:
+def _D_from_abs_delta(abs_delta: float, w: float, sigma: float, mu0: float) -> float:
     """Invert Delta = (1 - w)(mu0 - D)/sigma with the convention Delta >= 0."""
     return float(mu0 - abs_delta * sigma / max(1.0 - w, 1e-12))
 
@@ -70,6 +70,7 @@ class _NamedStatistic:
     the name in this adapter satisfies the selector's type contract without
     pulling in the registry.
     """
+
     name: str
 
 
@@ -86,8 +87,9 @@ class FixedEtaSelector:
     name: str = "fixed"
     is_dynamic: bool = False
 
-    def select(self, context: TiltingContext, scheme: TiltingScheme,
-               *, statistic: TestStatistic) -> float:
+    def select(
+        self, context: TiltingContext, scheme: TiltingScheme, *, statistic: TestStatistic
+    ) -> float:
         return float(self.eta)
 
 
@@ -136,8 +138,8 @@ class NumericalEtaSelector:
 
     # New: objective + integrated_p hyperparameters.
     objective: str = "static_width"  # "static_width" | "integrated_p"
-    n_grid: int = 401                # only used if objective="integrated_p"
-    search_mult: float = 8.0         # only used if objective="integrated_p"
+    n_grid: int = 401  # only used if objective="integrated_p"
+    search_mult: float = 8.0  # only used if objective="integrated_p"
 
     def __post_init__(self) -> None:
         if self.objective not in ("static_width", "integrated_p"):
@@ -146,57 +148,68 @@ class NumericalEtaSelector:
                 f"'static_width' or 'integrated_p'; got {self.objective!r}."
             )
 
-    def select(self, context: TiltingContext, scheme: TiltingScheme,
-               *, statistic: TestStatistic) -> float:
+    def select(
+        self, context: TiltingContext, scheme: TiltingScheme, *, statistic: TestStatistic
+    ) -> float:
         eta_lo, eta_hi = scheme.admissible_range(context)
         eta_hi = min(eta_hi, 1.0 - self.eta_min_buffer)
 
-        sigma0 = float(np.sqrt(context.w / max(1.0 - context.w, 1e-12))
-                        * self.sigma)
+        sigma0 = float(np.sqrt(context.w / max(1.0 - context.w, 1e-12)) * self.sigma)
         prior = NormalDistribution(loc=self.mu0, scale=sigma0)
         model = NormalNormalModel(sigma=self.sigma)
-        D = _D_from_abs_delta(context.abs_delta, context.w, self.sigma,
-                                self.mu0)
+        D = _D_from_abs_delta(context.abs_delta, context.w, self.sigma, self.mu0)
 
         if self.objective == "static_width":
             objective_fn = self._make_static_width_objective(
-                scheme=scheme, statistic=statistic,
-                D=D, model=model, prior=prior, alpha=context.alpha,
+                scheme=scheme,
+                statistic=statistic,
+                D=D,
+                model=model,
+                prior=prior,
+                alpha=context.alpha,
             )
         else:  # integrated_p
             objective_fn = self._make_integrated_p_objective(
-                scheme=scheme, statistic=statistic,
-                D=D, model=model, prior=prior,
+                scheme=scheme,
+                statistic=statistic,
+                D=D,
+                model=model,
+                prior=prior,
             )
 
         result = optimize.minimize_scalar(
-            objective_fn, bounds=(eta_lo, eta_hi), method="bounded",
+            objective_fn,
+            bounds=(eta_lo, eta_hi),
+            method="bounded",
             options={"xatol": 1e-3},
         )
         return float(result.x)
 
-    def _make_static_width_objective(self, *, scheme, statistic, D, model,
-                                        prior, alpha):
+    def _make_static_width_objective(self, *, scheme, statistic, D, model, prior, alpha):
         def width(eta: float) -> float:
             try:
                 if hasattr(scheme, "tilted_confidence_interval"):
                     lo, hi = scheme.tilted_confidence_interval(
-                        alpha, D, model, prior, eta, statistic.name,
+                        alpha,
+                        D,
+                        model,
+                        prior,
+                        eta,
+                        statistic.name,
                     )
                 else:
                     raise NotImplementedError(
                         f"{type(scheme).__name__} does not implement "
                         f"`tilted_confidence_interval`."
                     )
-            except (NotImplementedError, TiltingDomainError,
-                     ValueError, RuntimeError):
-                return np.inf
+            except (NotImplementedError, TiltingDomainError, ValueError, RuntimeError):
+                return float("inf")
             w_ci = float(hi - lo)
-            return w_ci if (w_ci > 0 and np.isfinite(w_ci)) else np.inf
+            return w_ci if (w_ci > 0 and np.isfinite(w_ci)) else float("inf")
+
         return width
 
-    def _make_integrated_p_objective(self, *, scheme, statistic, D, model,
-                                       prior):
+    def _make_integrated_p_objective(self, *, scheme, statistic, D, model, prior):
         """Build `f(eta) = ∫_θ p_dyn(θ; D, η) dθ` for scipy.optimize."""
         if not hasattr(scheme, "tilted_pvalue"):
             raise NotImplementedError(
@@ -208,19 +221,24 @@ class NumericalEtaSelector:
 
         def integrated_p(eta: float) -> float:
             try:
-                p = scheme.tilted_pvalue(theta_grid, D, model, prior,
-                                          eta, statistic.name)
-            except (NotImplementedError, TiltingDomainError,
-                     ValueError, RuntimeError):
-                return np.inf
+                p = scheme.tilted_pvalue(theta_grid, D, model, prior, eta, statistic.name)
+            except (NotImplementedError, TiltingDomainError, ValueError, RuntimeError):
+                return float("inf")
             p = np.clip(np.asarray(p, dtype=np.float64), 0.0, 1.0)
             val = float(np.trapezoid(p, theta_grid))
-            return val if np.isfinite(val) else np.inf
+            return val if np.isfinite(val) else float("inf")
+
         return integrated_p
 
-    def select_grid(self, abs_delta_grid, scheme: TiltingScheme,
-                    *, statistic: TestStatistic, w: float, alpha: float
-                    ):
+    def select_grid(
+        self,
+        abs_delta_grid,
+        scheme: TiltingScheme,
+        *,
+        statistic: TestStatistic,
+        w: float,
+        alpha: float,
+    ):
         """Vectorised: η* at every |Δ| in `abs_delta_grid`.
 
         Used by `dynamic_tilted_confidence_interval` to pre-compute a coarse
@@ -289,17 +307,25 @@ class DynamicNumericalEtaSelector:
     _cache: dict = field(default_factory=dict, compare=False, repr=False)
 
     def _inner(self) -> NumericalEtaSelector:
-        return NumericalEtaSelector(sigma=self.sigma, mu0=self.mu0,
-                                    eta_min_buffer=self.eta_min_buffer)
+        return NumericalEtaSelector(
+            sigma=self.sigma, mu0=self.mu0, eta_min_buffer=self.eta_min_buffer
+        )
 
-    def select(self, context: TiltingContext, scheme: TiltingScheme,
-               *, statistic: TestStatistic) -> float:
+    def select(
+        self, context: TiltingContext, scheme: TiltingScheme, *, statistic: TestStatistic
+    ) -> float:
         """Convenience: a single-context η* (delegates to the static inner)."""
         return self._inner().select(context, scheme, statistic=statistic)
 
-    def select_grid(self, abs_delta_grid, scheme: TiltingScheme,
-                    *, statistic: TestStatistic, w: float, alpha: float
-                    ):
+    def select_grid(
+        self,
+        abs_delta_grid,
+        scheme: TiltingScheme,
+        *,
+        statistic: TestStatistic,
+        w: float,
+        alpha: float,
+    ):
         coarse_n = len(abs_delta_grid)
         scheme_name = getattr(scheme, "name", type(scheme).__name__)
         ad_max = float(np.asarray(abs_delta_grid).max())
@@ -308,16 +334,19 @@ class DynamicNumericalEtaSelector:
         # deterministic given the bin — different `ad_max` values within
         # the same bin produce identical grid points and η values.
         # Multiple bins coexist in the cache.
-        ad_max_bin = float(np.ceil(max(ad_max, self.cache_bin_width)
-                                     / self.cache_bin_width)
-                           * self.cache_bin_width)
+        ad_max_bin = float(
+            np.ceil(max(ad_max, self.cache_bin_width) / self.cache_bin_width) * self.cache_bin_width
+        )
         key = (w, alpha, statistic.name, scheme_name, coarse_n, ad_max_bin)
         cached = self._cache.get(key)
         if cached is None:
             coarse_grid_full = np.linspace(0.0, ad_max_bin, coarse_n)
             eta_full = self._inner().select_grid(
-                coarse_grid_full, scheme, statistic=statistic,
-                w=w, alpha=alpha,
+                coarse_grid_full,
+                scheme,
+                statistic=statistic,
+                w=w,
+                alpha=alpha,
             )
             self._cache[key] = (coarse_grid_full, eta_full)
             cached_grid, cached_eta = coarse_grid_full, eta_full
@@ -378,7 +407,7 @@ class LearnedDynamicEtaSelector:
     so no per-(w, α) cache is needed beyond the artifact load.
     """
 
-    artifact: object  # EtaArtifact (Phase E v2)
+    artifact: EtaArtifact  # Phase E v2 dual-head checkpoint
     name: str = "learned_dynamic"
     sigma: float = 1.0
     mu0: float = 0.0
@@ -388,9 +417,7 @@ class LearnedDynamicEtaSelector:
     # has fired (skeptic E pre-PR review #2). Cumulative across calls
     # in the lifetime of this selector instance.
     _clamped_calls: int = field(default=0, init=False, repr=False, compare=False)
-    _last_clamped_fraction: float = field(
-        default=0.0, init=False, repr=False, compare=False
-    )
+    _last_clamped_fraction: float = field(default=0.0, init=False, repr=False, compare=False)
 
     def _ensure_loaded(self) -> None:
         if not self._loaded:
@@ -398,6 +425,7 @@ class LearnedDynamicEtaSelector:
             self._loaded = True
             # Only Phase E (format v2) checkpoints are supported.
             from .._errors import MissingArtifactError
+
             meta = self.artifact.metadata
             v = meta.get("checkpoint_format_version", None)
             if v != 2 or "experiment_config" not in meta:
@@ -411,10 +439,10 @@ class LearnedDynamicEtaSelector:
 
     def _check_scheme(self, scheme: TiltingScheme) -> None:
         from .._errors import MissingArtifactError
+
         if not self._loaded:
             raise MissingArtifactError(
-                f"{self.artifact.name} not loaded; "
-                f"call .load() before _check_scheme()."
+                f"{self.artifact.name} not loaded; " f"call .load() before _check_scheme()."
             )
         meta = self.artifact.metadata
         trained_scheme = meta["experiment_config"]["scheme_name"]
@@ -427,10 +455,10 @@ class LearnedDynamicEtaSelector:
 
     def _check_alpha(self, alpha: float) -> None:
         from .._errors import MissingArtifactError
+
         if not self._loaded:
             raise MissingArtifactError(
-                f"{self.artifact.name} not loaded; "
-                f"call .load() before _check_alpha()."
+                f"{self.artifact.name} not loaded; " f"call .load() before _check_alpha()."
             )
         meta = self.artifact.metadata
         # Phase E records `alpha` (None for marginalised losses, fixed
@@ -461,6 +489,7 @@ class LearnedDynamicEtaSelector:
         ``(σ, σ₀)`` pairs giving the same ``w``.
         """
         from .._errors import MissingArtifactError
+
         meta = self.artifact.metadata["experiment_config"]
         trained_model_fp = tuple(meta["model_fingerprint"])
         trained_prior_fp = tuple(meta["prior_fingerprint"])
@@ -479,30 +508,26 @@ class LearnedDynamicEtaSelector:
             )
 
         # Strict per-fingerprint compare when available.
-        if model_fingerprint is not None:
-            if tuple(model_fingerprint) != trained_model_fp:
-                raise MissingArtifactError(
-                    f"{self.artifact.name} trained on model "
-                    f"{trained_model_fp!r}, but inference model is "
-                    f"{tuple(model_fingerprint)!r}. Train a new "
-                    f"checkpoint for this experiment."
-                )
-        if prior_fingerprint is not None:
-            if tuple(prior_fingerprint) != trained_prior_fp:
-                raise MissingArtifactError(
-                    f"{self.artifact.name} trained with prior "
-                    f"{trained_prior_fp!r}, but inference prior is "
-                    f"{tuple(prior_fingerprint)!r}. Train a new "
-                    f"checkpoint for this experiment."
-                )
+        if model_fingerprint is not None and tuple(model_fingerprint) != trained_model_fp:
+            raise MissingArtifactError(
+                f"{self.artifact.name} trained on model "
+                f"{trained_model_fp!r}, but inference model is "
+                f"{tuple(model_fingerprint)!r}. Train a new "
+                f"checkpoint for this experiment."
+            )
+        if prior_fingerprint is not None and tuple(prior_fingerprint) != trained_prior_fp:
+            raise MissingArtifactError(
+                f"{self.artifact.name} trained with prior "
+                f"{trained_prior_fp!r}, but inference prior is "
+                f"{tuple(prior_fingerprint)!r}. Train a new "
+                f"checkpoint for this experiment."
+            )
 
         # Derived w check (catches rough mismatches even when
         # fingerprints aren't plumbed through).
         sigma_trained = float(trained_model_fp[1])
         sigma0_trained = float(trained_prior_fp[2])
-        w_trained = sigma0_trained ** 2 / (
-            sigma_trained ** 2 + sigma0_trained ** 2
-        )
+        w_trained = sigma0_trained**2 / (sigma_trained**2 + sigma0_trained**2)
         if abs(w - w_trained) > 1e-6:
             raise MissingArtifactError(
                 f"{self.artifact.name} trained at w={w_trained:.6f}, "
@@ -522,10 +547,15 @@ class LearnedDynamicEtaSelector:
                 f"denom-clamp distorts silently in this regime."
             )
 
-    def select(self, context: TiltingContext, scheme: TiltingScheme,
-               *, statistic: TestStatistic,
-               model_fingerprint: tuple | None = None,
-               prior_fingerprint: tuple | None = None) -> float:
+    def select(
+        self,
+        context: TiltingContext,
+        scheme: TiltingScheme,
+        *,
+        statistic: TestStatistic,
+        model_fingerprint: tuple | None = None,
+        prior_fingerprint: tuple | None = None,
+    ) -> float:
         """Single-context η. Convenience for non-dynamic callers.
 
         ``model_fingerprint`` and ``prior_fingerprint`` are required for
@@ -548,17 +578,27 @@ class LearnedDynamicEtaSelector:
         self._check_scheme(scheme)
         self._check_alpha(context.alpha)
         out = self.select_grid(
-            np.asarray([context.abs_delta]), scheme,
-            statistic=statistic, w=context.w, alpha=context.alpha,
+            np.asarray([context.abs_delta]),
+            scheme,
+            statistic=statistic,
+            w=context.w,
+            alpha=context.alpha,
             model_fingerprint=model_fingerprint,
             prior_fingerprint=prior_fingerprint,
         )
         return float(out[0])
 
-    def select_grid(self, abs_delta_grid, scheme: TiltingScheme,
-                    *, statistic: TestStatistic, w: float, alpha: float,
-                    model_fingerprint: tuple | None = None,
-                    prior_fingerprint: tuple | None = None):
+    def select_grid(
+        self,
+        abs_delta_grid,
+        scheme: TiltingScheme,
+        *,
+        statistic: TestStatistic,
+        w: float,
+        alpha: float,
+        model_fingerprint: tuple | None = None,
+        prior_fingerprint: tuple | None = None,
+    ):
         """Per-θ η* lookup via the trained Phase E EtaNet.
 
         Converts ``abs_delta_grid`` back to θ using the trained
@@ -625,6 +665,7 @@ class LearnedDynamicEtaSelector:
         out_of_range = (eta < lo_safe) | (eta > hi_safe)
         if out_of_range.any():
             import warnings
+
             frac = float(out_of_range.mean())
             self._clamped_calls += 1
             self._last_clamped_fraction = frac
@@ -644,6 +685,7 @@ class LearnedDynamicEtaSelector:
             # silently as if calibration held.
             if frac > _CLAMP_FAIL_THRESHOLD:
                 from .._errors import MissingArtifactError
+
                 raise MissingArtifactError(
                     f"{self.artifact.name}: {100*frac:.1f}% of predicted "
                     f"η values fell outside the admissible range — over "

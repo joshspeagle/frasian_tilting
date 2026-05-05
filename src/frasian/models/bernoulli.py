@@ -25,7 +25,7 @@ from numpy.random import Generator
 from numpy.typing import ArrayLike, NDArray
 
 from .._registry import register_model
-from .base import Model, Prior
+from .base import Prior
 from .distributions import BernoulliLikelihood, BetaDistribution
 
 
@@ -47,8 +47,7 @@ class BernoulliModel:
 
     # ----- Model protocol -----
 
-    def sample_data(self, theta: ArrayLike, rng: Generator, n: int
-                    ) -> NDArray[np.float64]:
+    def sample_data(self, theta: ArrayLike, rng: Generator, n: int) -> NDArray[np.float64]:
         theta_f = float(np.asarray(theta))
         if not (0.0 <= theta_f <= 1.0):
             raise ValueError(f"theta must lie in [0, 1], got {theta_f!r}")
@@ -60,8 +59,7 @@ class BernoulliModel:
         n_success = int(arr.sum())
         return BernoulliLikelihood(n_success=n_success, n_total=n_total)
 
-    def posterior(self, data: NDArray[np.float64], prior: Prior
-                  ) -> BetaDistribution:
+    def posterior(self, data: NDArray[np.float64], prior: Prior) -> BetaDistribution:
         if not isinstance(prior, BetaDistribution):
             raise NotImplementedError(
                 "BernoulliModel.posterior currently requires a "

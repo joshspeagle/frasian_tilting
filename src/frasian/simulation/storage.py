@@ -13,9 +13,10 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
@@ -31,8 +32,7 @@ class StoredResult:
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
-def save_result(path: Path, arrays: Mapping[str, NDArray],
-                metadata: Mapping[str, Any]) -> None:
+def save_result(path: Path, arrays: Mapping[str, NDArray], metadata: Mapping[str, Any]) -> None:
     """Crash-safe persist: write to `<path>.tmp`, rotate the existing
     directory aside, swap, then delete the rotated copy.
 
@@ -65,14 +65,13 @@ def save_result(path: Path, arrays: Mapping[str, NDArray],
 
     # 1. Materialise the new directory under `<path>.tmp`.
     tmp.mkdir(parents=True)
-    np.savez_compressed(tmp / "arrays.npz", **dict(arrays))
+    np.savez_compressed(tmp / "arrays.npz", **dict(arrays))  # type: ignore[arg-type]
     full_meta = {
         "_schema_version": SCHEMA_VERSION,
         "_saved_at": time.time(),
         **dict(metadata),
     }
-    (tmp / "metadata.json").write_text(json.dumps(full_meta, indent=2,
-                                                    sort_keys=True))
+    (tmp / "metadata.json").write_text(json.dumps(full_meta, indent=2, sort_keys=True))
 
     # 2. Rotate the existing result aside (no data loss across the gap).
     if path.exists():

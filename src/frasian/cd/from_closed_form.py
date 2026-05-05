@@ -21,10 +21,14 @@ from ..models.normal_normal import NormalNormalModel
 from .grid import GridConfidenceDistribution
 
 
-def wald_cd(D: float, sigma: float, *,
-            theta_grid: NDArray[np.float64] | None = None,
-            n_grid: int = 1001, half_width_sigma: float = 8.0,
-            ) -> GridConfidenceDistribution:
+def wald_cd(
+    D: float,
+    sigma: float,
+    *,
+    theta_grid: NDArray[np.float64] | None = None,
+    n_grid: int = 1001,
+    half_width_sigma: float = 8.0,
+) -> GridConfidenceDistribution:
     """Wald confidence distribution: pdf = N(D, σ²); cdf = Φ((θ−D)/σ).
 
     For Wald the inversion-based confidence curve C(θ) coincides with
@@ -42,16 +46,22 @@ def wald_cd(D: float, sigma: float, *,
     signed = stats.norm.cdf(theta_grid, loc=D, scale=sigma)
     return GridConfidenceDistribution(
         name=f"wald_cd@D={float(D):+.3f}",
-        theta_grid=theta_grid, pdf_values=pdf_values,
+        theta_grid=theta_grid,
+        pdf_values=pdf_values,
         signed_confidence=signed,
         metadata={"closed_form": True, "D": float(D), "sigma": float(sigma)},
     )
 
 
-def waldo_cd(D: float, model: NormalNormalModel, prior: NormalDistribution,
-             *, theta_grid: NDArray[np.float64] | None = None,
-             n_grid: int = 1001, half_width_sigma: float = 8.0,
-             ) -> GridConfidenceDistribution:
+def waldo_cd(
+    D: float,
+    model: NormalNormalModel,
+    prior: NormalDistribution,
+    *,
+    theta_grid: NDArray[np.float64] | None = None,
+    n_grid: int = 1001,
+    half_width_sigma: float = 8.0,
+) -> GridConfidenceDistribution:
     """Plain (η = 0) WALDO confidence distribution.
 
     Derived analytically from the WALDO p-value
@@ -76,7 +86,7 @@ def waldo_cd(D: float, model: NormalNormalModel, prior: NormalDistribution,
     sigma = model.sigma
     sigma0 = prior.scale
     mu0 = prior.loc
-    w = sigma0 ** 2 / (sigma ** 2 + sigma0 ** 2)
+    w = sigma0**2 / (sigma**2 + sigma0**2)
     mu_n = w * D + (1.0 - w) * mu0
 
     a = np.abs(mu_n - theta_grid) / (w * sigma)
@@ -107,19 +117,29 @@ def waldo_cd(D: float, model: NormalNormalModel, prior: NormalDistribution,
 
     return GridConfidenceDistribution(
         name=f"waldo_cd@D={float(D):+.3f}",
-        theta_grid=theta_grid, pdf_values=pdf_values,
+        theta_grid=theta_grid,
+        pdf_values=pdf_values,
         signed_confidence=signed,
-        metadata={"closed_form": True, "D": float(D),
-                   "sigma": float(sigma), "w": float(w),
-                   "Z_normalisation": Z},
+        metadata={
+            "closed_form": True,
+            "D": float(D),
+            "sigma": float(sigma),
+            "w": float(w),
+            "Z_normalisation": Z,
+        },
     )
 
 
-def tilted_waldo_cd(D: float, model: NormalNormalModel,
-                    prior: NormalDistribution, eta: float,
-                    *, theta_grid: NDArray[np.float64] | None = None,
-                    n_grid: int = 1001, half_width_sigma: float = 8.0,
-                    ) -> GridConfidenceDistribution:
+def tilted_waldo_cd(
+    D: float,
+    model: NormalNormalModel,
+    prior: NormalDistribution,
+    eta: float,
+    *,
+    theta_grid: NDArray[np.float64] | None = None,
+    n_grid: int = 1001,
+    half_width_sigma: float = 8.0,
+) -> GridConfidenceDistribution:
     """η-tilted WALDO confidence distribution at fixed η.
 
     Same structure as `waldo_cd` but at non-zero η — uses the closed-
@@ -136,7 +156,7 @@ def tilted_waldo_cd(D: float, model: NormalNormalModel,
     sigma = model.sigma
     sigma0 = prior.scale
     mu0 = prior.loc
-    w = sigma0 ** 2 / (sigma ** 2 + sigma0 ** 2)
+    w = sigma0**2 / (sigma**2 + sigma0**2)
     denom = 1.0 - eta * (1.0 - w)
     if denom <= 0.0:
         raise ValueError(
@@ -147,8 +167,7 @@ def tilted_waldo_cd(D: float, model: NormalNormalModel,
     mu_eta = (w * D + (1.0 - eta) * (1.0 - w) * mu0) / denom
     norm_factor = w * sigma / denom
     a_eta = np.abs(mu_eta - theta_grid) / norm_factor
-    b_eta = ((1.0 - eta) * (1.0 - w) * (mu0 - theta_grid)
-             / (denom * norm_factor))
+    b_eta = (1.0 - eta) * (1.0 - w) * (mu0 - theta_grid) / (denom * norm_factor)
     pvals = stats.norm.cdf(b_eta - a_eta) + stats.norm.cdf(-a_eta - b_eta)
     pvals = np.clip(pvals, 0.0, 1.0)
 
@@ -175,9 +194,15 @@ def tilted_waldo_cd(D: float, model: NormalNormalModel,
 
     return GridConfidenceDistribution(
         name=f"tilted_waldo(η={eta:+.3f})_cd@D={float(D):+.3f}",
-        theta_grid=theta_grid, pdf_values=pdf_values,
+        theta_grid=theta_grid,
+        pdf_values=pdf_values,
         signed_confidence=signed,
-        metadata={"closed_form": True, "D": float(D), "eta": float(eta),
-                   "sigma": float(sigma), "w": float(w),
-                   "Z_normalisation": Z},
+        metadata={
+            "closed_form": True,
+            "D": float(D),
+            "eta": float(eta),
+            "sigma": float(sigma),
+            "w": float(w),
+            "Z_normalisation": Z,
+        },
     )

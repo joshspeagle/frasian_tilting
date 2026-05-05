@@ -16,6 +16,13 @@ or `list_methods`.
 
 from __future__ import annotations
 
+from ._default_cells import (
+    default_cells,
+    default_smoothness_tiltings,
+    default_statistics,
+    default_tiltings,
+    post_selection_demo_tiltings,
+)
 from ._errors import (
     EmptyRegistryError,
     FrasianError,
@@ -32,13 +39,6 @@ from ._registry import (
     register_statistic,
     register_tilting,
     registry,
-)
-from ._default_cells import (
-    default_cells,
-    default_smoothness_tiltings,
-    default_statistics,
-    default_tiltings,
-    post_selection_demo_tiltings,
 )
 from ._runner import RunSummary, list_methods, run_experiment
 from .cd import (

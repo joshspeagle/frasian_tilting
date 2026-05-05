@@ -26,41 +26,36 @@ from numpy.random import Generator
 from numpy.typing import ArrayLike, NDArray
 
 from .._registry import register_model
-from .base import Model, Prior
+from .base import Prior
 from .distributions import GaussianLikelihood, NormalDistribution
 
 
 def weight(sigma: float, sigma0: float) -> float:
     """w = sigma0^2 / (sigma^2 + sigma0^2). Verbatim port from legacy core.py."""
-    return sigma0 ** 2 / (sigma ** 2 + sigma0 ** 2)
+    return sigma0**2 / (sigma**2 + sigma0**2)
 
 
-def posterior_params(D: ArrayLike, mu0: float, sigma: float, sigma0: float
-                     ) -> tuple[NDArray[np.float64], float, float]:
+def posterior_params(
+    D: ArrayLike, mu0: float, sigma: float, sigma0: float
+) -> tuple[NDArray[np.float64], float, float]:
     """Return (mu_n, sigma_n, w). Verbatim port from legacy core.py."""
     w = weight(sigma, sigma0)
-    mu_n = np.asarray(w * np.asarray(D, dtype=np.float64) + (1.0 - w) * mu0,
-                      dtype=np.float64)
+    mu_n = np.asarray(w * np.asarray(D, dtype=np.float64) + (1.0 - w) * mu0, dtype=np.float64)
     sigma_n = float(np.sqrt(w) * sigma)
     return mu_n, sigma_n, w
 
 
-def scaled_conflict(D: ArrayLike, mu0: float, w: float, sigma: float
-                    ) -> NDArray[np.float64]:
+def scaled_conflict(D: ArrayLike, mu0: float, w: float, sigma: float) -> NDArray[np.float64]:
     """Delta = (1 - w) * (mu0 - D) / sigma. Port from legacy core.py."""
-    return np.asarray((1.0 - w) * (mu0 - np.asarray(D, dtype=np.float64)) / sigma,
-                      dtype=np.float64)
+    return np.asarray((1.0 - w) * (mu0 - np.asarray(D, dtype=np.float64)) / sigma, dtype=np.float64)
 
 
-def prior_residual(theta: ArrayLike, mu0: float, sigma0: float
-                   ) -> NDArray[np.float64]:
+def prior_residual(theta: ArrayLike, mu0: float, sigma0: float) -> NDArray[np.float64]:
     """delta(theta) = (theta - mu0) / sigma0. Port from legacy core.py."""
-    return np.asarray((np.asarray(theta, dtype=np.float64) - mu0) / sigma0,
-                      dtype=np.float64)
+    return np.asarray((np.asarray(theta, dtype=np.float64) - mu0) / sigma0, dtype=np.float64)
 
 
-def noncentrality(theta: ArrayLike, mu0: float, w: float, sigma: float
-                  ) -> NDArray[np.float64]:
+def noncentrality(theta: ArrayLike, mu0: float, w: float, sigma: float) -> NDArray[np.float64]:
     """lambda(theta) = (1-w)^2 * (mu0 - theta)^2 / (w^2 * sigma^2).
 
     From Theorem 2 in the legacy derivations: lambda(theta) = delta^2 / w
@@ -98,8 +93,7 @@ class NormalNormalModel:
 
     # ----- Model protocol -----
 
-    def sample_data(self, theta: ArrayLike, rng: Generator, n: int
-                    ) -> NDArray[np.float64]:
+    def sample_data(self, theta: ArrayLike, rng: Generator, n: int) -> NDArray[np.float64]:
         return rng.normal(loc=float(np.asarray(theta)), scale=self.sigma, size=n)
 
     def likelihood(self, data: NDArray[np.float64]) -> GaussianLikelihood:
@@ -110,8 +104,7 @@ class NormalNormalModel:
         D = float(np.atleast_1d(np.asarray(data, dtype=np.float64)).mean())
         return GaussianLikelihood(D=D, sigma=self.sigma)
 
-    def posterior(self, data: NDArray[np.float64], prior: Prior
-                  ) -> NormalDistribution:
+    def posterior(self, data: NDArray[np.float64], prior: Prior) -> NormalDistribution:
         if not isinstance(prior, NormalDistribution):
             raise NotImplementedError(
                 "NormalNormalModel.posterior currently requires a "
@@ -122,13 +115,13 @@ class NormalNormalModel:
         return NormalDistribution(loc=float(mu_n), scale=sigma_n)
 
     def mle(self, data: NDArray[np.float64]) -> NDArray[np.float64]:
-        return np.asarray(np.atleast_1d(np.asarray(data, dtype=np.float64)).mean(),
-                          dtype=np.float64)
+        return np.asarray(
+            np.atleast_1d(np.asarray(data, dtype=np.float64)).mean(), dtype=np.float64
+        )
 
     def fisher_information(self, theta: ArrayLike) -> NDArray[np.float64]:
         # I(theta) = 1 / sigma^2 for a Normal location family.
-        out = np.full_like(np.asarray(theta, dtype=np.float64),
-                           1.0 / self.sigma ** 2)
+        out = np.full_like(np.asarray(theta, dtype=np.float64), 1.0 / self.sigma**2)
         return out
 
     def support(self) -> tuple[float, float]:

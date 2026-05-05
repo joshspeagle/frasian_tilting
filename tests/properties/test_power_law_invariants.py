@@ -49,8 +49,7 @@ class TestPowerLawInvariants:
         post = model.posterior(np.asarray([D]), prior)
         tilted = PowerLawTilting().tilt(post, prior, lik, eta)
         # Integrate on a 12-sigma window around the tilted mean.
-        xs = np.linspace(tilted.loc - 12 * tilted.scale,
-                         tilted.loc + 12 * tilted.scale, 2001)
+        xs = np.linspace(tilted.loc - 12 * tilted.scale, tilted.loc + 12 * tilted.scale, 2001)
         integral = np.trapezoid(tilted.pdf(xs), xs)
         np.testing.assert_allclose(integral, 1.0, atol=5e-4)
 
@@ -82,8 +81,10 @@ class TestPowerLawInvariants:
         with pytest.raises(TiltingDomainError):
             PowerLawTilting().tilt(post, prior, lik, 3.0)
 
-    @given(eta=st.floats(min_value=-0.4, max_value=0.9, allow_nan=False),
-           sigma0=st.floats(min_value=0.5, max_value=2.0, allow_nan=False))
+    @given(
+        eta=st.floats(min_value=-0.4, max_value=0.9, allow_nan=False),
+        sigma0=st.floats(min_value=0.5, max_value=2.0, allow_nan=False),
+    )
     @settings(max_examples=40, deadline=None)
     def test_noncentrality_quadratic_decay(self, eta, sigma0):
         """Theorem 7: lambda_eta(theta) = (1 - eta)^2 * lambda_0(theta).
@@ -107,7 +108,8 @@ class TestPowerLawInvariants:
         tautology — and the closed-form bias_eta is cross-checked
         against `PowerLawTilting.tilt(...).loc` at D=theta.
         """
-        from frasian.models.normal_normal import noncentrality as _nc, weight
+        from frasian.models.normal_normal import noncentrality as _nc
+        from frasian.models.normal_normal import weight
 
         sigma, mu0 = 1.0, 0.0
         theta = mu0 + 0.5 * sigma0  # representative test point
@@ -125,12 +127,14 @@ class TestPowerLawInvariants:
         lik_h0 = GaussianLikelihood(D=theta, sigma=sigma)
         tilted_h0 = PowerLawTilting().tilt(post_h0, prior, lik_h0, eta)
         np.testing.assert_allclose(
-            tilted_h0.loc - theta, bias_eta, atol=1e-12,
+            tilted_h0.loc - theta,
+            bias_eta,
+            atol=1e-12,
             err_msg="closed-form bias_eta disagrees with tilt() output",
         )
 
         # LHS: lambda_eta from the tilted-statistic distribution.
-        lambda_eta_LHS = bias_eta ** 2 * denom ** 2 / (w ** 2 * sigma ** 2)
+        lambda_eta_LHS = bias_eta**2 * denom**2 / (w**2 * sigma**2)
 
         # RHS: (1 - eta)^2 * lambda_0.
         lambda_0 = float(_nc(theta, mu0, w, sigma))

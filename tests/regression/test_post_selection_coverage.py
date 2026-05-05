@@ -27,10 +27,7 @@ import pytest
 from frasian.models.distributions import NormalDistribution
 from frasian.models.normal_normal import NormalNormalModel
 from frasian.statistics.waldo import WaldoStatistic
-from frasian.tilting.eta_selectors import (
-    DynamicNumericalEtaSelector,
-    NumericalEtaSelector,
-)
+from frasian.tilting.eta_selectors import DynamicNumericalEtaSelector, NumericalEtaSelector
 from frasian.tilting.identity import IdentityTilting
 from frasian.tilting.power_law import PowerLawTilting
 
@@ -53,7 +50,10 @@ class TestPostSelectionCoverage:
         )
         dyn = PowerLawTilting(
             selector=DynamicNumericalEtaSelector(
-                sigma=sigma, mu0=mu0, n_grid=201, coarse_n=11,
+                sigma=sigma,
+                mu0=mu0,
+                n_grid=201,
+                coarse_n=11,
             ),
         )
 
@@ -68,7 +68,11 @@ class TestPostSelectionCoverage:
         for D in Ds:
             for key, sch in (("waldo", ident), ("static", static_opt), ("dyn", dyn)):
                 lo, hi = sch.confidence_interval(
-                    alpha, np.asarray([D]), model, prior, waldo,
+                    alpha,
+                    np.asarray([D]),
+                    model,
+                    prior,
+                    waldo,
                 )
                 if lo <= theta_true <= hi:
                     hits[key] += 1

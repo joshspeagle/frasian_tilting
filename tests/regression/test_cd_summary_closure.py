@@ -39,23 +39,26 @@ def _make_two_cell_table() -> DiagnosticTable:
     ]
     for tilting, statistic, thetas in cells:
         for theta in thetas:
-            records.append({
-                "experiment": "confidence_distribution",
-                "tilting": tilting,
-                "statistic": statistic,
-                "theta_true": theta,
-                "w": 0.5,
-                "cd_median": float(theta),
-                "cd_median_se": 0.01,
-                "cd_width_95": 1.0,
-                "cd_width_95_se": 0.01,
-                "w1_to_wald_cd": 0.1,
-                "w1_to_wald_cd_se": 0.01,
-                "nonmonotone_fraction": 0.0,
-            })
+            records.append(
+                {
+                    "experiment": "confidence_distribution",
+                    "tilting": tilting,
+                    "statistic": statistic,
+                    "theta_true": theta,
+                    "w": 0.5,
+                    "cd_median": float(theta),
+                    "cd_median_se": 0.01,
+                    "cd_width_95": 1.0,
+                    "cd_width_95_se": 0.01,
+                    "w1_to_wald_cd": 0.1,
+                    "w1_to_wald_cd_se": 0.01,
+                    "nonmonotone_fraction": 0.0,
+                }
+            )
     df = pd.DataFrame.from_records(records)
     return DiagnosticTable(
-        name="cd_summary", table=df,
+        name="cd_summary",
+        table=df,
         units={"theta_true": "param units", "w": "(0,1)"},
         metadata={"alpha": 0.05, "n_reps": 10, "n_grid_cd": 51},
     )
@@ -95,17 +98,19 @@ class TestCDSummaryRenderClosure:
             # The *correct* per-cell binding: the closure captures theta_vals
             # and w_vals via default-arg binding.
             def _grid(col, _gdf=gdf, _theta=theta_vals, _w=w_vals):
-                return (_gdf.pivot(index="theta_true", columns="w",
-                                    values=col)
-                           .reindex(index=_theta, columns=_w)
-                           .to_numpy())
+                return (
+                    _gdf.pivot(index="theta_true", columns="w", values=col)
+                    .reindex(index=_theta, columns=_w)
+                    .to_numpy()
+                )
 
             grid = _grid("cd_median")
             # The grid for cell A must reflect theta ∈ {0, 1, 2} —
             # NOT theta ∈ {10, 11, 12}. cd_median was set = theta_true,
             # so the grid values must equal theta_vals[:, None].
             np.testing.assert_allclose(
-                grid.flatten(), theta_vals,
+                grid.flatten(),
+                theta_vals,
                 err_msg=(
                     f"Cell ({tilting}, {statistic}) closure did not bind "
                     f"per-cell theta_vals={theta_vals!r}; got "
@@ -130,7 +135,6 @@ class TestCDSummaryRenderClosure:
         rows (cell A: y ∈ [0, 2], cell B: y ∈ [10, 12]).
         """
         table = _make_two_cell_table()
-        diag = CDSummaryDiagnostic()
 
         # Re-run render and inspect the live figure before plt.close.
         df = table.table
@@ -145,22 +149,30 @@ class TestCDSummaryRenderClosure:
             ("w1_to_wald_cd", "W₁ to Wald CD", "plasma"),
             ("nonmonotone_fraction", "non-monotone fraction", "cividis"),
         ]
-        for r_idx, ((tilting, statistic), gdf) in enumerate(groups):
+        for r_idx, ((_tilting, _statistic), gdf) in enumerate(groups):
             theta_vals = np.sort(gdf["theta_true"].unique())
             w_vals = np.sort(gdf["w"].unique())
-            extent = [w_vals[0], w_vals[-1] + 1e-9,  # +eps avoids deg axis
-                      theta_vals[0], theta_vals[-1]]
+            extent = [
+                w_vals[0],
+                w_vals[-1] + 1e-9,  # +eps avoids deg axis
+                theta_vals[0],
+                theta_vals[-1],
+            ]
 
             def _grid(col, _gdf=gdf, _theta=theta_vals, _w=w_vals):
-                return (_gdf.pivot(index="theta_true", columns="w",
-                                    values=col)
-                           .reindex(index=_theta, columns=_w)
-                           .to_numpy())
+                return (
+                    _gdf.pivot(index="theta_true", columns="w", values=col)
+                    .reindex(index=_theta, columns=_w)
+                    .to_numpy()
+                )
 
             for c_idx, (col, _, cmap) in enumerate(metrics):
                 axes[r_idx][c_idx].imshow(
-                    _grid(col), aspect="auto", origin="lower",
-                    extent=extent, cmap=cmap,
+                    _grid(col),
+                    aspect="auto",
+                    origin="lower",
+                    extent=extent,
+                    cmap=cmap,
                 )
 
         # Row 0 (cell A) y-extent: [0, 2]; row 1 (cell B) y-extent: [10, 12].
@@ -171,7 +183,7 @@ class TestCDSummaryRenderClosure:
         assert abs(ylim_row1[0] - 10.0) < 1e-6, ylim_row1
         assert abs(ylim_row1[1] - 12.0) < 1e-6, ylim_row1
         # Disjoint: row0 max < row1 min.
-        assert ylim_row0[1] < ylim_row1[0], (
-            f"row0 y-extent {ylim_row0} overlaps row1 y-extent {ylim_row1}"
-        )
+        assert (
+            ylim_row0[1] < ylim_row1[0]
+        ), f"row0 y-extent {ylim_row0} overlaps row1 y-extent {ylim_row1}"
         plt.close(fig)

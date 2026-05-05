@@ -30,7 +30,6 @@ from frasian.statistics.waldo import WaldoStatistic
 from frasian.tilting.eta_selectors import LearnedDynamicEtaSelector
 from frasian.tilting.power_law import PowerLawTilting
 
-
 _CHECKPOINT_CANDIDATES = {
     "powerlaw": [
         Path("artifacts/learned_eta_canonical_normal_normal_powerlaw_v1.pt"),
@@ -47,10 +46,7 @@ def _checkpoint_path(scheme_label: str) -> Path:
     for c in _CHECKPOINT_CANDIDATES[scheme_label]:
         if c.exists():
             return c
-    pytest.skip(
-        f"no Phase E {scheme_label} learned-eta checkpoint available; "
-        f"train one first"
-    )
+    pytest.skip(f"no Phase E {scheme_label} learned-eta checkpoint available; " f"train one first")
 
 
 @pytest.mark.L3
@@ -84,12 +80,15 @@ def test_calibration_at_multiple_alphas(scheme_label, theta_true, alpha):
     sigma0 = float(cfg["prior_fingerprint"][2])
 
     selector = LearnedDynamicEtaSelector(
-        artifact=artifact, sigma=sigma, mu0=mu0,
+        artifact=artifact,
+        sigma=sigma,
+        mu0=mu0,
     )
     if scheme_label == "powerlaw":
         scheme = PowerLawTilting(selector=selector)
     else:
         from frasian.tilting.ot import OTTilting
+
         scheme = OTTilting(selector=selector)
     prior = NormalDistribution(loc=mu0, scale=sigma0)
     model = NormalNormalModel(sigma=sigma)
@@ -101,7 +100,11 @@ def test_calibration_at_multiple_alphas(scheme_label, theta_true, alpha):
     for _ in range(n_reps):
         D = rng.normal(theta_true, sigma)
         regions = scheme.confidence_regions(
-            alpha, np.asarray([D]), model, prior, WaldoStatistic(),
+            alpha,
+            np.asarray([D]),
+            model,
+            prior,
+            WaldoStatistic(),
         )
         in_ci = any(lo <= theta_true <= hi for lo, hi in regions)
         covered += int(in_ci)

@@ -17,13 +17,15 @@ from frasian._registry_bootstrap import bootstrap
 
 # Trigger registration once at collection time and capture the entries.
 bootstrap()
-_BOOTSTRAPPED_ENTRIES = tuple(itertools.chain(
-    registry.models.entries(),
-    registry.tiltings.entries(),
-    registry.statistics.entries(),
-    registry.experiments.entries(),
-    registry.diagnostics.entries(),
-))
+_BOOTSTRAPPED_ENTRIES = tuple(
+    itertools.chain(
+        registry.models.entries(),
+        registry.tiltings.entries(),
+        registry.statistics.entries(),
+        registry.experiments.entries(),
+        registry.diagnostics.entries(),
+    )
+)
 
 
 @pytest.fixture(autouse=True)
@@ -35,13 +37,15 @@ def _isolated_registry():
     `frasian.registry`. Tests that depend on registry-driven
     discovery can use the `bootstrapped_registry` fixture below.
     """
-    snapshot = tuple(itertools.chain(
-        registry.models.entries(),
-        registry.tiltings.entries(),
-        registry.statistics.entries(),
-        registry.experiments.entries(),
-        registry.diagnostics.entries(),
-    ))
+    snapshot = tuple(
+        itertools.chain(
+            registry.models.entries(),
+            registry.tiltings.entries(),
+            registry.statistics.entries(),
+            registry.experiments.entries(),
+            registry.diagnostics.entries(),
+        )
+    )
     registry.clear()
     yield
     registry.clear()
@@ -59,8 +63,7 @@ def bootstrapped_registry():
     `_isolated_registry` fixture above.
     """
     for entry in _BOOTSTRAPPED_ENTRIES:
-        if entry.name not in getattr(registry, entry.kind + "s",
-                                       registry.models)._entries:
+        if entry.name not in getattr(registry, entry.kind + "s", registry.models)._entries:
             registry.register(entry)
     yield
 

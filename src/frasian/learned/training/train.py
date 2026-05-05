@@ -37,7 +37,7 @@ import datetime as _dt
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional, Tuple
+from typing import Any
 
 import numpy as np
 import torch
@@ -57,7 +57,6 @@ from .pvalue_torch import get_torch_tilted_pvalue
 from .sampling import ExperimentConfig, lhs_1d
 from .validity import compute_pvalues_per_sample, validity_mask
 
-
 _LOSS_FNS = {
     "integrated_p": integrated_pvalue_loss,
     "cd_variance": cd_variance_loss,
@@ -70,8 +69,9 @@ _LOSS_FNS = {
 
 
 def _extract_normal_normal_params(
-    model, prior,
-) -> Tuple[float, float, float]:
+    model: Any,
+    prior: Any,
+) -> tuple[float, float, float]:
     """Extract (w, mu0, sigma) for the existing torch tilted-pvalue ports.
 
     The torch ports in ``pvalue_torch.py`` were written before Phase E
@@ -97,7 +97,7 @@ def _extract_normal_normal_params(
     sigma = float(model.sigma)
     sigma0 = float(prior.scale)
     mu0 = float(prior.loc)
-    w = sigma0 ** 2 / (sigma ** 2 + sigma0 ** 2)
+    w = sigma0**2 / (sigma**2 + sigma0**2)
     # Skeptic block #4: w → 0 (delta prior) and w → 1 (improper) put
     # the WALDO admissible range into degenerate territory and the
     # torch-side `clamp(denom, min=1e-6)` silently distorts. Refuse.
@@ -119,7 +119,7 @@ def _width_loss(
     D_batch_t: torch.Tensor,
     config: ExperimentConfig,
     loss_kind: str,
-    alpha: Optional[float],
+    alpha: float | None,
 ) -> torch.Tensor:
     """Integrated-p (or variant) width loss averaged over a D batch.
 
@@ -136,32 +136,30 @@ def _width_loss(
     sigma_t = torch.tensor(sigma, dtype=theta_grid_t.dtype, device=theta_grid_t.device)
 
     if D_batch_t.dim() == 0:
-        D_batch_t = D_batch_t.unsqueeze(0)                        # (1,)
+        D_batch_t = D_batch_t.unsqueeze(0)  # (1,)
     if D_batch_t.dim() != 1:
-        raise ValueError(
-            f"D_batch_t must be 0D or 1D; got shape {tuple(D_batch_t.shape)}."
-        )
+        raise ValueError(f"D_batch_t must be 0D or 1D; got shape {tuple(D_batch_t.shape)}.")
 
-    eta_grid = eta_net(theta_grid_t)                              # (G,)
+    eta_grid = eta_net(theta_grid_t)  # (G,)
     tilted_pvalue = get_torch_tilted_pvalue(config.scheme_name)
     # Broadcast: theta=(1, G), D=(B, 1), eta=(1, G) → p=(B, G).
     G = theta_grid_t.shape[0]
     B = D_batch_t.shape[0]
     p_grid = tilted_pvalue(
-        theta_grid_t.unsqueeze(0).expand(B, G),                   # (B, G)
-        D_batch_t.unsqueeze(-1).expand(B, G),                     # (B, G)
-        w_t, mu0_t, sigma_t,
-        eta_grid.unsqueeze(0).expand(B, G),                       # (B, G)
+        theta_grid_t.unsqueeze(0).expand(B, G),  # (B, G)
+        D_batch_t.unsqueeze(-1).expand(B, G),  # (B, G)
+        w_t,
+        mu0_t,
+        sigma_t,
+        eta_grid.unsqueeze(0).expand(B, G),  # (B, G)
         config.statistic_name,
-    )                                                             # (B, G)
+    )  # (B, G)
     # Skeptic caveat #12: float32 round-off in `_phi(b-a) + _phi(-a-b)`
     # can drift slightly outside [0, 1]. Warn (without breaking the
     # gradient) when drift exceeds tolerance — clamp would zero the
     # gradient at the boundary. Mirrors the legacy guard.
     if not torch.is_grad_enabled():
-        out_of_range = (
-            (p_grid < -1e-5) | (p_grid > 1.0 + 1e-5)
-        ).any().item()
+        out_of_range = ((p_grid < -1e-5) | (p_grid > 1.0 + 1e-5)).any().item()
         if out_of_range:
             warnings.warn(
                 f"width-loss p-values drifted outside [0, 1] in "
@@ -170,7 +168,7 @@ def _width_loss(
                 RuntimeWarning,
                 stacklevel=2,
             )
-    theta_grid_b = theta_grid_t.unsqueeze(0).expand(B, G)         # (B, G)
+    theta_grid_b = theta_grid_t.unsqueeze(0).expand(B, G)  # (B, G)
 
     if loss_kind == "integrated_p":
         return integrated_pvalue_loss(p_grid, theta_grid_b)
@@ -189,7 +187,9 @@ def _width_loss(
 
 
 def _sample_data_per_theta(
-    model, theta: np.ndarray, rng: np.random.Generator,
+    model: Any,
+    theta: np.ndarray,
+    rng: np.random.Generator,
 ) -> np.ndarray:
     """For each θ, draw one ``D ~ likelihood(·|θ)``."""
     out = np.empty(theta.shape, dtype=np.float64)
@@ -203,10 +203,10 @@ def _collect_validity_batch(
     eta_pred: torch.Tensor,
     theta_batch_np: np.ndarray,
     config: ExperimentConfig,
-    scheme,
+    scheme: Any,
     n_aux: int,
     rng: np.random.Generator,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Build (theta_all, eta_all, valid_all) for Head B's BCE step.
 
     Mixes the main batch (with detached η_pred) and an auxiliary
@@ -232,10 +232,15 @@ def _collect_validity_batch(
     D_all_np = np.concatenate([D_main_np, D_aux_np])
 
     p_all = compute_pvalues_per_sample(
-        scheme, theta_all_np, D_all_np, config.model, config.prior,
-        eta_all_np, config.statistic_name,
+        scheme,
+        theta_all_np,
+        D_all_np,
+        config.model,
+        config.prior,
+        eta_all_np,
+        config.statistic_name,
     )
-    valid_all = validity_mask(p_all)                             # bool (N+N_aux,)
+    valid_all = validity_mask(p_all)  # bool (N+N_aux,)
 
     theta_all_t = torch.as_tensor(theta_all_np, dtype=dtype, device=device)
     eta_all_t = torch.as_tensor(eta_all_np, dtype=dtype, device=device)
@@ -246,9 +251,9 @@ def _collect_validity_batch(
 def _validity_net_inputs(theta: torch.Tensor, eta: torch.Tensor) -> torch.Tensor:
     """Pack ``(θ, η)`` into ValidityNet's expected ``(N, theta_dim+1)``."""
     if theta.dim() == 1:
-        theta = theta.unsqueeze(-1)                              # (N, 1)
+        theta = theta.unsqueeze(-1)  # (N, 1)
     if eta.dim() == 1:
-        eta = eta.unsqueeze(-1)                                  # (N, 1)
+        eta = eta.unsqueeze(-1)  # (N, 1)
     return torch.cat([theta, eta], dim=-1)
 
 
@@ -277,7 +282,10 @@ def _boundary_penalty(
 
 
 def _lambda_schedule(
-    epoch: int, n_epochs: int, lambda_max: float, warmup_frac: float,
+    epoch: int,
+    n_epochs: int,
+    lambda_max: float,
+    warmup_frac: float,
 ) -> float:
     """Linear ramp from 0 to ``lambda_max`` over the first
     ``warmup_frac`` of epochs, then constant.
@@ -305,11 +313,11 @@ def _lambda_schedule(
 @dataclass
 class EtaTrainResult:
     artifact_path: Path
-    train_losses: list[float]            # mean Head A total loss per epoch
-    train_width_losses: list[float]      # mean width component per epoch
-    train_penalty_losses: list[float]    # mean (unweighted) penalty per epoch
-    val_losses: list[float]              # held-out width loss per epoch
-    head_b_accuracy: list[float]         # held-out validity accuracy per epoch
+    train_losses: list[float]  # mean Head A total loss per epoch
+    train_width_losses: list[float]  # mean width component per epoch
+    train_penalty_losses: list[float]  # mean (unweighted) penalty per epoch
+    val_losses: list[float]  # held-out width loss per epoch
+    head_b_accuracy: list[float]  # held-out validity accuracy per epoch
     final_val_loss: float
     metadata: dict[str, Any]
 
@@ -343,10 +351,10 @@ def fit_eta_artifact(
     config: ExperimentConfig,
     out_path: Path,
     loss_kind: str = "integrated_p",
-    alpha: Optional[float] = None,
+    alpha: float | None = None,
     n_epochs: int = 30,
     batch_size: int = 256,
-    n_aux: Optional[int] = None,
+    n_aux: int | None = None,
     lr_a: float = 1e-3,
     lr_b: float = 1e-3,
     weight_decay: float = 1e-4,
@@ -354,8 +362,8 @@ def fit_eta_artifact(
     lambda_warmup_frac: float = 0.3,
     patience: int = 8,
     min_delta: float = 1e-4,
-    eta_hidden_sizes: Tuple[int, ...] = (64, 64),
-    validity_hidden_sizes: Tuple[int, ...] = (64, 64),
+    eta_hidden_sizes: tuple[int, ...] = (64, 64),
+    validity_hidden_sizes: tuple[int, ...] = (64, 64),
     device: str = "auto",
     version: str = "v0",
     verbose: bool = True,
@@ -381,9 +389,7 @@ def fit_eta_artifact(
         if alpha is None:
             raise ValueError("loss_kind=static_width requires alpha")
         if not (np.isfinite(alpha) and 0.0 < float(alpha) < 1.0):
-            raise ValueError(
-                f"alpha must be finite and in (0, 1); got {alpha!r}"
-            )
+            raise ValueError(f"alpha must be finite and in (0, 1); got {alpha!r}")
     elif alpha is not None:
         # Skeptic E.3 #7: an integrated_p / cd_variance run is
         # α-marginalised; recording a non-None alpha would lock the
@@ -400,38 +406,32 @@ def fit_eta_artifact(
     # random trajectory of any other consumer.
     base_rng = np.random.default_rng(config.seed)
     rng_train, rng_aux, rng_val_setup, rng_held = (
-        np.random.default_rng(s)
-        for s in base_rng.spawn(4)
-        if s is not None
-    ) if hasattr(base_rng, "spawn") else (
-        np.random.default_rng(config.seed + i) for i in range(4)
+        (np.random.default_rng(s) for s in base_rng.spawn(4) if s is not None)
+        if hasattr(base_rng, "spawn")
+        else (np.random.default_rng(config.seed + i) for i in range(4))
     )
     torch.manual_seed(config.seed)
     if verbose:
-        print(f"[fit_eta_artifact] device={device_resolved} "
-              f"scheme={config.scheme_name} statistic={config.statistic_name}")
+        print(
+            f"[fit_eta_artifact] device={device_resolved} "
+            f"scheme={config.scheme_name} statistic={config.statistic_name}"
+        )
 
     # Resolve scheme + statistic from registry (validates the names).
     scheme = _registry.tiltings[config.scheme_name]()
-    _ = _registry.statistics[config.statistic_name]               # presence check
+    _ = _registry.statistics[config.statistic_name]  # presence check
 
     theta_dim = int(config.model.param_dim)
     if n_aux is None:
         n_aux = batch_size
 
     # Build nets.
-    eta_net = EtaNet(
-        theta_dim=theta_dim, hidden_sizes=eta_hidden_sizes
-    ).to(device_resolved)
-    val_net = ValidityNet(
-        theta_dim=theta_dim, hidden_sizes=validity_hidden_sizes
-    ).to(device_resolved)
-    optimizer_a = torch.optim.AdamW(
-        eta_net.parameters(), lr=lr_a, weight_decay=weight_decay
+    eta_net = EtaNet(theta_dim=theta_dim, hidden_sizes=eta_hidden_sizes).to(device_resolved)
+    val_net = ValidityNet(theta_dim=theta_dim, hidden_sizes=validity_hidden_sizes).to(
+        device_resolved
     )
-    optimizer_b = torch.optim.AdamW(
-        val_net.parameters(), lr=lr_b, weight_decay=weight_decay
-    )
+    optimizer_a = torch.optim.AdamW(eta_net.parameters(), lr=lr_a, weight_decay=weight_decay)
+    optimizer_b = torch.optim.AdamW(val_net.parameters(), lr=lr_b, weight_decay=weight_decay)
 
     # LHS over θ once at training start; held-out subset for early stopping.
     theta_lhs = lhs_1d(config.theta_distribution, config.n_lhs, seed=config.seed)
@@ -451,28 +451,29 @@ def fit_eta_artifact(
     n_val_pairs = min(len(theta_held), 64)
     theta_val_np = theta_held[:n_val_pairs]
     D_val_np = _sample_data_per_theta(config.model, theta_val_np, rng_val_setup)
-    theta_val_t = torch.as_tensor(
-        theta_val_np, dtype=torch.float32, device=device_resolved
-    )
-    D_val_t = torch.as_tensor(
-        D_val_np, dtype=torch.float32, device=device_resolved
-    )
+    # theta_val_np is consumed only by D_val sampling; the validation loss
+    # below evaluates _width_loss over the canonical theta_grid_t and only
+    # needs D_val_t for the data dimension.
+    D_val_t = torch.as_tensor(D_val_np, dtype=torch.float32, device=device_resolved)
 
     # Pre-build held-out (θ, η, valid) for Head B accuracy diagnostic.
-    eta_held_aux = rng_held.uniform(
-        *config.eta_explore_box, size=len(theta_held)
-    ).astype(np.float64)
+    eta_held_aux = rng_held.uniform(*config.eta_explore_box, size=len(theta_held)).astype(
+        np.float64
+    )
     D_held = _sample_data_per_theta(config.model, theta_held, rng_held)
     p_held = compute_pvalues_per_sample(
-        scheme, theta_held, D_held, config.model, config.prior,
-        eta_held_aux, config.statistic_name,
+        scheme,
+        theta_held,
+        D_held,
+        config.model,
+        config.prior,
+        eta_held_aux,
+        config.statistic_name,
     )
     valid_held = validity_mask(p_held)
 
     # Canonical inversion grid as torch tensor (training device + dtype).
-    theta_grid_t = torch.as_tensor(
-        config.theta_grid, dtype=torch.float32, device=device_resolved
-    )
+    theta_grid_t = torch.as_tensor(config.theta_grid, dtype=torch.float32, device=device_resolved)
 
     train_losses: list[float] = []
     train_width_losses: list[float] = []
@@ -495,9 +496,7 @@ def fit_eta_artifact(
 
     for epoch in range(n_epochs):
         epochs_run = epoch + 1
-        lam = _lambda_schedule(
-            epoch, n_epochs, lambda_max, lambda_warmup_frac
-        )
+        lam = _lambda_schedule(epoch, n_epochs, lambda_max, lambda_warmup_frac)
         eta_net.train()
         val_net.train()
         ep_perm = rng_train.permutation(n_train)
@@ -507,7 +506,7 @@ def fit_eta_artifact(
         epoch_steps_taken = 0
         epoch_aux_valid_rate_sum = 0.0
         for step in range(steps_per_epoch):
-            idx = ep_perm[step * batch_size:(step + 1) * batch_size]
+            idx = ep_perm[step * batch_size : (step + 1) * batch_size]
             if idx.size == 0:
                 continue
             theta_batch_np = theta_train[idx]
@@ -526,7 +525,7 @@ def fit_eta_artifact(
                 rng=rng_aux,
             )
             # Track aux validity rate (sanity: should be in (0.05, 0.95)).
-            aux_valid_rate = float(valid_all_t[len(idx):].mean().item())
+            aux_valid_rate = float(valid_all_t[len(idx) :].mean().item())
             epoch_aux_valid_rate_sum += aux_valid_rate
 
             # Step (2): train Head B (BCE on (θ, η, valid)).
@@ -546,11 +545,11 @@ def fit_eta_artifact(
             # variance ~1/n_mc compared to a single-D estimator.
             theta_for_D = theta_batch_np[: min(n_mc_train, len(idx))]
             D_batch_np = _sample_data_per_theta(
-                config.model, theta_for_D, rng_train,
+                config.model,
+                theta_for_D,
+                rng_train,
             )
-            D_batch_t = torch.as_tensor(
-                D_batch_np, dtype=torch.float32, device=device_resolved
-            )
+            D_batch_t = torch.as_tensor(D_batch_np, dtype=torch.float32, device=device_resolved)
             try:
                 loss_width = _width_loss(
                     eta_net=eta_net,
@@ -621,7 +620,11 @@ def fit_eta_artifact(
             val_losses.append(v_loss)
 
             head_b_acc = _evaluate_head_b_accuracy(
-                val_net, theta_held, eta_held_aux, valid_held, device_resolved,
+                val_net,
+                theta_held,
+                eta_held_aux,
+                valid_held,
+                device_resolved,
             )
             head_b_accs.append(head_b_acc)
 
@@ -629,20 +632,15 @@ def fit_eta_artifact(
             best_val = v_loss
             best_epoch = epoch
             best_state = {
-                "eta": {k: v.detach().clone()
-                          for k, v in eta_net.state_dict().items()},
-                "validity": {k: v.detach().clone()
-                                for k, v in val_net.state_dict().items()},
+                "eta": {k: v.detach().clone() for k, v in eta_net.state_dict().items()},
+                "validity": {k: v.detach().clone() for k, v in val_net.state_dict().items()},
             }
             epochs_since_best = 0
         else:
             epochs_since_best += 1
 
-        if verbose and ((epoch + 1) % max(n_epochs // 10, 1) == 0
-                          or epoch == 0):
-            mean_aux_rate = (
-                epoch_aux_valid_rate_sum / max(steps_per_epoch, 1)
-            )
+        if verbose and ((epoch + 1) % max(n_epochs // 10, 1) == 0 or epoch == 0):
+            mean_aux_rate = epoch_aux_valid_rate_sum / max(steps_per_epoch, 1)
             print(
                 f"[epoch {epoch + 1}/{n_epochs}] "
                 f"loss_a={train_losses[-1]:.4f} "
@@ -670,19 +668,27 @@ def fit_eta_artifact(
 
     # Final Head B accuracy.
     final_head_b_acc = _evaluate_head_b_accuracy(
-        val_net, theta_held, eta_held_aux, valid_held, device_resolved,
+        val_net,
+        theta_held,
+        eta_held_aux,
+        valid_held,
+        device_resolved,
     )
     # Final Head A empirical validity rate on held-out θ (compute η_pred,
     # then call scheme.tilted_pvalue per sample).
     with torch.no_grad():
         eta_pred_held_t = eta_net(
-            torch.as_tensor(theta_held, dtype=torch.float32,
-                              device=device_resolved)
+            torch.as_tensor(theta_held, dtype=torch.float32, device=device_resolved)
         )
     eta_pred_held = eta_pred_held_t.cpu().numpy().astype(np.float64)
     p_pred = compute_pvalues_per_sample(
-        scheme, theta_held, D_held, config.model, config.prior,
-        eta_pred_held, config.statistic_name,
+        scheme,
+        theta_held,
+        D_held,
+        config.model,
+        config.prior,
+        eta_pred_held,
+        config.statistic_name,
     )
     final_eta_pred_valid_rate = float(validity_mask(p_pred).mean())
 
@@ -692,7 +698,7 @@ def fit_eta_artifact(
     # os.replace, so a crash mid-write never produces a corrupt .pt.
     tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
     state = {
-        "checkpoint_format_version": 2,                          # E.2 bump
+        "checkpoint_format_version": 2,  # E.2 bump
         "architecture": "EtaNet+ValidityNet",
         "eta_architecture_kwargs": eta_net.architecture_kwargs(),
         "validity_architecture_kwargs": val_net.architecture_kwargs(),
@@ -728,7 +734,8 @@ def fit_eta_artifact(
     }
     torch.save(state, str(tmp_path))
     import os as _os
-    _os.replace(tmp_path, out_path)                              # atomic
+
+    _os.replace(tmp_path, out_path)  # atomic
     if verbose:
         print(
             f"[fit_eta_artifact] wrote {out_path}; "
@@ -744,7 +751,7 @@ def fit_eta_artifact(
         val_losses=val_losses,
         head_b_accuracy=head_b_accs,
         final_val_loss=best_val,
-        metadata={k: v for k, v in state.items()
-                    if k not in ("eta_state_dict", "validity_state_dict")},
+        metadata={
+            k: v for k, v in state.items() if k not in ("eta_state_dict", "validity_state_dict")
+        },
     )
-
