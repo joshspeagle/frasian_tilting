@@ -169,7 +169,7 @@ class PowerLawTilting:
     def tilted_pvalue(
         self,
         theta: ArrayLike,
-        D: float,
+        D: float | NDArray[np.float64],
         model: object,
         prior: NormalDistribution,
         eta: ArrayLike,
@@ -184,6 +184,14 @@ class PowerLawTilting:
         array broadcastable to ``theta``. The array path is what
         ``dynamic_ci_scan`` (and ``dynamic_tilted_pvalue``) use to evaluate
         a per-θ varying η in one bulk numpy call (Tier 1.3 N1/N3).
+
+        ``D`` accepts either a scalar (the historical contract) or an
+        array broadcastable to ``theta_arr``. The array path is exercised
+        by ``compute_pvalues_per_sample`` in the Phase E training loop,
+        which packs per-sample ``D`` values alongside ``theta`` and
+        ``eta``. The closed-form formulas are pure numpy arithmetic so
+        they broadcast naturally; this annotation documents that
+        contract instead of relying on duck-typing.
         """
         from ..models.normal_normal import NormalNormalModel
 
@@ -203,6 +211,21 @@ class PowerLawTilting:
 
         theta_arr = np.asarray(theta, dtype=np.float64)
         eta_arr = np.asarray(eta, dtype=np.float64)
+
+        # Pre-check for NaN/Inf η: `denom = 1 - eta*(1-w)` is NaN when
+        # eta is NaN, and `NaN <= 0.0` is False, so the strict raise
+        # check below would silently propagate NaN p-values. Mirror
+        # `OTTilting.tilted_pvalue`'s explicit finiteness guard here so
+        # both schemes raise consistently on NaN eta with the offending
+        # index identified.
+        mask_invalid = ~np.isfinite(eta_arr)
+        if np.any(mask_invalid):
+            bad_idx = int(np.argmax(mask_invalid))
+            raise TiltingDomainError(
+                f"PowerLawTilting.tilted_pvalue requires finite eta; "
+                f"offending index {bad_idx} eta="
+                f"{float(eta_arr.flat[bad_idx])!r}"
+            )
 
         # Vectorised admissibility: denom = 1 - eta(1-w) > 0. Scalar eta
         # produces a 0-d array and the same logic applies; raising surfaces

@@ -141,7 +141,7 @@ class OTTilting:
     def tilted_pvalue(
         self,
         theta: ArrayLike,
-        D: float,
+        D: float | NDArray[np.float64],
         model: Model,
         prior: NormalDistribution,
         eta: ArrayLike,
@@ -162,6 +162,14 @@ class OTTilting:
         array broadcastable to ``theta``; the array path lets
         ``dynamic_ci_scan`` (and ``dynamic_tilted_pvalue``) evaluate a
         per-θ varying η in one bulk numpy call (Tier 1.3 N1/N3).
+
+        ``D`` accepts either a scalar (the historical contract) or an
+        array broadcastable to ``theta_arr``. The array path is exercised
+        by ``compute_pvalues_per_sample`` in the Phase E training loop,
+        which packs per-sample ``D`` values alongside ``theta`` and
+        ``eta``. The closed-form formulas are pure numpy arithmetic so
+        they broadcast naturally; this annotation documents that
+        contract instead of relying on duck-typing.
         """
         from ..models.normal_normal import NormalNormalModel
 
@@ -279,20 +287,13 @@ class OTTilting:
                 f"theta and eta_at_theta must have the same shape; got "
                 f"{theta_arr.shape!r} and {eta_arr.shape!r}."
             )
-        # Pre-validate the eta array so a partial population on raise can
-        # not happen mid-loop; surface the offending index/value cleanly.
-        # (`tilted_pvalue` performs the same check internally now, but
-        # keeping the upfront guard here preserves the Phase 1 skeptic
-        # vector #5 contract — a single pre-loop validation rather than
-        # per-element raise.)
-        valid = np.isfinite(eta_arr) & (eta_arr >= 0.0) & (eta_arr <= 1.0)
-        if not np.all(valid):
-            bad = np.argmax(~valid)
-            raise TiltingDomainError(
-                f"OTTilting.dynamic_tilted_pvalue requires eta in [0, 1] "
-                f"and finite; offending index {int(bad)} eta="
-                f"{float(eta_arr.flat[int(bad)])!r}."
-            )
+        # eta validation now lives in `tilted_pvalue` (single source of
+        # truth; was previously duplicated here for the Phase 1 skeptic
+        # vector #5 contract). Removing the upfront check eliminates
+        # ~5 µs of redundant work per scan and keeps error messages
+        # consistent regardless of whether a caller hits this dynamic
+        # entry-point or the inner `tilted_pvalue` directly (e.g. through
+        # the vec_fn callback at `_dynamic.py:151`).
         # Vectorised path: `tilted_pvalue` now broadcasts over array eta,
         # so one bulk call replaces the scalar Python loop (Tier 1.3 N3).
         out = np.asarray(

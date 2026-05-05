@@ -23,6 +23,7 @@ This module contains:
 
 from __future__ import annotations
 
+import warnings
 from typing import Any
 
 import numpy as np
@@ -78,13 +79,28 @@ def _admissibility_mask(
         if not (np.isfinite(sigma) and np.isfinite(sigma0)):
             return finite  # fall back to per-element exception path
         w = sigma0**2 / (sigma**2 + sigma0**2)
-        # denom > 0  ⟺  eta < 1/(1-w). Match the buffer in
-        # PowerLawTilting.admissible_range so the closed-form mask
-        # rejects strictly the same ηs that tilted_pvalue would raise on.
+        # Strict raise-bound: power_law.tilted_pvalue raises iff
+        # `denom = 1 - eta*(1-w) <= 0`, i.e. `eta >= 1/(1-w)`. We allow
+        # up to but excluding that bound. Note: this is broader than
+        # PowerLawTilting.admissible_range's buffered admissible range
+        # — see power_law.py:155 for the `_ETA_MIN_BUFFER` used by
+        # selectors. The mask matches the strict raise bound (what
+        # tilted_pvalue actually enforces), NOT the buffered selector
+        # bound; see the buffer-band note in power_law.py.
         return finite & (eta_arr < 1.0 / (1.0 - w))
     if name == "ot":
         return finite & (eta_arr >= 0.0) & (eta_arr <= 1.0)
+    # TODO Phase 6: extend _admissibility_mask for mixture (η ∈ [0,1])
+    # and fisher_rao (open half-plane).
     # Unknown scheme: don't pre-mask; let the per-element fallback handle it.
+    # Warn so the slow-path regression is discoverable when a future scheme
+    # ships without a closed-form predicate here.
+    warnings.warn(
+        f"_admissibility_mask: no closed-form admissibility for scheme "
+        f"{name!r}, falling back to per-sample exception loop",
+        RuntimeWarning,
+        stacklevel=2,
+    )
     return finite
 
 
