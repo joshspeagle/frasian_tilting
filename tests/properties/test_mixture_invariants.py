@@ -163,34 +163,82 @@ def test_admissible_range_is_unit_interval() -> None:
     assert scheme.admissible_range(ctx2) == (lo, hi)
 
 
-def test_waldo_pvalue_matches_monte_carlo() -> None:
-    """Closed-form WALDO p-value matches MC integration to MC SE.
+def test_waldo_pvalue_closed_form_matches_canonical_substitution() -> None:
+    """Mixture's tilted WALDO equals the canonical bare-WALDO formula
+    with the mixture's first two moments substituted in.
 
-    The deriver verified this at N=2e6 with errors <= 6e-4. We use a
-    lighter N here for test speed; tolerance is set to `5/sqrt(N)`.
+    The canonical "tilted WALDO" structure (shared with `power_law`
+    and `fisher_rao`) is `Phi(b - a) + Phi(-a - b)` with
+        a = sigma * |mu_eta - theta| / sigma_eta^2
+        b = (1-w) * (mu0 - theta) / (w * sigma)
+    and `(mu_eta, sigma_eta^2)` taken from the mixture's first/second
+    moments. This test verifies that `tilted_pvalue` evaluates that
+    exact closed form (independent recomputation, atol 1e-15).
     """
     model, prior, _lik, _post = _setup(mu0=0.0, sigma0=1.0, sigma=1.0, D=0.0)
     scheme = MixtureTilting()
-    eta = 0.5
-    rng = np.random.default_rng(42)
-    n = 100_000
-    # Sample from the mixture posterior at eta=0.5.
     sigma = 1.0
-    mu_n = 0.0  # since D=0, mu0=0
-    sigma_n = np.sqrt(0.5)
-    D = 0.0
-    mu_eta = (1.0 - eta) * mu_n + eta * D
-    # Component indicators: half from each Gaussian.
-    which = rng.uniform(0.0, 1.0, size=n) >= (1.0 - eta)
-    z = rng.standard_normal(n)
-    samples = np.where(which, D + sigma * z, mu_n + sigma_n * z)
-    for theta in [-1.0, 0.5, 2.0]:
-        p_cf = float(
+    sigma0 = 1.0
+    mu0 = 0.0
+    w = sigma0**2 / (sigma**2 + sigma0**2)
+    for D, eta, theta in [
+        (0.0, 0.5, -1.0),
+        (0.0, 0.5, 0.5),
+        (2.0, 0.3, 1.0),
+        (-1.5, 0.7, 0.0),
+    ]:
+        mu_n = w * D + (1.0 - w) * mu0
+        sigma_n_sq = w * sigma**2
+        mu_eta = (1.0 - eta) * mu_n + eta * D
+        sigma_eta_sq = (
+            (1.0 - eta) * sigma_n_sq
+            + eta * sigma**2
+            + eta * (1.0 - eta) * (mu_n - D) ** 2
+        )
+        a = sigma * abs(mu_eta - theta) / sigma_eta_sq
+        b = (1.0 - w) * (mu0 - theta) / (w * sigma)
+        expected = float(stats.norm.cdf(b - a) + stats.norm.cdf(-a - b))
+        got = float(
             scheme.tilted_pvalue(np.asarray(theta), D, model, prior, eta, "waldo")
         )
-        z_thresh = abs(theta - mu_eta)
-        p_mc = float(np.mean(np.abs(samples - mu_eta) >= z_thresh))
-        # MC SE ~ sqrt(p(1-p)/n) <= 0.5/sqrt(n) ~ 1.6e-3 at n=1e5.
-        assert abs(p_cf - p_mc) < 5.0 / np.sqrt(n), (
-            f"theta={theta}: closed-form {p_cf} vs MC {p_mc} differ by {p_cf - p_mc}"
+        assert abs(got - expected) < 1e-15, (
+            f"closed-form mismatch at D={D}, eta={eta}, theta={theta}: "
+            f"got {got!r} vs expected {expected!r}"
         )
+
+
+@pytest.mark.parametrize(
+    "sigma,sigma0",
+    [(1.0, 1.0), (2.0, 0.5), (0.5, 2.0)],
+)
+def test_tilted_waldo_at_eta_zero_equals_bare_waldo(
+    sigma: float, sigma0: float
+) -> None:
+    """At eta=0 the mixture-tilted WALDO must collapse to bare WALDO.
+
+    Phase 6 skeptic vector #1: the tilting protocol's identity
+    invariant requires `tilted_pvalue('waldo', eta=eta_identity)` to
+    equal `WaldoStatistic.pvalue`. The canonical formula uses
+    `a = sigma * |mu_eta - theta| / sigma_eta^2` and bare WALDO's
+    `b`, which collapses correctly at eta=0 (where the mixture's
+    weight-1 component is the posterior, so mu_eta=mu_n,
+    sigma_eta^2=sigma_n^2).
+    """
+    from frasian.statistics.waldo import WaldoStatistic
+
+    model = NormalNormalModel(sigma=sigma)
+    prior = NormalDistribution(loc=0.0, scale=sigma0)
+    D = np.array([2.0])
+    theta = 1.5
+    bare = float(np.asarray(WaldoStatistic().pvalue(theta, D, model, prior)).item())
+    tilted = float(
+        np.asarray(
+            MixtureTilting().tilted_pvalue(
+                theta, D, model, prior, eta=0.0, statistic_name="waldo"
+            )
+        ).item()
+    )
+    assert abs(tilted - bare) < 1e-9, (
+        f"mixture tilted WALDO at eta=0 ({tilted!r}) does not match "
+        f"bare WALDO ({bare!r}) for (sigma, sigma0)=({sigma!r}, {sigma0!r})."
+    )

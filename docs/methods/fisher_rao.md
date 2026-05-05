@@ -151,19 +151,31 @@ prior). Same closed form as `power_law` / `ot` Wald branches:
 `p_Wald(theta) = 2(1 - Phi(|D - theta|/sigma))`.
 
 *WALDO.* `Q_eta` is Gaussian with explicit `(mu(eta), sigma(eta))`,
-so the standard Phi-pair formula applies:
+so we re-use bare WALDO's `Phi(b - a) + Phi(-a - b)` with the FR
+geodesic's `(mu_eta, sigma_eta)` substituted for the posterior
+centre/scale:
 
 ```
-a_FR(theta) = |mu(eta) - theta| / sigma(eta)
-b_FR(theta) = (mu_0 - theta) / sigma_0       (prior z-score)
-p(theta; eta) = Phi(b_FR - a_FR) + Phi(-a_FR - b_FR)
+a_FR(theta) = sigma * |mu(eta) - theta| / sigma(eta)^2
+b(theta)    = (1 - w) * (mu_0 - theta) / (w * sigma)
+p(theta; eta) = Phi(b - a_FR) + Phi(-a_FR - b)
 ```
 
-Note: WALDO's `b` retains its bare-WALDO meaning (the prior is
-fixed); the FR tilting only re-parametrises the posterior along
-the geodesic. Contrast with `power_law`, where both `a` and `b`
-pick up eta-dependent factors because the e-geodesic re-weights
-the prior log-density.
+This is the canonical "tilted WALDO" structure shared with
+`power_law` and `mixture`: bare WALDO's formula evaluated with the
+tilted-distribution-aware `(mu_eta, sigma_eta)` plugged into `a`,
+and `b` left as the bare prior z-score (the prior is fixed; the
+FR tilting only re-parametrises the posterior along the geodesic,
+so `b` is eta-independent). At `eta = 0` the geodesic endpoint is
+`(mu_n, sigma_n)` with `sigma_n^2 = w * sigma^2`, so `a_FR = sigma
+* |mu_n - theta| / (w * sigma^2) = |mu_n - theta| / (w * sigma)`
+— bare WALDO's `a`. The formula collapses exactly to bare WALDO at
+`eta = 0`, satisfying the tilting protocol's identity invariant.
+Pinned by `tests/properties/test_fisher_rao_invariants.py::test_tilted_waldo_at_eta_zero_equals_bare_waldo`.
+Contrast with `power_law`, where the algebraic substitution
+`mu_n -> mu_eta = (w*D + (1-eta)(1-w)*mu_0)/denom` makes both `a`
+and `b` pick up eta-dependent factors; mixture and FR don't admit
+that substitution and so leave `b` as the bare prior z-score.
 
 **Step 6 — Admissible range.** `eta in [0, 1]` is always valid:
 the half-plane is geodesically complete in `sigma > 0` and both
@@ -171,9 +183,13 @@ endpoints lie in the open region. No analogue of `power_law`'s
 `denom > 0` clamp.
 
 **Branch threshold.** The vertical case is selected for
-`|u_p - u_q| < 1e-12` in the implementation. The semicircle branch
+`|u_p - u_q| < 1e-8` in the implementation. The semicircle branch
 divides by `(u_q - u_p)` and so loses precision below this
-threshold; the vertical formula is exact in the limit.
+threshold; the vertical formula is exact in the limit. The
+threshold was raised from `1e-12` to `1e-8` (Phase 6 skeptic
+vector #3) so the worst-case sigma mismatch at the boundary drops
+below 3e-8 (vs ~1.7e-4 at the previous setting). Pinned by
+`tests/properties/test_fisher_rao_invariants.py::test_no_branch_discontinuity_at_threshold`.
 
 **Geometric-mean signature.** The vertical case gives
 `sigma(0.5) = sqrt(sigma_p * sigma_q)` (geometric mean) — the

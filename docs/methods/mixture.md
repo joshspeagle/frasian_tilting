@@ -123,21 +123,29 @@ eta=1/2), so `var(p_eta) <= max(sigma_n^2, sigma^2) + (mu_n - D)^2 / 4`.
 `sigma`; the m-geodesic changes neither. So
 `p_Wald^{tilted}(theta; eta) = p_Wald^{bare}(theta) = 2(1 - Phi(|theta - D|/sigma))`.
 
-**Step 4b — Tilted WALDO.** WALDO standardises by the posterior
-mean `mu_post = mean(p_eta)` and sd `sigma_post = sd(p_eta)`. The
-acceptance region `{theta' : |theta' - mu_eta| >= z}` (with
-`z = |theta - mu_eta|`) has probability under `p_eta` equal to a
-weighted sum of two component-tail probabilities, each a Phi-pair:
+**Step 4b — Tilted WALDO.** Re-use bare WALDO's
+`Phi(b - a) + Phi(-a - b)` with the *mixture's* first two moments
+substituted for the posterior centre/scale. Specifically, with
+`mu_eta` and `sigma_eta^2` the mixture mean/variance from Step 3,
 
 ```
-P_k = Phi((m_k - mu_eta - z) / s_k) + Phi((mu_eta - m_k - z) / s_k)
-p(theta; eta) = (1 - eta) * P_1 + eta * P_2
+a(theta; eta) = sigma * |mu_eta - theta| / sigma_eta^2
+b(theta)      = (1 - w) * (mu_0 - theta) / (w * sigma)
+p(theta; eta) = Phi(b - a) + Phi(-a - b)
 ```
 
-with `(m_1, s_1) = (mu_n, sigma_n)` and `(m_2, s_2) = (D, sigma)`.
-**Two Phi-pairs**, contrast: the e-geodesic (`power_law`) has a
-single Phi-pair because the tilted posterior is Gaussian. MC-verified
-at N=2e6 to within MC SE.
+This is the canonical "tilted WALDO" structure shared with
+`power_law` and `fisher_rao`: bare WALDO's formula evaluated with
+the tilted-distribution-aware `(mu_eta, sigma_eta)` plugged into
+`a`, and `b` left as the bare prior z-score (the prior is fixed,
+the m-geodesic only re-parametrises the posterior side, so `b` is
+eta-independent). At `eta = 0` the mixture's component-1 weight is
+1 so `mu_eta = mu_n` and `sigma_eta^2 = sigma_n^2 = w * sigma^2`,
+which makes `a = sigma * |mu_n - theta| / (w * sigma^2) = |mu_n -
+theta| / (w * sigma)` — bare WALDO's `a`. The formula collapses
+exactly to bare WALDO at `eta = 0`, satisfying the tilting protocol's
+identity invariant. Pinned by
+`tests/properties/test_mixture_invariants.py::test_tilted_waldo_at_eta_zero_equals_bare_waldo`.
 
 **Step 5 — Dynamic-eta inversion.** No closed form for `eta*` under
 the mixture (variance is quadratic in eta, not rational-of-eta).
@@ -189,6 +197,22 @@ implements.
   CI; the HPD set is the right object but the framework's
   `confidence_interval` returns a single `(lo, hi)`. Implementation
   should return the convex hull or NaN, with a flag in metadata.
+- **Static-selector multi-region scan not implemented.** Phase 6
+  skeptic vector #9: `MixtureTilting.confidence_regions` with a
+  static `FixedEtaSelector` at high `|Delta|` (specifically when
+  `|Delta| > 2 * sqrt(w)`, the Behboodian threshold) routes through
+  `tilted_confidence_interval`, which calls `brentq_with_doubling`
+  *once* per side and so always returns a single `(lo, hi)` tuple.
+  In the bimodal regime the WALDO p-curve crosses `alpha` more than
+  twice, so the static path may miss disjoint accept-region
+  components and report only the convex hull around the closer
+  crossing. The dynamic-selector path (`DynamicNumericalEtaSelector`
+  / `LearnedDynamicEtaSelector`) routes through `dynamic_ci_scan`,
+  which already enumerates all crossings and returns each disjoint
+  region. **Recommendation:** for `|Delta| > 2 * sqrt(w)`, use a
+  dynamic selector; static-selector results in this regime should
+  be treated as the convex hull of the true accept region rather
+  than the union.
 - **Mixture is not in any tractable exponential family.** Closed-form
   moments + cdf only because both components are Gaussian; for
   arbitrary endpoints, numerical quadrature on the components is

@@ -25,14 +25,19 @@ Tilted-pvalue closed forms (Step 4 of the derivation):
         does not change the MLE-based statistic. Returns the bare
         two-sided Wald p-value `2 * Phi(-|D - theta| / sigma)`.
 
-  WALDO: each mixture component contributes a Phi-pair around the
-         shifted mean `mu_eta := (1-eta) * mu_n + eta * D`:
-
-           P_k = Phi((m_k - mu_eta - z) / s_k)
-               + Phi((mu_eta - m_k - z) / s_k),     z = |theta - mu_eta|
-           p(theta; eta) = (1 - eta) * P_1 + eta * P_2
-
-         with `(m_1, s_1) = (mu_n, sigma_n)` and `(m_2, s_2) = (D, sigma)`.
+  WALDO: bare-WALDO formula with the mixture's first/second moments
+         substituted in for the posterior centre/scale. The mixture's
+         first two moments are
+            mu_eta    = (1-eta)*mu_n + eta*D
+            sigma_eta^2 = (1-eta)*sigma_n^2 + eta*sigma^2
+                        + eta*(1-eta)*(mu_n - D)^2
+         and the tilted p-value is
+            a = sigma * |mu_eta - theta| / sigma_eta^2
+            b = (1-w) * (mu0 - theta) / (w * sigma)
+            p = Phi(b - a) + Phi(-a - b).
+         At eta=0, mu_eta=mu_n and sigma_eta=sigma_n, so a reduces to
+         |mu_n - theta|/(w*sigma) and the formula collapses exactly to
+         bare WALDO (the tilting protocol's identity invariant).
 
 Admissible range: `eta in [0, 1]` always; the convex combination of two
 valid densities is itself a valid density without any clamp.
@@ -258,18 +263,31 @@ class MixtureTilting:
             return np.asarray(2.0 * stats.norm.sf(z), dtype=np.float64)
 
         if statistic_name == "waldo":
-            # WALDO under the mixture posterior: per-component Phi-pair
-            # around the shifted centre `mu_eta = (1-eta)*mu_n + eta*D`.
-            # See Step 4b of `audit/tier2/mixture_derivation.md`.
+            # WALDO under the mixture-tilted posterior. We re-use the
+            # bare-WALDO formula `Phi(b - a) + Phi(-a - b)` with the
+            # *mixture's* first two moments substituted for the
+            # posterior centre/scale. This is the canonical "tilted
+            # WALDO" structure shared with `power_law` and `fisher_rao`:
+            # `a = sigma * |mu_eta - theta| / sigma_eta^2` (which at
+            # eta=0 reduces to `|mu_n - theta| / (w * sigma)`) and
+            # `b = (1-w) * (mu0 - theta) / (w * sigma)` (the bare-WALDO
+            # prior z-score, eta-independent — the prior is fixed and
+            # the mixture only re-parametrises the posterior side).
+            # At eta=0 this collapses exactly to bare WALDO; see the
+            # property test `test_tilted_waldo_at_eta_zero_equals_bare_waldo`
+            # for the contract pin.
             mu_n = w * D + (1.0 - w) * mu0
-            sigma_n = np.sqrt(w) * sigma
+            sigma_n_sq = w * sigma**2
             mu_eta = (1.0 - eta_arr) * mu_n + eta_arr * D
-            z = np.abs(theta_arr - mu_eta)
-            Phi = stats.norm.cdf
-            P1 = Phi((mu_n - mu_eta - z) / sigma_n) + Phi((mu_eta - mu_n - z) / sigma_n)
-            P2 = Phi((D - mu_eta - z) / sigma) + Phi((mu_eta - D - z) / sigma)
+            sigma_eta_sq = (
+                (1.0 - eta_arr) * sigma_n_sq
+                + eta_arr * sigma**2
+                + eta_arr * (1.0 - eta_arr) * (mu_n - D) ** 2
+            )
+            a = sigma * np.abs(mu_eta - theta_arr) / sigma_eta_sq
+            b = (1.0 - w) * (mu0 - theta_arr) / (w * sigma)
             return np.asarray(
-                (1.0 - eta_arr) * P1 + eta_arr * P2,
+                stats.norm.cdf(b - a) + stats.norm.cdf(-a - b),
                 dtype=np.float64,
             )
 
