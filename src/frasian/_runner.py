@@ -160,7 +160,7 @@ def run_experiment(
         raw_fp = str(result.metadata.get("raw_fingerprint", ""))
         path = persist_cell(
             raw_result=result, config=config, cache_root=cache_root,
-            raw_fingerprint=raw_fp,
+            raw_fingerprint=raw_fp, tilting=tilting,
         )
         raw_results.append(result)
         # Record path *relative to out_dir* so the manifest is byte-reproducible

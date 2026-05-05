@@ -523,14 +523,35 @@ class LearnedDynamicEtaSelector:
             )
 
     def select(self, context: TiltingContext, scheme: TiltingScheme,
-               *, statistic: TestStatistic) -> float:
-        """Single-context η. Convenience for non-dynamic callers."""
+               *, statistic: TestStatistic,
+               model_fingerprint: tuple | None = None,
+               prior_fingerprint: tuple | None = None) -> float:
+        """Single-context η. Convenience for non-dynamic callers.
+
+        ``model_fingerprint`` and ``prior_fingerprint`` are required for
+        the strict cross-experiment refusal contract documented in the
+        learned_eta brief. Callers must supply the trained-experiment
+        fingerprints; bare ``select(...)`` without them raises
+        ``ValueError`` rather than falling back to the w-only derived
+        check (which cannot distinguish two ``(σ, σ₀)`` pairs giving
+        the same ``w``).
+        """
+        if model_fingerprint is None or prior_fingerprint is None:
+            raise ValueError(
+                f"{type(self).__name__}.select requires explicit "
+                f"`model_fingerprint` and `prior_fingerprint` kwargs "
+                f"to enforce strict cross-experiment refusal. Pass "
+                f"`model.fingerprint()` and `prior.fingerprint()` from "
+                f"the inference call site."
+            )
         self._ensure_loaded()
         self._check_scheme(scheme)
         self._check_alpha(context.alpha)
         out = self.select_grid(
             np.asarray([context.abs_delta]), scheme,
             statistic=statistic, w=context.w, alpha=context.alpha,
+            model_fingerprint=model_fingerprint,
+            prior_fingerprint=prior_fingerprint,
         )
         return float(out[0])
 

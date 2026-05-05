@@ -176,3 +176,39 @@ class TestLearnedDynamicEtaSelectorSmoke:
                 statistic=WaldoStatistic(), w=0.5, alpha=alpha,
             )
             assert eta.shape == (2,)
+
+    def test_select_requires_fingerprints(self):
+        """`select` convenience method must reject calls missing fingerprints.
+
+        Closes the bypass where the convenience entry point falls back to
+        the w-only derived check (which cannot distinguish two ``(σ, σ₀)``
+        pairs giving the same ``w``).
+        """
+        from frasian.tilting.base import TiltingContext
+
+        artifact = _StubEtaArtifact(sigma=1.0, sigma0=1.0, mu0=0.0)
+        selector = LearnedDynamicEtaSelector(
+            artifact=artifact, sigma=1.0, mu0=0.0,
+        )
+        scheme = PowerLawTilting()
+        ctx = TiltingContext(w=0.5, abs_delta=1.0, alpha=0.05)
+
+        # No fingerprints → raise.
+        with pytest.raises(ValueError, match="fingerprint"):
+            selector.select(ctx, scheme, statistic=WaldoStatistic())
+
+        # Mismatched model fingerprint → raise (different sigma).
+        with pytest.raises(MissingArtifactError):
+            selector.select(
+                ctx, scheme, statistic=WaldoStatistic(),
+                model_fingerprint=("normal_normal", 2.0),
+                prior_fingerprint=("normal", 0.0, 1.0),
+            )
+
+        # Matching fingerprints → succeed.
+        eta = selector.select(
+            ctx, scheme, statistic=WaldoStatistic(),
+            model_fingerprint=("normal_normal", 1.0),
+            prior_fingerprint=("normal", 0.0, 1.0),
+        )
+        assert isinstance(eta, float)

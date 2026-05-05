@@ -26,12 +26,32 @@ def persist_cell(
     raw_fingerprint: str = "",
     enabled: bool = True,
     force: bool = False,
+    tilting: Any = None,
 ) -> Path:
     """Persist `raw_result` under a deterministic cache directory.
 
     Returns the on-disk path. The result is loadable later via
     `simulation.storage.load_result(path)`.
+
+    When ``tilting`` is provided, its selector is inspected for a
+    ``artifact.fingerprint()`` (Phase E learned-η selectors only); the
+    digest is folded into ``CacheKey.extra`` under
+    ``"selector_artifact_fingerprint"`` so swapping a learned checkpoint
+    invalidates the cache even at the same git sha + config.
     """
+    extra = dict(raw_result.metadata)
+    if tilting is not None:
+        try:
+            selector = getattr(tilting, "selector", None)
+            artifact = getattr(selector, "artifact", None) if selector is not None else None
+            fp_fn = getattr(artifact, "fingerprint", None) if artifact is not None else None
+            if callable(fp_fn):
+                extra["selector_artifact_fingerprint"] = str(fp_fn())
+        except Exception:
+            # Non-learned selectors / stubs without fingerprint() — skip silently;
+            # cache key falls back to the (cell_name, config, git_sha) tuple.
+            pass
+
     key = CacheKey(
         experiment=raw_result.experiment,
         tilting=raw_result.tilting,
@@ -39,7 +59,7 @@ def persist_cell(
         config_fingerprint=config.fingerprint(),
         git_sha=git_sha(),
         raw_fingerprint=raw_fingerprint,
-        extra=dict(raw_result.metadata),
+        extra=extra,
     )
 
     def compute() -> tuple[Mapping[str, NDArray], Mapping[str, Any]]:

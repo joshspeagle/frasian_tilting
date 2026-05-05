@@ -186,3 +186,59 @@ class TestQuantileMixturePathBetaEndpoints:
         x = path.quantile(u_in)
         u_out = path.cdf(x)
         np.testing.assert_allclose(u_out, u_in, atol=1e-8)
+
+
+@pytest.mark.L2
+class TestOTPathAgreementGaussianEndpoints:
+    """Fast-path (closed-form) vs general path (QuantileMixturePath) on Gaussians.
+
+    On Gaussian endpoints both paths must agree — the fast path is the
+    closed form of the general 1D W2 geodesic, so any drift between them
+    is silent garbage. Pins quantile and pdf agreement.
+    """
+
+    @pytest.mark.parametrize(
+        "mu_p,sigma_p,mu_q,sigma_q",
+        [
+            (0.0, 1.0, 0.0, 2.0),   # balanced: same mean, different scale
+            (3.0, 1.0, 0.0, 1.0),   # conflict: same scale, different mean
+            (-1.0, 0.5, 2.0, 1.5),  # mixed: both differ
+        ],
+    )
+    def test_fast_path_matches_general_path(
+        self, mu_p, sigma_p, mu_q, sigma_q,
+    ):
+        t = 0.5
+        p_normal = NormalDistribution(loc=mu_p, scale=sigma_p)
+        q_normal = NormalDistribution(loc=mu_q, scale=sigma_q)
+
+        # Fast path: linear interpolation in (mu, sigma).
+        mu_fast = (1.0 - t) * mu_p + t * mu_q
+        sigma_fast = (1.0 - t) * sigma_p + t * sigma_q
+        fast = NormalDistribution(loc=mu_fast, scale=sigma_fast)
+
+        # General path: QuantileMixturePath wrapping the same Gaussian endpoints.
+        general = QuantileMixturePath(p=p_normal, q=q_normal, t=t)
+
+        # Quantile agreement at 50 q points (atol 1e-12).
+        q_grid = np.linspace(0.01, 0.99, 50)
+        qf = np.asarray(
+            [float(fast.quantile(np.asarray(u))) for u in q_grid]
+        )
+        qg = np.asarray(
+            [float(general.quantile(np.asarray(u))) for u in q_grid]
+        )
+        np.testing.assert_allclose(qg, qf, atol=1e-12)
+
+        # PDF agreement at 50 theta points (atol 1e-9). Choose a theta range
+        # well inside the support so the chain-rule pdf is numerically stable.
+        lo = mu_fast - 3.0 * sigma_fast
+        hi = mu_fast + 3.0 * sigma_fast
+        theta_grid = np.linspace(lo, hi, 50)
+        pdf_fast = np.asarray(
+            [float(fast.pdf(np.asarray(x))) for x in theta_grid]
+        )
+        pdf_general = np.asarray(
+            [float(general.pdf(np.asarray(x))) for x in theta_grid]
+        )
+        np.testing.assert_allclose(pdf_general, pdf_fast, atol=1e-9)
