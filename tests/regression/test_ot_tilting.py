@@ -90,6 +90,63 @@ class TestOTAdmissibleRange:
 
 
 @pytest.mark.L0
+class TestOTDynamicTiltedPvalueGuard:
+    """Pin the pre-validation guard in `OTTilting.dynamic_tilted_pvalue`.
+
+    The guard surfaces the offending index/value cleanly rather than
+    populating `out` partially before raising mid-loop. A future refactor
+    that drops the pre-validation back into the loop would silently
+    succeed-then-fail; these tests catch that.
+    """
+
+    def _setup_dyn(self):
+        sigma, mu0, sigma0 = 1.0, 0.0, 1.0
+        model = NormalNormalModel(sigma=sigma)
+        prior = NormalDistribution(loc=mu0, scale=sigma0)
+        D = 2.0
+        theta_arr = np.array([0.0, 1.0, 2.0], dtype=np.float64)
+        return model, prior, D, theta_arr
+
+    def test_nan_eta_raises_with_index(self):
+        model, prior, D, theta_arr = self._setup_dyn()
+        eta_at_theta = np.array([0.5, np.nan, 0.7], dtype=np.float64)
+        with pytest.raises(TiltingDomainError, match=r"index 1"):
+            OTTilting().dynamic_tilted_pvalue(
+                theta_arr, D, model, prior, "waldo", eta_at_theta,
+            )
+
+    def test_eta_above_one_raises_with_index(self):
+        model, prior, D, theta_arr = self._setup_dyn()
+        eta_at_theta = np.array([0.5, 1.5, 0.7], dtype=np.float64)
+        with pytest.raises(TiltingDomainError, match=r"index 1"):
+            OTTilting().dynamic_tilted_pvalue(
+                theta_arr, D, model, prior, "waldo", eta_at_theta,
+            )
+
+    def test_eta_below_zero_raises_with_index(self):
+        model, prior, D, theta_arr = self._setup_dyn()
+        eta_at_theta = np.array([-0.1, 0.5, 0.7], dtype=np.float64)
+        with pytest.raises(TiltingDomainError, match=r"index 0"):
+            OTTilting().dynamic_tilted_pvalue(
+                theta_arr, D, model, prior, "waldo", eta_at_theta,
+            )
+
+    def test_valid_eta_returns_finite_pvalues(self):
+        """Positive-path: `eta_at_theta = [0.0, 0.5, 1.0]` does NOT raise
+        and returns finite p-values in [0, 1]. Without this, the guard's
+        valid-path is never exercised."""
+        model, prior, D, theta_arr = self._setup_dyn()
+        eta_at_theta = np.array([0.0, 0.5, 1.0], dtype=np.float64)
+        p = OTTilting().dynamic_tilted_pvalue(
+            theta_arr, D, model, prior, "waldo", eta_at_theta,
+        )
+        p_arr = np.atleast_1d(np.asarray(p, dtype=np.float64))
+        assert p_arr.shape == theta_arr.shape
+        assert np.all(np.isfinite(p_arr))
+        assert np.all(p_arr >= 0.0) and np.all(p_arr <= 1.0)
+
+
+@pytest.mark.L0
 class TestOTTiltedWaldoPvalue:
     @pytest.mark.parametrize("eta", [0.0, 0.3, 0.6, 0.9])
     @pytest.mark.parametrize("sigma0", [0.5, 1.0, 2.0])
