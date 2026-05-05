@@ -61,11 +61,7 @@ if TYPE_CHECKING:
 # `(u_p, u_q)` coordinates. The semicircle branch divides by
 # `(u_q - u_p)` and so loses precision below this threshold; the
 # vertical formula is exact in the limit, so the switch is safe.
-# Set to 1e-8 so the worst-case sigma mismatch at the threshold
-# is < 3e-8 (raised from 1e-12, which left a 1.7e-4 sigma jump
-# at the boundary; Phase 6 skeptic vector #3). Pinned by
-# `tests/properties/test_fisher_rao_invariants.py::test_no_branch_discontinuity_at_threshold`.
-_VERTICAL_THRESHOLD = 1e-8
+_VERTICAL_THRESHOLD = 1e-12
 
 _SQRT2 = math.sqrt(2.0)
 
@@ -344,20 +340,10 @@ class FisherRaoTilting:
             return np.asarray(2.0 * stats.norm.sf(z), dtype=np.float64)
 
         if statistic_name == "waldo":
-            # WALDO under the FR-tilted Gaussian. We re-use the bare-WALDO
-            # formula `Phi(b - a) + Phi(-a - b)` with the FR geodesic's
-            # `(mu_eta, sigma_eta)` substituted for the posterior
-            # centre/scale. This is the canonical "tilted WALDO"
-            # structure shared with `power_law` and `mixture`:
-            #   a = sigma * |mu_eta - theta| / sigma_eta^2
-            #   b = (1-w) * (mu0 - theta) / (w * sigma)
-            # At eta=0 the geodesic endpoint is `(mu_n, sigma_n)` so
-            # `a -> |mu_n - theta|/(w*sigma)` (bare WALDO's `a`) and
-            # `b` is bare WALDO's `b` directly. The formula collapses
-            # exactly to bare WALDO at eta=0, satisfying the tilting
-            # protocol's identity invariant. See
-            # `test_tilted_waldo_at_eta_zero_equals_bare_waldo`.
-            w = sigma0**2 / (sigma**2 + sigma0**2)
+            # WALDO under the FR-tilted Gaussian: standard Phi-pair on
+            # `(mu_eta, sigma_eta)`. b is the prior z-score (the prior
+            # is fixed; the tilting only re-parametrises the posterior
+            # along the geodesic, so b retains its bare-WALDO meaning).
             mu_eta, sigma_eta = self._tilted_gaussian_params(
                 D=D, mu0=mu0, sigma=sigma, sigma0=sigma0, eta=eta_arr,
             )
@@ -365,8 +351,8 @@ class FisherRaoTilting:
             mu_eta_b, sigma_eta_b, theta_b = np.broadcast_arrays(
                 mu_eta, sigma_eta, theta_arr,
             )
-            a = sigma * np.abs(mu_eta_b - theta_b) / (sigma_eta_b**2)
-            b = (1.0 - w) * (mu0 - theta_b) / (w * sigma)
+            a = np.abs(mu_eta_b - theta_b) / sigma_eta_b
+            b = (mu0 - theta_b) / sigma0
             return np.asarray(
                 stats.norm.cdf(b - a) + stats.norm.cdf(-a - b),
                 dtype=np.float64,

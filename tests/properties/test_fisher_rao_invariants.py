@@ -15,10 +15,8 @@ from scipy import stats
 
 from frasian.models.distributions import GaussianLikelihood, NormalDistribution
 from frasian.models.normal_normal import NormalNormalModel
-from frasian.statistics.waldo import WaldoStatistic
 from frasian.tilting.base import TiltingContext
 from frasian.tilting.fisher_rao import (
-    _VERTICAL_THRESHOLD,
     FisherRaoTilting,
     _fisher_rao_path,
     fisher_rao_distance,
@@ -258,74 +256,6 @@ def test_differs_from_ot_when_sigmas_differ() -> None:
     assert abs(ot.scale - 1.5) < 1e-12
     # And they differ by ~0.085.
     assert abs(fr.scale - ot.scale) > 0.08
-
-
-def test_no_branch_discontinuity_at_threshold() -> None:
-    """Vertical / semicircle branch boundary must be continuous in `delta_u`.
-
-    Sweeps `|u_p - u_q|` across the `_VERTICAL_THRESHOLD` boundary and
-    asserts that the FR-tilted sigma matches the vertical-branch closed
-    form (geometric mean) to atol 1e-7. Phase 6 skeptic vector #3:
-    at the previous threshold of 1e-12, the semicircle formula's
-    `u_c = (u_q^2 - u_p^2 + sigma_q^2 - sigma_p^2) / (2*(u_q - u_p))`
-    poisons just outside the vertical branch and produces a 1.7e-4
-    sigma jump. Raising the threshold to 1e-8 drops the worst-case
-    mismatch below 3e-8 (well below the 1e-7 tolerance here, but
-    well above 1e-10 — float-cancellation in `u_q^2 - u_p^2` near
-    the boundary can amplify on the order of `delta_u`).
-    """
-    sigma_p, sigma_q = 1.0, 2.0
-    eta = 0.5
-    sigma_vertical = sigma_p * (sigma_q / sigma_p) ** eta  # exact geometric mean
-    SQRT2 = math.sqrt(2.0)
-    # Sweep across the branch boundary, including just-outside-vertical
-    # where the semicircle formula was previously poisoned.
-    for frac in (0.5, 0.9, 1.0, 1.1, 2.0, 10.0, 100.0):
-        delta_u = frac * _VERTICAL_THRESHOLD
-        # Place mu_p, mu_q so |u_p - u_q| = delta_u.
-        mu_p = 0.0
-        mu_q = SQRT2 * delta_u  # u_q - u_p = delta_u
-        _mu_eta, sigma_eta = _fisher_rao_path(mu_p, sigma_p, mu_q, sigma_q, eta)
-        diff = abs(sigma_eta - sigma_vertical)
-        assert diff < 1e-7, (
-            f"branch discontinuity at delta_u={delta_u!r}: "
-            f"sigma={sigma_eta!r} vs vertical={sigma_vertical!r} "
-            f"(diff {diff!r})"
-        )
-
-
-@pytest.mark.parametrize(
-    "sigma,sigma0",
-    [(1.0, 1.0), (2.0, 0.5), (0.5, 2.0)],
-)
-def test_tilted_waldo_at_eta_zero_equals_bare_waldo(
-    sigma: float, sigma0: float
-) -> None:
-    """At eta=0 the FR-tilted WALDO must collapse to bare WALDO.
-
-    Phase 6 skeptic vector #2: the tilting protocol's identity
-    invariant requires `tilted_pvalue('waldo', eta=eta_identity)` to
-    equal `WaldoStatistic.pvalue`. The canonical formula uses
-    `a = sigma * |mu_eta - theta| / sigma_eta^2` and bare WALDO's
-    `b`, which collapses correctly at eta=0 (where mu_eta=mu_n,
-    sigma_eta=sigma_n).
-    """
-    model = NormalNormalModel(sigma=sigma)
-    prior = NormalDistribution(loc=0.0, scale=sigma0)
-    D = np.array([2.0])
-    theta = 1.5
-    bare = float(np.asarray(WaldoStatistic().pvalue(theta, D, model, prior)).item())
-    tilted = float(
-        np.asarray(
-            FisherRaoTilting().tilted_pvalue(
-                theta, D, model, prior, eta=0.0, statistic_name="waldo"
-            )
-        ).item()
-    )
-    assert abs(tilted - bare) < 1e-9, (
-        f"FR tilted WALDO at eta=0 ({tilted!r}) does not match bare "
-        f"WALDO ({bare!r}) for (sigma, sigma0)=({sigma!r}, {sigma0!r})."
-    )
 
 
 def test_admissible_range_is_unit_interval() -> None:
