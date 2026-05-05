@@ -30,8 +30,10 @@ import numpy as np
 from frasian.cd.from_pvalue import build_cd_from_pvalue
 from frasian.models.distributions import NormalDistribution
 from frasian.models.normal_normal import NormalNormalModel
+from frasian.statistics.base import TestStatistic
 from frasian.statistics.wald import WaldStatistic
 from frasian.statistics.waldo import WaldoStatistic
+from frasian.tilting.base import TiltingScheme
 from frasian.tilting.eta_selectors import DynamicNumericalEtaSelector
 from frasian.tilting.identity import IdentityTilting
 from frasian.tilting.power_law import PowerLawTilting
@@ -46,30 +48,41 @@ def main(smoke: bool = False, out: Path | None = None) -> Path:
     # Three cells mirroring `default_tiltings()`.
     n_grid_dyn = 201 if smoke else 401
     coarse_n = 11 if smoke else 25
-    cells = [
+    cells: list[tuple[str, TiltingScheme, TestStatistic, str]] = [
         ("Wald", IdentityTilting(), WaldStatistic(), "#DC3545"),
         ("WALDO", IdentityTilting(), WaldoStatistic(), "#2E86AB"),
-        ("Dyn-WALDO",
-            PowerLawTilting(selector=DynamicNumericalEtaSelector(
-                sigma=sigma, mu0=0.0, n_grid=n_grid_dyn, coarse_n=coarse_n,
-            )),
+        (
+            "Dyn-WALDO",
+            PowerLawTilting(
+                selector=DynamicNumericalEtaSelector(
+                    sigma=sigma,
+                    mu0=0.0,
+                    n_grid=n_grid_dyn,
+                    coarse_n=coarse_n,
+                )
+            ),
             WaldoStatistic(),
-            "#7B2CBF"),
+            "#7B2CBF",
+        ),
     ]
 
     n_cd = 401 if smoke else 1001
     canonical_Ds = [0.0, 1.0, 2.0, 3.0]
 
-    fig, axes = plt.subplots(len(canonical_Ds), 2,
-                              figsize=(11, 2.6 * len(canonical_Ds)),
-                              squeeze=False)
+    fig, axes = plt.subplots(
+        len(canonical_Ds), 2, figsize=(11, 2.6 * len(canonical_Ds)), squeeze=False
+    )
 
     for r, D in enumerate(canonical_Ds):
         ax_cdf = axes[r][0]
         ax_cc = axes[r][1]
         for label, tilting, statistic, color in cells:
             cd = build_cd_from_pvalue(
-                tilting, statistic, D, model, prior,
+                tilting,
+                statistic,
+                D,
+                model,
+                prior,
                 n_grid=n_cd,
             )
             theta = cd.theta_grid
@@ -81,8 +94,7 @@ def main(smoke: bool = False, out: Path | None = None) -> Path:
         ax_cdf.axvline(D, color="0.4", lw=1, ls=":", alpha=0.7)
         ax_cdf.axhline(0.5, color="0.6", lw=0.7, ls="--", alpha=0.5)
         ax_cc.axvline(D, color="0.4", lw=1, ls=":", alpha=0.7)
-        ax_cc.axhline(alpha, color="0.4", lw=1, ls="--",
-                       label=fr"$\alpha={alpha}$")
+        ax_cc.axhline(alpha, color="0.4", lw=1, ls="--", label=rf"$\alpha={alpha}$")
         # Cosmetics.
         ax_cdf.set_xlim(D - 6, D + 6)
         ax_cdf.set_ylim(-0.02, 1.02)
@@ -103,7 +115,7 @@ def main(smoke: bool = False, out: Path | None = None) -> Path:
         "Wald vs WALDO vs Dyn-WALDO at canonical D values",
         fontsize=11,
     )
-    fig.tight_layout(rect=[0, 0, 1, 0.97])
+    fig.tight_layout(rect=(0, 0, 1, 0.97))
 
     out = out or Path("output/illustrations/confidence_distribution_demo.png")
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -114,8 +126,7 @@ def main(smoke: bool = False, out: Path | None = None) -> Path:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--smoke", action="store_true",
-                        help="fast mode used by CI")
+    parser.add_argument("--smoke", action="store_true", help="fast mode used by CI")
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args()
     path = main(smoke=args.smoke, out=args.out)

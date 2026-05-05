@@ -24,13 +24,16 @@ from scipy import stats
 from frasian.cd.grid import GridConfidenceDistribution
 
 
-def _gaussian_cd(name: str, mu: float, sigma: float, n: int = 1001,
-                 with_signed: bool = True) -> GridConfidenceDistribution:
+def _gaussian_cd(
+    name: str, mu: float, sigma: float, n: int = 1001, with_signed: bool = True
+) -> GridConfidenceDistribution:
     theta = np.linspace(mu - 12.0 * sigma, mu + 12.0 * sigma, n)
     pdf = stats.norm.pdf(theta, loc=mu, scale=sigma)
     signed = stats.norm.cdf(theta, loc=mu, scale=sigma) if with_signed else None
     return GridConfidenceDistribution(
-        name=name, theta_grid=theta, pdf_values=pdf,
+        name=name,
+        theta_grid=theta,
+        pdf_values=pdf,
         signed_confidence=signed,
     )
 
@@ -38,10 +41,13 @@ def _gaussian_cd(name: str, mu: float, sigma: float, n: int = 1001,
 def _bimodal_cd(n: int = 2001) -> GridConfidenceDistribution:
     """50:50 mixture of N(-2, 1) and N(+2, 1)."""
     theta = np.linspace(-12.0, 12.0, n)
-    pdf = 0.5 * (stats.norm.pdf(theta, loc=-2.0, scale=1.0)
-                  + stats.norm.pdf(theta, loc=+2.0, scale=1.0))
+    pdf = 0.5 * (
+        stats.norm.pdf(theta, loc=-2.0, scale=1.0) + stats.norm.pdf(theta, loc=+2.0, scale=1.0)
+    )
     return GridConfidenceDistribution(
-        name="bimodal", theta_grid=theta, pdf_values=pdf,
+        name="bimodal",
+        theta_grid=theta,
+        pdf_values=pdf,
     )
 
 
@@ -76,7 +82,9 @@ class TestGaussianCDClosedForm:
         cd = _gaussian_cd("gauss", mu, sigma, n=4001)
         thetas = np.linspace(-3, 3, 13)
         np.testing.assert_allclose(
-            cd.pdf(thetas), stats.norm.pdf(thetas, mu, sigma), atol=1e-3,
+            cd.pdf(thetas),
+            stats.norm.pdf(thetas, mu, sigma),
+            atol=1e-3,
         )
 
     def test_cdf_is_monotone(self):
@@ -99,7 +107,9 @@ class TestSkewNormalCD:
         theta = np.linspace(-6.0, 8.0, 2001)
         pdf = stats.skewnorm.pdf(theta, a, loc=0.0, scale=1.0)
         cd = GridConfidenceDistribution(
-            name="skew", theta_grid=theta, pdf_values=pdf,
+            name="skew",
+            theta_grid=theta,
+            pdf_values=pdf,
         )
 
         # All three should be finite and pairwise distinct.
@@ -149,9 +159,9 @@ class TestBimodalCD:
     def test_secondary_modes_detects_other_peak(self):
         cd = _bimodal_cd()
         secondary = cd.secondary_modes(prominence_frac=0.1)
-        assert len(secondary) >= 1, (
-            f"expected at least one secondary mode for bimodal pdf; got {secondary}"
-        )
+        assert (
+            len(secondary) >= 1
+        ), f"expected at least one secondary mode for bimodal pdf; got {secondary}"
         # Combined with primary mode, both peaks (~ ±2) accounted for.
         all_peaks = sorted([cd.mode()] + secondary)
         assert min(all_peaks) < -1.5
@@ -191,7 +201,9 @@ class TestNonMonotoneSignedConfidence:
         # Perturb a small interior region downward so signed becomes non-monotone.
         signed[400:600] -= 0.05
         return GridConfidenceDistribution(
-            name="nonmono", theta_grid=theta, pdf_values=pdf,
+            name="nonmono",
+            theta_grid=theta,
+            pdf_values=pdf,
             signed_confidence=signed,
         )
 
@@ -235,7 +247,9 @@ class TestValidateBoundaryCases:
         pdf = stats.norm.pdf(theta, 0.0, 1.0)
         pdf[5] = -0.01  # perturb negative
         cd = GridConfidenceDistribution(
-            name="bad", theta_grid=theta, pdf_values=pdf,
+            name="bad",
+            theta_grid=theta,
+            pdf_values=pdf,
         )
         issues = cd.validate()
         codes = [i.code for i in issues]

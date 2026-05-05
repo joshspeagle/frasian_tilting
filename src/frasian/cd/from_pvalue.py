@@ -55,17 +55,17 @@ from ..tilting.base import TiltingScheme
 from .grid import GridConfidenceDistribution
 
 
-def _default_theta_grid(D: float, sigma: float, *, n: int = 1001,
-                         half_width_sigma: float = 8.0
-                         ) -> NDArray[np.float64]:
+def _default_theta_grid(
+    D: float, sigma: float, *, n: int = 1001, half_width_sigma: float = 8.0
+) -> NDArray[np.float64]:
     """θ-grid centred on D, half-width `half_width_sigma · sigma`."""
     half = half_width_sigma * sigma
     return np.linspace(D - half, D + half, n)
 
 
-def _signed_confidence_curve(theta_grid: NDArray[np.float64],
-                              pvalues: NDArray[np.float64]
-                              ) -> NDArray[np.float64]:
+def _signed_confidence_curve(
+    theta_grid: NDArray[np.float64], pvalues: NDArray[np.float64]
+) -> NDArray[np.float64]:
     """Inversion-based confidence curve C(θ) from a two-sided p-value.
 
     For a two-sided p-value `p(θ) = 2·min(C(θ), 1−C(θ))`, the inversion is
@@ -127,14 +127,16 @@ def build_cd_from_pvalue(
     if theta_grid is None:
         sigma = float(getattr(model, "sigma", sigma_for_grid or 1.0))
         theta_grid = _default_theta_grid(
-            float(D), sigma, n=n_grid, half_width_sigma=half_width_sigma,
+            float(D),
+            sigma,
+            n=n_grid,
+            half_width_sigma=half_width_sigma,
         )
     theta_grid = np.asarray(theta_grid, dtype=np.float64)
 
     # 1. Evaluate p(θ) on the grid via the tilting's selector-aware method.
     pvals = np.asarray(
-        tilting.pvalue(theta_grid, np.asarray([float(D)]), model, prior,
-                        statistic),
+        tilting.pvalue(theta_grid, np.asarray([float(D)]), model, prior, statistic),
         dtype=np.float64,
     )
     pvals = np.clip(pvals, 0.0, 1.0)  # numerical guard
@@ -167,9 +169,13 @@ def build_cd_from_pvalue(
     # 4. Inversion-based C(θ) — preserved verbatim as auxiliary diagnostic.
     signed = _signed_confidence_curve(theta_grid, pvals)
 
-    cell_name = name if name is not None else (
-        f"({getattr(tilting, 'cell_name', tilting.name)}, "
-        f"{statistic.name})@D={float(D):+.3f}"
+    cell_name = (
+        name
+        if name is not None
+        else (
+            f"({getattr(tilting, 'cell_name', tilting.name)}, "
+            f"{statistic.name})@D={float(D):+.3f}"
+        )
     )
 
     return GridConfidenceDistribution(

@@ -15,12 +15,7 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-from frasian.simulation.cache import (
-    CacheKey,
-    cache_path,
-    clear_cache,
-    get_or_compute,
-)
+from frasian.simulation.cache import CacheKey, cache_path, clear_cache, get_or_compute
 
 
 def _key(**overrides) -> CacheKey:
@@ -79,8 +74,7 @@ class TestGetOrCompute:
         result = get_or_compute(_key(), compute, cache_root=tmp_path)
         assert calls["n"] == 1
         np.testing.assert_array_equal(result.arrays["x"], np.full(3, 1.0))
-        assert (tmp_path / "demo" / _key().digest()
-                / "arrays.npz").exists()
+        assert (tmp_path / "demo" / _key().digest() / "arrays.npz").exists()
 
     def test_second_call_reuses_cache(self, tmp_path: Path):
         compute1, calls1 = _compute_factory(2.0)
@@ -95,8 +89,7 @@ class TestGetOrCompute:
         compute1, calls1 = _compute_factory(2.0)
         compute2, calls2 = _compute_factory(3.0)
         get_or_compute(_key(), compute1, cache_root=tmp_path)
-        get_or_compute(_key(config_fingerprint="cfg1"), compute2,
-                       cache_root=tmp_path)
+        get_or_compute(_key(config_fingerprint="cfg1"), compute2, cache_root=tmp_path)
         assert calls1["n"] == 1
         assert calls2["n"] == 1
 

@@ -51,9 +51,7 @@ def _masked_mean(per_sample: torch.Tensor) -> torch.Tensor:
     if n_valid < per_sample.numel():
         # Replace NaN/Inf with 0 so gradients are well-defined; mask
         # via division by n_valid below.
-        per_sample = torch.where(
-            valid, per_sample, torch.zeros_like(per_sample)
-        )
+        per_sample = torch.where(valid, per_sample, torch.zeros_like(per_sample))
     return per_sample.sum() / n_valid
 
 
@@ -72,9 +70,7 @@ def integrated_pvalue_loss(
     `(B, N)` (per-sample grids; the training loop uses this).
     """
     if p_theta.dim() != 2:
-        raise ValueError(
-            f"p_theta must be (B, N); got shape {tuple(p_theta.shape)}"
-        )
+        raise ValueError(f"p_theta must be (B, N); got shape {tuple(p_theta.shape)}")
     width_per_sample = torch.trapezoid(p_theta, theta_grid, dim=-1)  # (B,)
     return _masked_mean(width_per_sample)
 
@@ -93,15 +89,11 @@ def cd_variance_loss(
 
     `theta_grid` may be 1D `(N,)` or 2D `(B, N)`.
     """
-    pdf = cd_density_torch(p_theta, theta_grid)              # (B, N)
-    if theta_grid.dim() == 1:
-        theta_b = theta_grid.unsqueeze(0).expand_as(pdf)
-    else:
-        theta_b = theta_grid
+    pdf = cd_density_torch(p_theta, theta_grid)  # (B, N)
+    theta_b = theta_grid.unsqueeze(0).expand_as(pdf) if theta_grid.dim() == 1 else theta_grid
     mean_per_sample = torch.trapezoid(pdf * theta_b, theta_grid, dim=-1)  # (B,)
     centred = theta_b - mean_per_sample.unsqueeze(-1)
-    var_per_sample = torch.trapezoid(pdf * centred * centred,
-                                       theta_grid, dim=-1)
+    var_per_sample = torch.trapezoid(pdf * centred * centred, theta_grid, dim=-1)
     return _masked_mean(var_per_sample)
 
 
@@ -183,6 +175,6 @@ def static_width_loss(
     """
     if not (0.0 < alpha < 1.0):
         raise ValueError(f"alpha must be in (0, 1); got {alpha}")
-    indicator = torch.sigmoid(sharpness * (p_theta - alpha))   # (B, N)
+    indicator = torch.sigmoid(sharpness * (p_theta - alpha))  # (B, N)
     width_per_sample = torch.trapezoid(indicator, theta_grid, dim=-1)
     return _masked_mean(width_per_sample)

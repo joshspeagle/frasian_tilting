@@ -47,9 +47,7 @@ class QuantileMixturePath:
 
     def __post_init__(self) -> None:
         if not (0.0 <= float(self.t) <= 1.0):
-            raise ValueError(
-                f"t must lie in [0, 1], got {self.t!r}."
-            )
+            raise ValueError(f"t must lie in [0, 1], got {self.t!r}.")
 
     # ----- Closed-form pieces -----
 
@@ -82,14 +80,46 @@ class QuantileMixturePath:
         x_arr = np.atleast_1d(np.asarray(x, dtype=np.float64))
         out = np.empty_like(x_arr)
         for i, xi in enumerate(x_arr):
-            f = lambda u, xi=xi: float(self.quantile(np.asarray(u))) - float(xi)
+
+            def f(u: float, xi: float = xi) -> float:
+                return float(self.quantile(np.asarray(u))) - float(xi)
+
             try:
                 u_star = optimize.brentq(f, eps, 1.0 - eps, xtol=1e-10)
             except ValueError:
-                # x outside the support of the path — clamp.
-                u_star = eps if f(eps) > 0.0 else 1.0 - eps
+                # x outside the support of the path — return exact 0.0 / 1.0.
+                # f(eps) > 0 means quantile(eps) > xi, i.e. xi is below support.
+                # Defensive: if quantile(eps) is non-finite (pathological
+                # endpoint distribution), the `f_eps > 0` test would silently
+                # fall through to 1.0 (the wrong tail). Refuse explicitly so
+                # the failure surfaces.
+                f_eps = f(eps)
+                if not np.isfinite(f_eps):
+                    raise ValueError(
+                        f"QuantileMixturePath.cdf cannot decide tail for "
+                        f"x={xi!r}: f(eps={eps!r})={f_eps!r} is non-finite. "
+                        f"Endpoint quantile() likely returned NaN/Inf at "
+                        f"the support boundary."
+                    ) from None
+                out[i] = 0.0 if f_eps > 0.0 else 1.0
+                continue
             out[i] = u_star
         return out if x_arr.size > 1 else np.asarray(float(out[0]))
+
+    def _outside_support_mask(self, x_arr: NDArray[np.float64]) -> NDArray[np.bool_]:
+        """True at indices where `x_arr[i]` lies outside the path's support.
+
+        Symmetric with `cdf`'s boundary detector: an x lies outside the
+        path's support iff `quantile(eps) > x` (below the lower endpoint)
+        or `quantile(1-eps) < x` (above the upper endpoint). Computing
+        this directly — instead of inferring from `cdf` returning exact
+        0.0 / 1.0 — keeps `pdf` robust against future refactors that
+        might change `cdf`'s exact-boundary return value.
+        """
+        eps = 1e-12
+        q_lo = float(np.asarray(self.quantile(np.asarray(eps)), dtype=np.float64))
+        q_hi = float(np.asarray(self.quantile(np.asarray(1.0 - eps)), dtype=np.float64))
+        return (x_arr < q_lo) | (x_arr > q_hi)
 
     def pdf(self, x: ArrayLike) -> NDArray[np.float64]:
         """f_t(x) = 1 / (d/du F_t^{-1}(u))|_{u = F_t(x)}.
@@ -100,14 +130,24 @@ class QuantileMixturePath:
         x_arr = np.atleast_1d(np.asarray(x, dtype=np.float64))
         u = self.cdf(x_arr)
         u_arr = np.atleast_1d(u)
+        # Compute the outside-support mask symmetrically with `cdf`'s own
+        # boundary detector (compare x to the path's endpoint quantiles)
+        # rather than inferring it from `u_arr <= 0.0 | u_arr >= 1.0`.
+        # The asymmetric inference happened to work today but is fragile:
+        # any future change to cdf's exact-boundary return value would
+        # silently re-introduce the chain-rule's ~3.6e-9 garbage at the
+        # support boundary that 1.5-O3 set out to fix.
+        outside = self._outside_support_mask(x_arr)
         xp = np.asarray(self.p.quantile(u_arr), dtype=np.float64)
         xq = np.asarray(self.q.quantile(u_arr), dtype=np.float64)
         fp = np.asarray(self.p.pdf(xp), dtype=np.float64)
         fq = np.asarray(self.q.pdf(xq), dtype=np.float64)
         # Guard against division by zero at endpoints — return 0 density there.
-        denom = np.where(fp > 0, (1.0 - self.t) / np.where(fp > 0, fp, 1.0), 0.0) \
-              + np.where(fq > 0, self.t / np.where(fq > 0, fq, 1.0), 0.0)
+        denom = np.where(fp > 0, (1.0 - self.t) / np.where(fp > 0, fp, 1.0), 0.0) + np.where(
+            fq > 0, self.t / np.where(fq > 0, fq, 1.0), 0.0
+        )
         out = np.where(denom > 0, 1.0 / np.where(denom > 0, denom, 1.0), 0.0)
+        out = np.where(outside, 0.0, out)
         return out if x_arr.size > 1 else np.asarray(float(out[0]))
 
     def logpdf(self, x: ArrayLike) -> NDArray[np.float64]:

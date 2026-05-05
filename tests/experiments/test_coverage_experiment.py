@@ -44,15 +44,16 @@ def _dynamic_friendly_config() -> Config:
 
 @pytest.mark.L4
 class TestCoverageExperimentEndToEnd:
-    def test_runs_and_produces_manifest(self, tmp_path: Path,
-                                          bootstrapped_registry):
+    def test_runs_and_produces_manifest(self, tmp_path: Path, bootstrapped_registry):
         experiment = registry.experiments["coverage"]()
         tiltings, statistics = default_cells(n_grid=81, coarse_n=9)
         cfg = _dynamic_friendly_config()
-        summary = run_experiment(
+        run_experiment(
             experiment=experiment,
-            tiltings=tiltings, statistics=statistics,
-            config=cfg, out_dir=tmp_path,
+            tiltings=tiltings,
+            statistics=statistics,
+            config=cfg,
+            out_dir=tmp_path,
         )
         manifest = json.loads((tmp_path / "manifest.json").read_text())
         assert manifest["experiment"] == "coverage"
@@ -60,14 +61,12 @@ class TestCoverageExperimentEndToEnd:
         # 6 cells in the cross-product (3 tiltings × 2 statistics); the two
         # (wald × non-identity) cells gate out as incompatible. Four run.
         ok = [c for c in manifest["cells"] if c["status"] == "ok"]
-        skipped = [c for c in manifest["cells"]
-                   if c["status"] == "incompatible"]
+        skipped = [c for c in manifest["cells"] if c["status"] == "incompatible"]
         assert len(ok) == 4
         assert len(skipped) == 2
         for sk in skipped:
             assert sk["statistic"] == "wald"
-            assert (sk["tilting"].startswith("power_law")
-                    or sk["tilting"].startswith("ot"))
+            assert sk["tilting"].startswith("power_law") or sk["tilting"].startswith("ot")
         assert "coverage_rate" in manifest["diagnostics"]
         # Cache paths are relative to the manifest directory.
         for cell in ok:
@@ -80,8 +79,7 @@ class TestCoverageExperimentEndToEnd:
         csv_path = tmp_path / "coverage_rate.csv"
         assert csv_path.exists()
 
-    def test_wald_cell_has_full_grid_coverage(self, tmp_path: Path,
-                                                bootstrapped_registry):
+    def test_wald_cell_has_full_grid_coverage(self, tmp_path: Path, bootstrapped_registry):
         experiment = registry.experiments["coverage"]()
         run_experiment(
             experiment=experiment,
@@ -92,23 +90,24 @@ class TestCoverageExperimentEndToEnd:
         )
         # Load the Wald cell's arrays directly.
         manifest = json.loads((tmp_path / "manifest.json").read_text())
-        wald_cell = next(c for c in manifest["cells"]
-                          if c["statistic"] == "wald" and c["status"] == "ok")
+        wald_cell = next(
+            c for c in manifest["cells"] if c["statistic"] == "wald" and c["status"] == "ok"
+        )
         from frasian.simulation.storage import load_result
+
         result = load_result(tmp_path / wald_cell["cache_path"])
         cov = result.arrays["coverage"]
         assert cov.shape == (5, 4)
         # Wald is independent of w: each row should have nearly constant
         # coverage across columns (tolerance proportional to MC noise).
         for i in range(cov.shape[0]):
-            assert (cov[i].max() - cov[i].min()) <= 0.25, (
-                f"wald coverage varies with w at row {i}: {cov[i]}"
-            )
+            assert (
+                cov[i].max() - cov[i].min()
+            ) <= 0.25, f"wald coverage varies with w at row {i}: {cov[i]}"
         # Empirical coverage near 95% (n_reps=80, expect ~5% noise).
         np.testing.assert_allclose(cov.mean(), 0.95, atol=0.1)
 
-    def test_byte_reproducible_at_same_inputs(self, tmp_path: Path,
-                                                 bootstrapped_registry):
+    def test_byte_reproducible_at_same_inputs(self, tmp_path: Path, bootstrapped_registry):
         """Two runs with the same Config + same git-sha produce identical
         cells and manifests *modulo* the figures (matplotlib timestamps)."""
         a = tmp_path / "a"
@@ -116,19 +115,20 @@ class TestCoverageExperimentEndToEnd:
         cfg = _dynamic_friendly_config()
         experiment = registry.experiments["coverage"]()
         tiltings, statistics = default_cells(n_grid=81, coarse_n=9)
-        run_experiment(experiment=experiment,
-                        tiltings=tiltings, statistics=statistics,
-                        config=cfg, out_dir=a)
+        run_experiment(
+            experiment=experiment, tiltings=tiltings, statistics=statistics, config=cfg, out_dir=a
+        )
         # Reconstruct fresh instances (frozen dataclasses are hashable but
         # we want a clean state for the second run).
         tiltings2, statistics2 = default_cells(n_grid=81, coarse_n=9)
-        run_experiment(experiment=experiment,
-                        tiltings=tiltings2, statistics=statistics2,
-                        config=cfg, out_dir=b)
+        run_experiment(
+            experiment=experiment, tiltings=tiltings2, statistics=statistics2, config=cfg, out_dir=b
+        )
         m_a = json.loads((a / "manifest.json").read_text())
         m_b = json.loads((b / "manifest.json").read_text())
         # Strip the figures field (matplotlib PNGs are non-deterministic byte-
         # for-byte due to embedded timestamps). Cells use relative paths so
         # they should match.
-        m_a.pop("figures"); m_b.pop("figures")
+        m_a.pop("figures")
+        m_b.pop("figures")
         assert m_a == m_b

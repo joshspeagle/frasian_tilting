@@ -7,8 +7,9 @@ module defines the type and a smoke processor used by the cache tests.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
@@ -23,8 +24,9 @@ class ProcessedResult:
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
-def smoke_process(name: str, raw_D: NDArray[np.float64],
-                  theta_grid: NDArray[np.float64]) -> ProcessedResult:
+def smoke_process(
+    name: str, raw_D: NDArray[np.float64], theta_grid: NDArray[np.float64]
+) -> ProcessedResult:
     """Trivial processor used by tests of the cache pipeline.
 
     Computes per-theta sample mean and variance — enough to verify that the

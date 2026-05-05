@@ -40,17 +40,17 @@ def main(smoke: bool = False, out: Path | None = None) -> Path:
     eta_low_bound = -w / (1.0 - w)
 
     fig, ax = plt.subplots(figsize=(6.4, 3.7))
-    ax.plot(delta, eta_star, color="#2E86AB", lw=2,
-            label=r"$\eta^\ast(|\Delta|)$, power-law")
+    ax.plot(delta, eta_star, color="#2E86AB", lw=2, label=r"$\eta^\ast(|\Delta|)$, power-law")
     ax.axhline(0.0, ls=":", color="0.6", lw=1, label=r"WALDO ($\eta=0$)")
     ax.axhline(1.0, ls=":", color="#DC3545", lw=1, label=r"Wald ($\eta=1$)")
-    ax.axhline(eta_low_bound, ls="--", color="0.4", lw=1,
-               label=fr"clamp: $-w/(1-w)={eta_low_bound:.2f}$")
+    ax.axhline(
+        eta_low_bound, ls="--", color="0.4", lw=1, label=rf"clamp: $-w/(1-w)={eta_low_bound:.2f}$"
+    )
     ax.set_xlabel(r"$|\Delta|$")
     ax.set_ylabel(r"$\eta^\ast$")
     ax.set_title(
-        fr"Power-law optimal $\eta^\ast(|\Delta|)$ at $w={w}$, "
-        fr"$\alpha={alpha}$ (kink near $|\Delta|\approx 0.3$)"
+        rf"Power-law optimal $\eta^\ast(|\Delta|)$ at $w={w}$, "
+        rf"$\alpha={alpha}$ (kink near $|\Delta|\approx 0.3$)"
     )
     ax.legend(loc="lower right", frameon=False, fontsize=8)
     fig.tight_layout()

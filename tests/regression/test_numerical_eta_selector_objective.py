@@ -21,10 +21,10 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from frasian.statistics.waldo import WaldoStatistic
 from frasian.tilting.base import TiltingContext
 from frasian.tilting.eta_selectors import NumericalEtaSelector
 from frasian.tilting.power_law import PowerLawTilting
-from frasian.statistics.waldo import WaldoStatistic
 
 
 @pytest.mark.L2
@@ -61,8 +61,11 @@ class TestNumericalEtaSelectorObjective:
         scheme = PowerLawTilting()
         ad_grid = np.linspace(0.0, 4.0, 9)
         eta = sel.select_grid(
-            ad_grid, scheme, statistic=WaldoStatistic(),
-            w=0.5, alpha=0.05,
+            ad_grid,
+            scheme,
+            statistic=WaldoStatistic(),
+            w=0.5,
+            alpha=0.05,
         )
         assert eta.shape == (9,)
         assert np.all(np.isfinite(eta))

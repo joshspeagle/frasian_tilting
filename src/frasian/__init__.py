@@ -7,7 +7,7 @@ Public surface:
     - `run_experiment`         — cross-product runner
     - `list_methods`           — enumerate registered methods
     - Errors: `FrasianError`, `EmptyRegistryError`, `TiltingDomainError`,
-      `RegistryConflictError`, `MissingArtifactError`
+      `RegistryConflictError`, `MissingArtifactError`, `BracketingFailed`
 
 Importing this module is side-effect-free; concrete implementations are
 loaded lazily via `_registry_bootstrap` on first call to `run_experiment`
@@ -16,7 +16,15 @@ or `list_methods`.
 
 from __future__ import annotations
 
+from ._default_cells import (
+    default_cells,
+    default_smoothness_tiltings,
+    default_statistics,
+    default_tiltings,
+    post_selection_demo_tiltings,
+)
 from ._errors import (
+    BracketingFailed,
     EmptyRegistryError,
     FrasianError,
     MissingArtifactError,
@@ -32,13 +40,6 @@ from ._registry import (
     register_statistic,
     register_tilting,
     registry,
-)
-from ._default_cells import (
-    default_cells,
-    default_smoothness_tiltings,
-    default_statistics,
-    default_tiltings,
-    post_selection_demo_tiltings,
 )
 from ._runner import RunSummary, list_methods, run_experiment
 from .cd import (
@@ -87,6 +88,7 @@ __all__ = [
     "TiltingDomainError",
     "RegistryConflictError",
     "MissingArtifactError",
+    "BracketingFailed",
 ]
 
 __version__ = "0.2.0.dev0"

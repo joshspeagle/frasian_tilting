@@ -38,15 +38,14 @@ class TestPowerLawClosedForm:
     @pytest.mark.parametrize("sigma0", [0.5, 1.0, 2.0])
     def test_matches_theorem_6(self, D, eta, sigma0):
         sigma, mu0 = 1.0, 0.0
-        _, prior, likelihood, posterior = _setup(D=D, mu0=mu0,
-                                                  sigma=sigma, sigma0=sigma0)
+        _, prior, likelihood, posterior = _setup(D=D, mu0=mu0, sigma=sigma, sigma0=sigma0)
         scheme = PowerLawTilting()
         tilted = scheme.tilt(posterior, prior, likelihood, eta)
 
-        w = sigma0 ** 2 / (sigma ** 2 + sigma0 ** 2)
+        w = sigma0**2 / (sigma**2 + sigma0**2)
         denom = 1 - eta * (1 - w)
         mu_eta_expected = (w * D + (1 - eta) * (1 - w) * mu0) / denom
-        sigma_eta_expected = np.sqrt(w * sigma ** 2 / denom)
+        sigma_eta_expected = np.sqrt(w * sigma**2 / denom)
         np.testing.assert_allclose(tilted.loc, mu_eta_expected, atol=1e-12)
         np.testing.assert_allclose(tilted.scale, sigma_eta_expected, atol=1e-12)
 
@@ -99,13 +98,9 @@ class TestPowerLawDomain:
     def test_admissible_range_validates_w(self):
         scheme = PowerLawTilting()
         with pytest.raises(ValueError):
-            scheme.admissible_range(
-                TiltingContext(w=0.0, abs_delta=1.0, alpha=0.05)
-            )
+            scheme.admissible_range(TiltingContext(w=0.0, abs_delta=1.0, alpha=0.05))
         with pytest.raises(ValueError):
-            scheme.admissible_range(
-                TiltingContext(w=1.0, abs_delta=1.0, alpha=0.05)
-            )
+            scheme.admissible_range(TiltingContext(w=1.0, abs_delta=1.0, alpha=0.05))
 
 
 @pytest.mark.L0

@@ -17,7 +17,7 @@ from frasian.tilting.power_law import PowerLawTilting
 
 
 def _legacy_tilted_pvalue_waldo(theta, D, mu0, sigma, sigma0, eta):
-    w = sigma0 ** 2 / (sigma ** 2 + sigma0 ** 2)
+    w = sigma0**2 / (sigma**2 + sigma0**2)
     denom = 1 - eta * (1 - w)
     mu_eta = (w * D + (1 - eta) * (1 - w) * mu0) / denom
     norm_factor = w * sigma / denom
@@ -53,8 +53,7 @@ class TestTiltedPvalueIdentity:
         stat = WaldoStatistic()
         for D in (-1.5, 0.0, 2.0):
             for theta in (-2.0, 0.5, 1.5):
-                tilted = scheme.tilted_pvalue(theta, D, model, prior, 0.0,
-                                                "waldo")
+                tilted = scheme.tilted_pvalue(theta, D, model, prior, 0.0, "waldo")
                 untilted = stat.pvalue(theta, np.asarray([D]), model, prior)
                 np.testing.assert_allclose(tilted, untilted, atol=1e-12)
 
@@ -81,7 +80,12 @@ class TestTiltedConfidenceInterval:
         D = 1.5
         alpha = 0.05
         lo, hi = scheme.tilted_confidence_interval(
-            alpha, D, model, prior, eta, "waldo",
+            alpha,
+            D,
+            model,
+            prior,
+            eta,
+            "waldo",
         )
         p_lo = scheme.tilted_pvalue(lo, D, model, prior, eta, "waldo")
         p_hi = scheme.tilted_pvalue(hi, D, model, prior, eta, "waldo")
@@ -97,10 +101,8 @@ class TestTiltedConfidenceInterval:
         scheme = PowerLawTilting()
         stat = WaldoStatistic()
         D, alpha = 1.5, 0.05
-        tilted = scheme.tilted_confidence_interval(alpha, D, model, prior,
-                                                     0.0, "waldo")
-        untilted = stat.confidence_interval(alpha, np.asarray([D]), model,
-                                              prior)
+        tilted = scheme.tilted_confidence_interval(alpha, D, model, prior, 0.0, "waldo")
+        untilted = stat.confidence_interval(alpha, np.asarray([D]), model, prior)
         np.testing.assert_allclose(tilted[0], untilted[0], atol=1e-7)
         np.testing.assert_allclose(tilted[1], untilted[1], atol=1e-7)
 
@@ -112,8 +114,7 @@ class TestTiltedConfidenceInterval:
         D, alpha = 1.5, 0.05
         # Use eta near 1; exactly 1 would require denom = w (well-defined).
         eta = 1.0 - 1e-3
-        lo, hi = scheme.tilted_confidence_interval(alpha, D, model, prior,
-                                                     eta, "waldo")
+        lo, hi = scheme.tilted_confidence_interval(alpha, D, model, prior, eta, "waldo")
         z = stats.norm.ppf(0.975)
         np.testing.assert_allclose(lo, D - z, atol=0.05)
         np.testing.assert_allclose(hi, D + z, atol=0.05)

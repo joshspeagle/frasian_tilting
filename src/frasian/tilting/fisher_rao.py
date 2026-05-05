@@ -27,8 +27,9 @@ likelihood-induced Gaussian N(D, sigma^2).
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable
+from typing import ClassVar
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -38,14 +39,13 @@ from ..models.base import Likelihood, Posterior, Prior
 from .base import ParamSpec, TiltingContext
 
 
-@register_tilting(name="fisher_rao", brief="docs/methods/fisher_rao.md",
-                  status="stub")
+@register_tilting(name="fisher_rao", brief="docs/methods/fisher_rao.md", status="stub")
 @dataclass(frozen=True)
 class FisherRaoTilting:
     """STUB. Fisher-Rao (information-geometric) geodesic on the
     Gaussian half-plane. eta=0 -> posterior, eta=1 -> likelihood-as-Gaussian."""
 
-    name: str = "fisher_rao"
+    name: ClassVar[str] = "fisher_rao"
     param_space: ParamSpec = ParamSpec(
         eta_default=0.0,
         eta_identity=0.0,
@@ -55,17 +55,15 @@ class FisherRaoTilting:
         ),
     )
 
-    def tilt(self, posterior: Posterior, prior: Prior, likelihood: Likelihood,
-             eta: ArrayLike) -> Posterior:
-        raise NotImplementedError(
-            "FisherRaoTilting is a stub; see docs/methods/fisher_rao.md."
-        )
+    def tilt(
+        self, posterior: Posterior, prior: Prior, likelihood: Likelihood, eta: ArrayLike
+    ) -> Posterior:
+        raise NotImplementedError("FisherRaoTilting is a stub; see docs/methods/fisher_rao.md.")
 
-    def path(self, posterior: Posterior, prior: Prior, likelihood: Likelihood,
-             ts: NDArray[np.float64]) -> Iterable[Posterior]:
-        raise NotImplementedError(
-            "FisherRaoTilting is a stub; see docs/methods/fisher_rao.md."
-        )
+    def path(
+        self, posterior: Posterior, prior: Prior, likelihood: Likelihood, ts: NDArray[np.float64]
+    ) -> Iterable[Posterior]:
+        raise NotImplementedError("FisherRaoTilting is a stub; see docs/methods/fisher_rao.md.")
 
     def is_identity(self, eta: float) -> bool:
         return eta == self.param_space.eta_identity

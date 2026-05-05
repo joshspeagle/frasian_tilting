@@ -15,6 +15,26 @@ stays Gaussian — the implementation recognises this Gaussian fast
 path. Endpoints follow the framework convention `eta=0` -> posterior,
 `eta=1` -> likelihood-as-Gaussian, matching `power_law`.
 
+### Endpoint convention across schemes
+
+The framework uses a uniform endpoint contract: every `TiltingScheme`
+anchors `eta=0` at the posterior (the identity / no-tilt endpoint) and
+moves the family toward the likelihood as `eta` increases. Source of
+truth: `tilting/power_law.py` lines ~91-94 (`eta_default=0.0`,
+`eta_identity=0.0`, "eta=0 recovers WALDO; eta=1 recovers Wald").
+
+| Scheme        | `eta=0`              | `eta=1` (or other distinguished) | Notes |
+|---------------|----------------------|----------------------------------|-------|
+| `identity`    | posterior            | (no other endpoint)              | No-op; the matrix's identity element. |
+| `power_law`   | posterior            | `eta=1` → Wald (likelihood-only) | e-geodesic; admissible η ∈ (-w/(1-w), 1/(1-w)) (open). |
+| `ot`          | posterior            | `eta=1` → likelihood-as-Gaussian | W2 geodesic; admissible η ∈ [0, 1] (closed). |
+| `mixture`     | posterior            | `eta=1` → likelihood-as-Gaussian | m-geodesic, dual partner of `power_law`; planned. |
+| `fisher_rao`  | posterior            | `eta=1` → likelihood-as-Gaussian | Levi-Civita / Fisher-Rao geodesic; planned. |
+
+All implemented schemes set `param_space.eta_identity = 0.0`; tests in
+`tests/properties/` enforce `tilt(posterior, prior, lik, eta=0) ==
+posterior` for each.
+
 ## Motivation
 
 `power_law` (the e-geodesic / log-linear path) clamps against

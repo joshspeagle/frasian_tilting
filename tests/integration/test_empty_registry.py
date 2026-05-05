@@ -12,18 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from frasian import (
-    Config,
-    EmptyRegistryError,
-    list_methods,
-    registry,
-    run_experiment,
-)
-from frasian.experiments.base import (
-    Experiment,
-    ExperimentContext,
-    RawResult,
-)
+from frasian import Config, EmptyRegistryError, list_methods, registry, run_experiment
+from frasian.experiments.base import Experiment, ExperimentContext, RawResult
 
 
 @dataclass
@@ -76,10 +66,20 @@ class TestEmptyRegistry:
 
     def test_list_methods_returns_empty_groups(self):
         groups = list_methods()
-        assert set(groups) == {
-            "models", "tiltings", "statistics", "experiments", "diagnostics"
-        }
+        assert set(groups) == {"models", "tiltings", "statistics", "experiments", "diagnostics"}
         assert all(len(v) == 0 for v in groups.values())
+
+    def test_bracketing_failed_is_public(self):
+        """``BracketingFailed`` must be importable from the package surface.
+
+        It is the sole operational error a dynamic-CI cell can raise that
+        isn't a programming bug, so user code wants to ``except`` it by
+        name (skeptic vector #4). Reaching into ``frasian._errors`` is a
+        stability commitment the framework explicitly avoids.
+        """
+        from frasian import BracketingFailed, FrasianError
+
+        assert issubclass(BracketingFailed, FrasianError)
 
     def test_protocols_are_importable_without_concrete_impls(self):
         """Importing the protocol modules must not require any registered class."""
@@ -93,9 +93,12 @@ class TestEmptyRegistry:
 
         # Just confirm they are usable as runtime-checkable Protocols.
         for proto in (
-            ConfidenceDistribution, Diagnostic, ExperimentProto,
-            LearnedArtifact, Model, TestStatistic, TiltingScheme,
+            ConfidenceDistribution,
+            Diagnostic,
+            ExperimentProto,
+            LearnedArtifact,
+            Model,
+            TestStatistic,
+            TiltingScheme,
         ):
-            assert hasattr(proto, "_is_runtime_protocol") or hasattr(
-                proto, "_is_protocol"
-            )
+            assert hasattr(proto, "_is_runtime_protocol") or hasattr(proto, "_is_protocol")

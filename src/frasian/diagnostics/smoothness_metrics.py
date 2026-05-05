@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import ClassVar
 
 import matplotlib
 
@@ -85,7 +86,7 @@ def _spectral_roughness(y: np.ndarray) -> float:
 class SmoothnessDiagnostic:
     """Compute and render smoothness metrics on η*(|Δ|) and CI endpoints."""
 
-    name: str = "smoothness"
+    name: ClassVar[str] = "smoothness"
 
     def compute(self, raw: RawResult) -> DiagnosticTable:
         delta = np.asarray(raw.arrays["abs_delta_grid"], dtype=np.float64)
@@ -94,43 +95,50 @@ class SmoothnessDiagnostic:
         ci_hi = np.asarray(raw.arrays["ci_upper"], dtype=np.float64)
         width = ci_hi - ci_lo
 
-        records = [{
-            "experiment": raw.experiment,
-            "tilting": raw.tilting,
-            "statistic": raw.statistic,
-            "metric": "lipschitz_eta",
-            "value": _local_lipschitz(delta, eta_star),
-        }, {
-            "experiment": raw.experiment,
-            "tilting": raw.tilting,
-            "statistic": raw.statistic,
-            "metric": "total_variation_eta",
-            "value": _total_variation(eta_star),
-        }, {
-            "experiment": raw.experiment,
-            "tilting": raw.tilting,
-            "statistic": raw.statistic,
-            "metric": "discontinuity_count_eta",
-            "value": _discontinuity_count(eta_star),
-        }, {
-            "experiment": raw.experiment,
-            "tilting": raw.tilting,
-            "statistic": raw.statistic,
-            "metric": "spectral_roughness_eta",
-            "value": _spectral_roughness(eta_star),
-        }, {
-            "experiment": raw.experiment,
-            "tilting": raw.tilting,
-            "statistic": raw.statistic,
-            "metric": "lipschitz_width",
-            "value": _local_lipschitz(delta, width),
-        }, {
-            "experiment": raw.experiment,
-            "tilting": raw.tilting,
-            "statistic": raw.statistic,
-            "metric": "total_variation_width",
-            "value": _total_variation(width),
-        }]
+        records = [
+            {
+                "experiment": raw.experiment,
+                "tilting": raw.tilting,
+                "statistic": raw.statistic,
+                "metric": "lipschitz_eta",
+                "value": _local_lipschitz(delta, eta_star),
+            },
+            {
+                "experiment": raw.experiment,
+                "tilting": raw.tilting,
+                "statistic": raw.statistic,
+                "metric": "total_variation_eta",
+                "value": _total_variation(eta_star),
+            },
+            {
+                "experiment": raw.experiment,
+                "tilting": raw.tilting,
+                "statistic": raw.statistic,
+                "metric": "discontinuity_count_eta",
+                "value": _discontinuity_count(eta_star),
+            },
+            {
+                "experiment": raw.experiment,
+                "tilting": raw.tilting,
+                "statistic": raw.statistic,
+                "metric": "spectral_roughness_eta",
+                "value": _spectral_roughness(eta_star),
+            },
+            {
+                "experiment": raw.experiment,
+                "tilting": raw.tilting,
+                "statistic": raw.statistic,
+                "metric": "lipschitz_width",
+                "value": _local_lipschitz(delta, width),
+            },
+            {
+                "experiment": raw.experiment,
+                "tilting": raw.tilting,
+                "statistic": raw.statistic,
+                "metric": "total_variation_width",
+                "value": _total_variation(width),
+            },
+        ]
         df = pd.DataFrame.from_records(records)
         return DiagnosticTable(
             name=self.name,
@@ -159,10 +167,11 @@ class SmoothnessDiagnostic:
             sub = df[df["metric"] == metric]
             labels = [f"{t}/{s}" for t, s in cells]
             values = [
-                float(sub[(sub["tilting"] == t) & (sub["statistic"] == s)]
-                       ["value"].iloc[0]) if not sub[
-                           (sub["tilting"] == t) & (sub["statistic"] == s)
-                       ].empty else float("nan")
+                (
+                    float(sub[(sub["tilting"] == t) & (sub["statistic"] == s)]["value"].iloc[0])
+                    if not sub[(sub["tilting"] == t) & (sub["statistic"] == s)].empty
+                    else float("nan")
+                )
                 for t, s in cells
             ]
             ax.bar(labels, values, color="#2E86AB")
@@ -173,8 +182,8 @@ class SmoothnessDiagnostic:
             r, c = divmod(k, 3)
             axes[r][c].axis("off")
         fig.suptitle(
-            "Smoothness metrics (lower = smoother; spikes = "
-            "discontinuity-prone)", fontsize=11,
+            "Smoothness metrics (lower = smoother; spikes = " "discontinuity-prone)",
+            fontsize=11,
         )
         fig.tight_layout()
         fig_dir.mkdir(parents=True, exist_ok=True)

@@ -60,7 +60,8 @@ class _StubEtaArtifact:
         self._loaded = True
 
     def predict_eta(
-        self, theta: NDArray[np.float64],
+        self,
+        theta: NDArray[np.float64],
     ) -> NDArray[np.float64]:
         if not self._loaded:
             raise MissingArtifactError(f"{self.name} not loaded")
@@ -68,9 +69,7 @@ class _StubEtaArtifact:
         return np.full(theta_arr.shape, self.eta_value)
 
     def fingerprint(self) -> str:
-        h = hashlib.sha256(
-            f"{self.name}:{self.version}:{self.eta_value}".encode()
-        )
+        h = hashlib.sha256(f"{self.name}:{self.version}:{self.eta_value}".encode())
         return h.hexdigest()[:16]
 
     @property
@@ -93,15 +92,19 @@ class TestLearnedDynamicEtaSelectorSmoke:
         """Stub returning η=0 ⇒ select_grid returns 0 everywhere."""
         artifact = _StubEtaArtifact(eta_value=0.0)
         selector = LearnedDynamicEtaSelector(
-            artifact=artifact, sigma=1.0, mu0=0.0,
+            artifact=artifact,
+            sigma=1.0,
+            mu0=0.0,
         )
         scheme = PowerLawTilting()
 
         ad_grid = np.linspace(0.0, 5.0, 11)
         eta = selector.select_grid(
-            ad_grid, scheme,
+            ad_grid,
+            scheme,
             statistic=WaldoStatistic(),
-            w=0.5, alpha=0.05,
+            w=0.5,
+            alpha=0.05,
         )
         assert eta.shape == (11,)
         np.testing.assert_allclose(eta, 0.0, atol=1e-12)
@@ -110,7 +113,9 @@ class TestLearnedDynamicEtaSelectorSmoke:
         """At η=0 (constant), the dynamic CI matches bare WALDO."""
         artifact = _StubEtaArtifact(eta_value=0.0)
         selector = LearnedDynamicEtaSelector(
-            artifact=artifact, sigma=1.0, mu0=0.0,
+            artifact=artifact,
+            sigma=1.0,
+            mu0=0.0,
         )
         scheme = PowerLawTilting(selector=selector)
 
@@ -119,13 +124,20 @@ class TestLearnedDynamicEtaSelectorSmoke:
         prior = NormalDistribution(loc=0.0, scale=1.0)
 
         regions = scheme.confidence_regions(
-            0.05, np.asarray([D]), model, prior, WaldoStatistic(),
+            0.05,
+            np.asarray([D]),
+            model,
+            prior,
+            WaldoStatistic(),
         )
         assert len(regions) >= 1
         for lo, hi in regions:
             assert hi > lo, f"empty region ({lo}, {hi})"
         bare_lo, bare_hi = WaldoStatistic().confidence_interval(
-            0.05, np.asarray([D]), model, prior,
+            0.05,
+            np.asarray([D]),
+            model,
+            prior,
         )
         union_lo = min(r[0] for r in regions)
         union_hi = max(r[1] for r in regions)
@@ -135,29 +147,38 @@ class TestLearnedDynamicEtaSelectorSmoke:
     def test_scheme_mismatch_raises(self):
         """Artifact trained for scheme X must not be used with scheme Y."""
         from frasian.tilting.ot import OTTilting
+
         artifact = _StubEtaArtifact(scheme_name="ot")
         selector = LearnedDynamicEtaSelector(artifact=artifact)
         scheme = PowerLawTilting()
 
         with pytest.raises(MissingArtifactError, match="scheme"):
             selector.select_grid(
-                np.asarray([0.5, 1.0]), scheme,
-                statistic=WaldoStatistic(), w=0.5, alpha=0.05,
+                np.asarray([0.5, 1.0]),
+                scheme,
+                statistic=WaldoStatistic(),
+                w=0.5,
+                alpha=0.05,
             )
 
     def test_cross_experiment_fingerprint_mismatch_raises(self):
         """Strict tuple-equal compare on prior + model fingerprints."""
         artifact = _StubEtaArtifact(sigma=1.0, sigma0=1.0, mu0=0.0)
         selector = LearnedDynamicEtaSelector(
-            artifact=artifact, sigma=1.0, mu0=0.0,
+            artifact=artifact,
+            sigma=1.0,
+            mu0=0.0,
         )
         scheme = PowerLawTilting()
 
         # Different prior loc — same w, but different fingerprint.
         with pytest.raises(MissingArtifactError, match="trained with prior"):
             selector.select_grid(
-                np.asarray([0.5, 1.0]), scheme,
-                statistic=WaldoStatistic(), w=0.5, alpha=0.05,
+                np.asarray([0.5, 1.0]),
+                scheme,
+                statistic=WaldoStatistic(),
+                w=0.5,
+                alpha=0.05,
                 model_fingerprint=("normal_normal", 1.0),
                 prior_fingerprint=("normal", 1.0, 1.0),
             )
@@ -166,13 +187,60 @@ class TestLearnedDynamicEtaSelectorSmoke:
         """Marginalised checkpoint (alpha=None) accepts any α."""
         artifact = _StubEtaArtifact(alpha=None, eta_value=0.0)
         selector = LearnedDynamicEtaSelector(
-            artifact=artifact, sigma=1.0, mu0=0.0,
+            artifact=artifact,
+            sigma=1.0,
+            mu0=0.0,
         )
         scheme = PowerLawTilting()
 
         for alpha in (0.01, 0.05, 0.10, 0.20):
             eta = selector.select_grid(
-                np.asarray([0.5, 1.0]), scheme,
-                statistic=WaldoStatistic(), w=0.5, alpha=alpha,
+                np.asarray([0.5, 1.0]),
+                scheme,
+                statistic=WaldoStatistic(),
+                w=0.5,
+                alpha=alpha,
             )
             assert eta.shape == (2,)
+
+    def test_select_requires_fingerprints(self):
+        """`select` convenience method must reject calls missing fingerprints.
+
+        Closes the bypass where the convenience entry point falls back to
+        the w-only derived check (which cannot distinguish two ``(σ, σ₀)``
+        pairs giving the same ``w``).
+        """
+        from frasian.tilting.base import TiltingContext
+
+        artifact = _StubEtaArtifact(sigma=1.0, sigma0=1.0, mu0=0.0)
+        selector = LearnedDynamicEtaSelector(
+            artifact=artifact,
+            sigma=1.0,
+            mu0=0.0,
+        )
+        scheme = PowerLawTilting()
+        ctx = TiltingContext(w=0.5, abs_delta=1.0, alpha=0.05)
+
+        # No fingerprints → raise.
+        with pytest.raises(ValueError, match="fingerprint"):
+            selector.select(ctx, scheme, statistic=WaldoStatistic())
+
+        # Mismatched model fingerprint → raise (different sigma).
+        with pytest.raises(MissingArtifactError):
+            selector.select(
+                ctx,
+                scheme,
+                statistic=WaldoStatistic(),
+                model_fingerprint=("normal_normal", 2.0),
+                prior_fingerprint=("normal", 0.0, 1.0),
+            )
+
+        # Matching fingerprints → succeed.
+        eta = selector.select(
+            ctx,
+            scheme,
+            statistic=WaldoStatistic(),
+            model_fingerprint=("normal_normal", 1.0),
+            prior_fingerprint=("normal", 0.0, 1.0),
+        )
+        assert isinstance(eta, float)

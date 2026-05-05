@@ -29,8 +29,7 @@ def _small_config() -> Config:
 
 @pytest.mark.L4
 class TestWidthExperimentEndToEnd:
-    def test_wald_width_is_constant(self, tmp_path: Path,
-                                       bootstrapped_registry):
+    def test_wald_width_is_constant(self, tmp_path: Path, bootstrapped_registry):
         experiment = registry.experiments["width"]()
         run_experiment(
             experiment=experiment,
@@ -47,8 +46,7 @@ class TestWidthExperimentEndToEnd:
         expected = 2 * stats.norm.ppf(0.975)
         np.testing.assert_allclose(width, expected, atol=1e-9)
 
-    def test_waldo_width_varies_with_conflict(self, tmp_path: Path,
-                                                  bootstrapped_registry):
+    def test_waldo_width_varies_with_conflict(self, tmp_path: Path, bootstrapped_registry):
         experiment = registry.experiments["width"]()
         run_experiment(
             experiment=experiment,
@@ -65,8 +63,7 @@ class TestWidthExperimentEndToEnd:
         finite = width[np.isfinite(width)]
         assert finite.std() > 1e-3, "WALDO mean width should vary with grid"
 
-    def test_dynamic_waldo_cell_runs(self, tmp_path: Path,
-                                       bootstrapped_registry):
+    def test_dynamic_waldo_cell_runs(self, tmp_path: Path, bootstrapped_registry):
         """The (power_law[dynamic_numerical], waldo) cell — i.e.
         Dynamic-WALDO — runs end-to-end through the uniform CI interface
         and produces a finite-width surface. This is the regression test
@@ -85,7 +82,8 @@ class TestWidthExperimentEndToEnd:
             experiment=registry.experiments["width"](),
             tiltings=[dyn],
             statistics=[WaldoStatistic()],
-            config=cfg, out_dir=tmp_path,
+            config=cfg,
+            out_dir=tmp_path,
         )
         manifest = json.loads((tmp_path / "manifest.json").read_text())
         cell = [c for c in manifest["cells"] if c["status"] == "ok"][0]

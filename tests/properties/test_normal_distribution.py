@@ -40,8 +40,7 @@ class TestNormalDistributionInvariants:
         cdfs = d.cdf(xs)
         assert np.all(np.diff(cdfs) >= -1e-12)
 
-    @given(loc=_LOC, scale=_SCALE,
-           q=st.floats(min_value=1e-3, max_value=1.0 - 1e-3))
+    @given(loc=_LOC, scale=_SCALE, q=st.floats(min_value=1e-3, max_value=1.0 - 1e-3))
     @settings(max_examples=100, deadline=None)
     def test_quantile_round_trip(self, loc, scale, q):
         d = NormalDistribution(loc=loc, scale=scale)
@@ -53,7 +52,7 @@ class TestNormalDistributionInvariants:
     def test_mean_var_match_params(self, loc, scale):
         d = NormalDistribution(loc=loc, scale=scale)
         np.testing.assert_allclose(d.mean(), loc, atol=1e-12)
-        np.testing.assert_allclose(d.var(), scale ** 2, atol=1e-12)
+        np.testing.assert_allclose(d.var(), scale**2, atol=1e-12)
 
     def test_invalid_scale_rejected(self):
         with pytest.raises(ValueError):

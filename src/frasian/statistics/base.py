@@ -49,24 +49,27 @@ class TestStatistic(Protocol):
         - `acceptance_region(alpha, ...)` has α-level frequentist coverage.
     """
 
-    name: str
-    asymptotic_null: AsymptoticDistribution
+    @property
+    def name(self) -> str: ...
 
-    def evaluate(self, theta0: ArrayLike, data: NDArray[np.float64],
-                 model: Model, prior: Prior | None = None
-                 ) -> NDArray[np.float64]: ...
+    @property
+    def asymptotic_null(self) -> AsymptoticDistribution: ...
 
-    def pvalue(self, theta0: ArrayLike, data: NDArray[np.float64],
-               model: Model, prior: Prior | None = None
-               ) -> NDArray[np.float64]: ...
+    def evaluate(
+        self, theta0: ArrayLike, data: NDArray[np.float64], model: Model, prior: Prior | None = None
+    ) -> NDArray[np.float64]: ...
 
-    def acceptance_region(self, alpha: float, theta0: ArrayLike,
-                          model: Model, prior: Prior | None = None
-                          ) -> tuple[NDArray[np.float64], NDArray[np.float64]]: ...
+    def pvalue(
+        self, theta0: ArrayLike, data: NDArray[np.float64], model: Model, prior: Prior | None = None
+    ) -> NDArray[np.float64]: ...
 
-    def confidence_interval(self, alpha: float, data: NDArray[np.float64],
-                            model: Model, prior: Prior | None = None
-                            ) -> tuple[float, float]:
+    def acceptance_region(
+        self, alpha: float, theta0: ArrayLike, model: Model, prior: Prior | None = None
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]: ...
+
+    def confidence_interval(
+        self, alpha: float, data: NDArray[np.float64], model: Model, prior: Prior | None = None
+    ) -> tuple[float, float]:
         """Dual of `acceptance_region`: parameter-space CI given data.
 
         Returns `(lower, upper)` such that `pvalue(theta, data, ...) >= alpha`
@@ -75,7 +78,7 @@ class TestStatistic(Protocol):
         """
         ...
 
-    def accepts_tilting(self, tilting: "TiltingScheme") -> bool:
+    def accepts_tilting(self, tilting: TiltingScheme) -> bool:
         """Declare whether this statistic supports being paired with `tilting`.
 
         Default: any tilting is acceptable. Statistics that ignore the prior
@@ -86,8 +89,7 @@ class TestStatistic(Protocol):
         return True
 
 
-def accepts_tilting(statistic: "TestStatistic",
-                    tilting: "TiltingScheme") -> bool:
+def accepts_tilting(statistic: TestStatistic, tilting: TiltingScheme) -> bool:
     """Free-function entry point used by the runner.
 
     Statistics may opt in by defining `accepts_tilting`; absent the method,

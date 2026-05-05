@@ -17,6 +17,7 @@ class. That refactor lands when the base LRT does.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import ClassVar
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -26,42 +27,35 @@ from ..models.base import Model, Prior
 from .base import AsymptoticDistribution
 
 
-@register_statistic(name="bartlett", brief="docs/methods/bartlett.md",
-                    status="stub")
+@register_statistic(name="bartlett", brief="docs/methods/bartlett.md", status="stub")
 @dataclass(frozen=True)
 class BartlettCorrectedLRT:
     """STUB. Bartlett-corrected LRT."""
 
-    name: str = "bartlett"
+    name: ClassVar[str] = "bartlett"
     asymptotic_null: AsymptoticDistribution = AsymptoticDistribution(
-        family="chi2", df=1, scale=1.0,
+        family="chi2",
+        df=1,
+        scale=1.0,
         description="Bartlett-corrected LRT ~ chi^2_1 to higher order.",
     )
 
-    def evaluate(self, theta0: ArrayLike, data: NDArray[np.float64],
-                 model: Model, prior: Prior | None = None
-                 ) -> NDArray[np.float64]:
-        raise NotImplementedError(
-            "BartlettCorrectedLRT is a stub; see docs/methods/bartlett.md."
-        )
+    def evaluate(
+        self, theta0: ArrayLike, data: NDArray[np.float64], model: Model, prior: Prior | None = None
+    ) -> NDArray[np.float64]:
+        raise NotImplementedError("BartlettCorrectedLRT is a stub; see docs/methods/bartlett.md.")
 
-    def pvalue(self, theta0: ArrayLike, data: NDArray[np.float64],
-               model: Model, prior: Prior | None = None
-               ) -> NDArray[np.float64]:
-        raise NotImplementedError(
-            "BartlettCorrectedLRT is a stub; see docs/methods/bartlett.md."
-        )
+    def pvalue(
+        self, theta0: ArrayLike, data: NDArray[np.float64], model: Model, prior: Prior | None = None
+    ) -> NDArray[np.float64]:
+        raise NotImplementedError("BartlettCorrectedLRT is a stub; see docs/methods/bartlett.md.")
 
-    def acceptance_region(self, alpha: float, theta0: ArrayLike,
-                          model: Model, prior: Prior | None = None
-                          ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-        raise NotImplementedError(
-            "BartlettCorrectedLRT is a stub; see docs/methods/bartlett.md."
-        )
+    def acceptance_region(
+        self, alpha: float, theta0: ArrayLike, model: Model, prior: Prior | None = None
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        raise NotImplementedError("BartlettCorrectedLRT is a stub; see docs/methods/bartlett.md.")
 
-    def confidence_interval(self, alpha: float, data: NDArray[np.float64],
-                            model: Model, prior: Prior | None = None
-                            ) -> tuple[float, float]:
-        raise NotImplementedError(
-            "BartlettCorrectedLRT is a stub; see docs/methods/bartlett.md."
-        )
+    def confidence_interval(
+        self, alpha: float, data: NDArray[np.float64], model: Model, prior: Prior | None = None
+    ) -> tuple[float, float]:
+        raise NotImplementedError("BartlettCorrectedLRT is a stub; see docs/methods/bartlett.md.")

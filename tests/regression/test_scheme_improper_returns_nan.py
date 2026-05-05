@@ -56,7 +56,12 @@ def test_power_law_tilted_pvalue_raises_on_improper_eta(eta):
     prior = NormalDistribution(loc=0.0, scale=1.0)  # → w = 0.5
     with pytest.raises(TiltingDomainError):
         scheme.tilted_pvalue(
-            np.array([0.0]), 0.0, model, prior, eta, "waldo",
+            np.array([0.0]),
+            0.0,
+            model,
+            prior,
+            eta,
+            "waldo",
         )
 
 
@@ -69,7 +74,12 @@ def test_ot_tilted_pvalue_raises_on_improper_eta(eta):
     prior = NormalDistribution(loc=0.0, scale=1.0)
     with pytest.raises(TiltingDomainError):
         scheme.tilted_pvalue(
-            np.array([0.0]), 0.0, model, prior, eta, "waldo",
+            np.array([0.0]),
+            0.0,
+            model,
+            prior,
+            eta,
+            "waldo",
         )
 
 
@@ -83,19 +93,22 @@ def test_power_law_validity_helper_rejects_improper_eta(eta):
     This is the path used to label Head B's BCE — it must be correct
     regardless of what the torch port does for the width loss.
     """
-    from frasian.learned.training.validity import (
-        compute_pvalues_per_sample, validity_mask,
-    )
+    from frasian.learned.training.validity import compute_pvalues_per_sample, validity_mask
+
     scheme = PowerLawTilting()
     model = NormalNormalModel(sigma=1.0)
     prior = NormalDistribution(loc=0.0, scale=1.0)  # → w = 0.5
     p = compute_pvalues_per_sample(
-        scheme, np.array([0.0]), np.array([0.0]), model, prior,
-        np.array([float(eta)]), "waldo",
+        scheme,
+        np.array([0.0]),
+        np.array([0.0]),
+        model,
+        prior,
+        np.array([float(eta)]),
+        "waldo",
     )
     assert not validity_mask(p)[0], (
-        f"power_law validity helper accepted η={eta} as valid; "
-        f"got p={p[0]}."
+        f"power_law validity helper accepted η={eta} as valid; " f"got p={p[0]}."
     )
 
 
@@ -103,16 +116,18 @@ def test_power_law_validity_helper_rejects_improper_eta(eta):
 @pytest.mark.parametrize("eta", _improper_etas_ot())
 def test_ot_validity_helper_rejects_improper_eta(eta):
     """End-to-end: same as above for OT (numpy path raises, helper → NaN)."""
-    from frasian.learned.training.validity import (
-        compute_pvalues_per_sample, validity_mask,
-    )
+    from frasian.learned.training.validity import compute_pvalues_per_sample, validity_mask
+
     scheme = OTTilting()
     model = NormalNormalModel(sigma=1.0)
     prior = NormalDistribution(loc=0.0, scale=1.0)
     p = compute_pvalues_per_sample(
-        scheme, np.array([0.0]), np.array([0.0]), model, prior,
-        np.array([float(eta)]), "waldo",
+        scheme,
+        np.array([0.0]),
+        np.array([0.0]),
+        model,
+        prior,
+        np.array([float(eta)]),
+        "waldo",
     )
-    assert not validity_mask(p)[0], (
-        f"OT validity helper accepted η={eta} as valid; got p={p[0]}."
-    )
+    assert not validity_mask(p)[0], f"OT validity helper accepted η={eta} as valid; got p={p[0]}."

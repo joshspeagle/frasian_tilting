@@ -60,8 +60,7 @@ class TestPersistCell:
         # Even with cache_enabled=False at config level, persist_cell still
         # writes (so a later enabled run can hit the cache); behaviour matches
         # the documented design choice for `enabled=False` in get_or_compute.
-        path = persist_cell(raw_result=_raw(4.0), config=cfg,
-                             cache_root=tmp_path)
+        path = persist_cell(raw_result=_raw(4.0), config=cfg, cache_root=tmp_path)
         assert path.exists()
 
 

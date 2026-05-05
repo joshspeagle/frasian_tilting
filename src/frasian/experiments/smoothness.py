@@ -20,12 +20,12 @@ the diagnostic preserves them.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 
 from .._registry import register_experiment
-from ..config import Config, GridSpec
+from ..config import Config
 from ..diagnostics.base import Diagnostic
 from ..diagnostics.smoothness_metrics import SmoothnessDiagnostic
 from ..models.distributions import NormalDistribution
@@ -41,7 +41,7 @@ from .base import ExperimentContext, RawResult
 class SmoothnessExperiment:
     """Sweep |Δ| at fixed (w, α, σ) and record η*(|Δ|) plus CI endpoints."""
 
-    name: str = "smoothness"
+    name: ClassVar[str] = "smoothness"
     sigma: float = 1.0
     mu0: float = 0.0
     w: float = 0.5
@@ -55,12 +55,12 @@ class SmoothnessExperiment:
             config=config,
             grid={"abs_delta_grid": config.delta_grid.to_array()},
             rng_seed=config.seed,
-            metadata={"w": self.w, "sigma": self.sigma, "mu0": self.mu0,
-                      "alpha": config.alpha},
+            metadata={"w": self.w, "sigma": self.sigma, "mu0": self.mu0, "alpha": config.alpha},
         )
 
-    def run_cell(self, ctx: ExperimentContext, tilting: TiltingScheme,
-                 statistic: TestStatistic) -> RawResult:
+    def run_cell(
+        self, ctx: ExperimentContext, tilting: TiltingScheme, statistic: TestStatistic
+    ) -> RawResult:
         delta_grid = ctx.grid["abs_delta_grid"]
         alpha = ctx.config.alpha
         n = delta_grid.size
@@ -78,11 +78,14 @@ class SmoothnessExperiment:
         # CI at each |Δ| as the smoothness reference (constant η = 0).
         if tilting.name == "identity":
             for i, abs_delta in enumerate(delta_grid):
-                D = _D_from_abs_delta(float(abs_delta), self.w, self.sigma,
-                                        self.mu0)
+                D = _D_from_abs_delta(float(abs_delta), self.w, self.sigma, self.mu0)
                 try:
                     lo, hi = tilting.confidence_interval(
-                        alpha, np.asarray([D]), model, prior, statistic,
+                        alpha,
+                        np.asarray([D]),
+                        model,
+                        prior,
+                        statistic,
                     )
                     eta_star[i] = 0.0
                     ci_lo[i] = lo
@@ -100,12 +103,14 @@ class SmoothnessExperiment:
                     "ci_upper": ci_hi,
                 },
                 metadata={
-                    "w": self.w, "alpha": alpha,
-                    "sigma": self.sigma, "mu0": self.mu0,
+                    "w": self.w,
+                    "alpha": alpha,
+                    "sigma": self.sigma,
+                    "mu0": self.mu0,
                     "supported": True,
                     "selector": "identity",
                     "note": "identity tilting: η fixed at 0; row is the "
-                            "bare-statistic CI baseline.",
+                    "bare-statistic CI baseline.",
                 },
             )
 
@@ -122,22 +127,28 @@ class SmoothnessExperiment:
                     "ci_lower": ci_lo,
                     "ci_upper": ci_hi,
                 },
-                metadata={"w": self.w, "alpha": alpha,
-                          "supported": False,
-                          "reason": "tilting scheme lacks tilted_confidence_interval"},
+                metadata={
+                    "w": self.w,
+                    "alpha": alpha,
+                    "supported": False,
+                    "reason": "tilting scheme lacks tilted_confidence_interval",
+                },
             )
 
         selector = NumericalEtaSelector(sigma=self.sigma, mu0=self.mu0)
 
         for i, abs_delta in enumerate(delta_grid):
-            ctx_i = TiltingContext(w=self.w, abs_delta=float(abs_delta),
-                                     alpha=alpha)
+            ctx_i = TiltingContext(w=self.w, abs_delta=float(abs_delta), alpha=alpha)
             try:
                 eta = selector.select(ctx_i, tilting, statistic=statistic)
-                D = _D_from_abs_delta(float(abs_delta), self.w, self.sigma,
-                                        self.mu0)
+                D = _D_from_abs_delta(float(abs_delta), self.w, self.sigma, self.mu0)
                 lo, hi = tilting.tilted_confidence_interval(
-                    alpha, D, model, prior, eta, statistic.name,
+                    alpha,
+                    D,
+                    model,
+                    prior,
+                    eta,
+                    statistic.name,
                 )
                 eta_star[i] = eta
                 ci_lo[i] = lo
@@ -163,8 +174,7 @@ class SmoothnessExperiment:
                 "sigma": self.sigma,
                 "mu0": self.mu0,
                 "supported": True,
-                "selector": getattr(getattr(tilting, "selector", None),
-                                    "name", None),
+                "selector": getattr(getattr(tilting, "selector", None), "name", None),
             },
         )
 

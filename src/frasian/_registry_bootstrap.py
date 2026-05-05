@@ -33,4 +33,5 @@ def bootstrap() -> None:
     from .tilting import mixture as _tilt_mix  # noqa: F401
     from .tilting import ot as _tilt_ot  # noqa: F401
     from .tilting import power_law as _tilt_power  # noqa: F401
+
     _BOOTSTRAPPED = True

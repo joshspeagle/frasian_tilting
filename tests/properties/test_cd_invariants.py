@@ -20,18 +20,18 @@ from scipy import stats
 
 from frasian.cd.grid import GridConfidenceDistribution
 
-
 _MU = st.floats(min_value=-3.0, max_value=3.0, allow_nan=False)
 _SIGMA = st.floats(min_value=0.2, max_value=2.0, allow_nan=False)
 _ALPHA = st.floats(min_value=0.01, max_value=0.5, allow_nan=False)
 
 
-def _gaussian_cd(mu: float, sigma: float, n: int = 1001
-                 ) -> GridConfidenceDistribution:
+def _gaussian_cd(mu: float, sigma: float, n: int = 1001) -> GridConfidenceDistribution:
     theta = np.linspace(mu - 12.0 * sigma, mu + 12.0 * sigma, n)
     pdf = stats.norm.pdf(theta, loc=mu, scale=sigma)
     return GridConfidenceDistribution(
-        name="gauss", theta_grid=theta, pdf_values=pdf,
+        name="gauss",
+        theta_grid=theta,
+        pdf_values=pdf,
     )
 
 
@@ -123,18 +123,20 @@ class TestCDValidateAgreesWithBuiltins:
         pdf = stats.norm.pdf(theta, 0.0, 1.0)
         pdf[5] = -0.01
         cd = GridConfidenceDistribution(
-            name="bad", theta_grid=theta, pdf_values=pdf,
+            name="bad",
+            theta_grid=theta,
+            pdf_values=pdf,
         )
         issues = cd.validate()
-        assert any(i.code == "negative-pdf" and i.severity == "error"
-                   for i in issues)
+        assert any(i.code == "negative-pdf" and i.severity == "error" for i in issues)
 
     def test_shape_mismatch_is_error(self):
         theta = np.linspace(-3, 3, 11)
         pdf = np.zeros(10)  # wrong length
         cd = GridConfidenceDistribution(
-            name="mismatched", theta_grid=theta, pdf_values=pdf,
+            name="mismatched",
+            theta_grid=theta,
+            pdf_values=pdf,
         )
         issues = cd.validate()
-        assert any(i.code == "shape-mismatch" and i.severity == "error"
-                   for i in issues)
+        assert any(i.code == "shape-mismatch" and i.severity == "error" for i in issues)

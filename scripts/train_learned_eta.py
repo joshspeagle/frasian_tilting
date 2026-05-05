@@ -23,43 +23,57 @@ def main() -> None:
         description="Train a Phase E learned-η selector "
         "(EtaNet + ValidityNet) on an ExperimentConfig."
     )
-    parser.add_argument("--config", type=Path, required=True,
-                        help="ExperimentConfig YAML path.")
+    parser.add_argument("--config", type=Path, required=True, help="ExperimentConfig YAML path.")
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--loss", default="integrated_p",
-                        choices=["integrated_p", "cd_variance", "static_width"])
-    parser.add_argument("--alpha", type=float, default=None,
-                        help="required iff --loss=static_width")
+    parser.add_argument(
+        "--loss", default="integrated_p", choices=["integrated_p", "cd_variance", "static_width"]
+    )
+    parser.add_argument(
+        "--alpha", type=float, default=None, help="required iff --loss=static_width"
+    )
     parser.add_argument("--n-epochs", type=int, default=30)
     parser.add_argument("--batch-size", type=int, default=256)
-    parser.add_argument("--n-aux", type=int, default=None,
-                        help="aux samples for boundary probing (defaults to batch_size)")
-    parser.add_argument("--lr-a", type=float, default=1e-3,
-                        help="learning rate for EtaNet (Head A)")
-    parser.add_argument("--lr-b", type=float, default=1e-3,
-                        help="learning rate for ValidityNet (Head B)")
+    parser.add_argument(
+        "--n-aux",
+        type=int,
+        default=None,
+        help="aux samples for boundary probing (defaults to batch_size)",
+    )
+    parser.add_argument(
+        "--lr-a", type=float, default=1e-3, help="learning rate for EtaNet (Head A)"
+    )
+    parser.add_argument(
+        "--lr-b", type=float, default=1e-3, help="learning rate for ValidityNet (Head B)"
+    )
     parser.add_argument("--weight-decay", type=float, default=1e-4)
-    parser.add_argument("--lambda-max", type=float, default=10.0,
-                        help="boundary-penalty max weight")
-    parser.add_argument("--lambda-warmup-frac", type=float, default=0.3,
-                        help="fraction of epochs to ramp λ from 0 to lambda_max")
+    parser.add_argument(
+        "--lambda-max", type=float, default=10.0, help="boundary-penalty max weight"
+    )
+    parser.add_argument(
+        "--lambda-warmup-frac",
+        type=float,
+        default=0.3,
+        help="fraction of epochs to ramp λ from 0 to lambda_max",
+    )
     parser.add_argument("--patience", type=int, default=8)
     parser.add_argument("--min-delta", type=float, default=1e-4)
-    parser.add_argument("--eta-hidden-sizes", type=int, nargs="+",
-                        default=[64, 64])
-    parser.add_argument("--validity-hidden-sizes", type=int, nargs="+",
-                        default=[64, 64])
-    parser.add_argument("--device", default="auto",
-                        choices=["auto", "cpu", "cuda"])
+    parser.add_argument("--eta-hidden-sizes", type=int, nargs="+", default=[64, 64])
+    parser.add_argument("--validity-hidden-sizes", type=int, nargs="+", default=[64, 64])
+    parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"])
     parser.add_argument("--version", default="v0")
-    parser.add_argument("--fast", action="store_true",
-                        help="smoke budgets: 512 LHS, 51-pt grid, 10 epochs.")
     parser.add_argument(
-        "--n-lhs", type=int, default=None,
+        "--fast", action="store_true", help="smoke budgets: 512 LHS, 51-pt grid, 10 epochs."
+    )
+    parser.add_argument(
+        "--n-lhs",
+        type=int,
+        default=None,
         help="Override config.n_lhs (e.g. for smoke training).",
     )
     parser.add_argument(
-        "--n-grid", type=int, default=None,
+        "--n-grid",
+        type=int,
+        default=None,
         help="Override config.n_grid (e.g. for smoke training).",
     )
     parser.add_argument("--quiet", action="store_true")
@@ -131,14 +145,8 @@ def main() -> None:
     )
 
     print(f"[done] final val width  = {result.final_val_loss:.4f}")
-    print(
-        f"[done] head_b accuracy   = "
-        f"{result.metadata['final_head_b_accuracy']:.3f}"
-    )
-    print(
-        f"[done] η_pred valid rate = "
-        f"{result.metadata['final_eta_pred_valid_rate']:.3f}"
-    )
+    print(f"[done] head_b accuracy   = " f"{result.metadata['final_head_b_accuracy']:.3f}")
+    print(f"[done] η_pred valid rate = " f"{result.metadata['final_eta_pred_valid_rate']:.3f}")
     print(f"[done] artifact at       = {result.artifact_path}")
 
 

@@ -43,9 +43,8 @@ class TestWaldUniformPvalueUnderH0:
         n = 5000
         Ds = rng.normal(loc=theta_true, scale=sigma, size=n)
         model = NormalNormalModel(sigma=sigma)
-        ps = np.array([
-            float(WaldStatistic().pvalue(theta_true, np.asarray([D]), model))
-            for D in Ds
-        ])
+        ps = np.array(
+            [float(WaldStatistic().pvalue(theta_true, np.asarray([D]), model)) for D in Ds]
+        )
         ks_stat, ks_p = stats.kstest(ps, "uniform")
         assert ks_p > 0.01, f"KS p-value too low: {ks_p}, ks_stat={ks_stat}"

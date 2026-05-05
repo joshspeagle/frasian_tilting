@@ -12,6 +12,7 @@ is the related variance shrinkage applied to LRT itself.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import ClassVar
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -21,42 +22,35 @@ from ..models.base import Model, Prior
 from .base import AsymptoticDistribution
 
 
-@register_statistic(name="signed_root", brief="docs/methods/signed_root.md",
-                    status="stub")
+@register_statistic(name="signed_root", brief="docs/methods/signed_root.md", status="stub")
 @dataclass(frozen=True)
 class SignedRootStatistic:
     """STUB. Signed-root LRT (r-statistic)."""
 
-    name: str = "signed_root"
+    name: ClassVar[str] = "signed_root"
     asymptotic_null: AsymptoticDistribution = AsymptoticDistribution(
-        family="normal", df=None, scale=1.0,
+        family="normal",
+        df=None,
+        scale=1.0,
         description="r ~ N(0, 1) under H0 (Barndorff-Nielsen).",
     )
 
-    def evaluate(self, theta0: ArrayLike, data: NDArray[np.float64],
-                 model: Model, prior: Prior | None = None
-                 ) -> NDArray[np.float64]:
-        raise NotImplementedError(
-            "SignedRootStatistic is a stub; see docs/methods/signed_root.md."
-        )
+    def evaluate(
+        self, theta0: ArrayLike, data: NDArray[np.float64], model: Model, prior: Prior | None = None
+    ) -> NDArray[np.float64]:
+        raise NotImplementedError("SignedRootStatistic is a stub; see docs/methods/signed_root.md.")
 
-    def pvalue(self, theta0: ArrayLike, data: NDArray[np.float64],
-               model: Model, prior: Prior | None = None
-               ) -> NDArray[np.float64]:
-        raise NotImplementedError(
-            "SignedRootStatistic is a stub; see docs/methods/signed_root.md."
-        )
+    def pvalue(
+        self, theta0: ArrayLike, data: NDArray[np.float64], model: Model, prior: Prior | None = None
+    ) -> NDArray[np.float64]:
+        raise NotImplementedError("SignedRootStatistic is a stub; see docs/methods/signed_root.md.")
 
-    def acceptance_region(self, alpha: float, theta0: ArrayLike,
-                          model: Model, prior: Prior | None = None
-                          ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-        raise NotImplementedError(
-            "SignedRootStatistic is a stub; see docs/methods/signed_root.md."
-        )
+    def acceptance_region(
+        self, alpha: float, theta0: ArrayLike, model: Model, prior: Prior | None = None
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        raise NotImplementedError("SignedRootStatistic is a stub; see docs/methods/signed_root.md.")
 
-    def confidence_interval(self, alpha: float, data: NDArray[np.float64],
-                            model: Model, prior: Prior | None = None
-                            ) -> tuple[float, float]:
-        raise NotImplementedError(
-            "SignedRootStatistic is a stub; see docs/methods/signed_root.md."
-        )
+    def confidence_interval(
+        self, alpha: float, data: NDArray[np.float64], model: Model, prior: Prior | None = None
+    ) -> tuple[float, float]:
+        raise NotImplementedError("SignedRootStatistic is a stub; see docs/methods/signed_root.md.")

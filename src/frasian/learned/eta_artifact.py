@@ -25,7 +25,6 @@ from numpy.typing import NDArray
 
 from .._errors import MissingArtifactError
 
-
 CHECKPOINT_FORMAT_VERSION = 2
 _REQUIRED_KEYS = (
     "checkpoint_format_version",
@@ -65,9 +64,7 @@ class EtaArtifact:
 
     _eta_net: Any = field(default=None, init=False, repr=False, compare=False)
     _validity_net: Any = field(default=None, init=False, repr=False, compare=False)
-    _metadata: dict[str, Any] = field(
-        default_factory=dict, init=False, repr=False, compare=False
-    )
+    _metadata: dict[str, Any] = field(default_factory=dict, init=False, repr=False, compare=False)
     _loaded: bool = field(default=False, init=False, repr=False, compare=False)
     _device: str = field(default="cpu", init=False, repr=False, compare=False)
 
@@ -90,10 +87,9 @@ class EtaArtifact:
         try:
             import torch
         except ImportError as exc:  # pragma: no cover
-            raise ImportError(
-                "EtaArtifact.load requires torch."
-            ) from exc
+            raise ImportError("EtaArtifact.load requires torch.") from exc
 
+        from .training._checkpoint import warn_on_metadata_mismatch
         from .training.architecture import EtaNet, ValidityNet
 
         device = self._resolve_device()
@@ -119,6 +115,12 @@ class EtaArtifact:
                 f"'EtaNet+ValidityNet', got {state['architecture']!r}."
             )
 
+        # 1.4-S3 / 1.2-NN3: torch version + architecture-shape compat
+        # diagnostic. Both are warnings (not raises) so a user with a
+        # slightly different torch can still load and decide whether
+        # to retrain.
+        warn_on_metadata_mismatch(state, artifact_path=path)
+
         eta_net = EtaNet(**state["eta_architecture_kwargs"])
         eta_net.load_state_dict(state["eta_state_dict"])
         eta_net.to(device)
@@ -132,8 +134,7 @@ class EtaArtifact:
         self._eta_net = eta_net
         self._validity_net = val_net
         self._metadata = {
-            k: v for k, v in state.items()
-            if k not in ("eta_state_dict", "validity_state_dict")
+            k: v for k, v in state.items() if k not in ("eta_state_dict", "validity_state_dict")
         }
         self._device = device
         self._loaded = True
@@ -149,13 +150,9 @@ class EtaArtifact:
 
         theta_arr = np.asarray(theta, dtype=np.float64)
         if theta_arr.ndim != 1:
-            raise ValueError(
-                f"predict_eta expects 1D θ; got shape {theta_arr.shape!r}"
-            )
+            raise ValueError(f"predict_eta expects 1D θ; got shape {theta_arr.shape!r}")
         with torch.no_grad():
-            theta_t = torch.as_tensor(
-                theta_arr, dtype=torch.float32, device=self._device
-            )
+            theta_t = torch.as_tensor(theta_arr, dtype=torch.float32, device=self._device)
             eta_t = self._eta_net(theta_t)
         return np.asarray(eta_t.cpu().numpy(), dtype=np.float64).reshape(-1)
 
@@ -189,7 +186,8 @@ class EtaArtifact:
         with torch.no_grad():
             inputs = torch.as_tensor(
                 np.column_stack([theta_arr, eta_arr]),
-                dtype=torch.float32, device=self._device,
+                dtype=torch.float32,
+                device=self._device,
             )
             logits = self._validity_net(inputs)
             p = torch.sigmoid(logits)

@@ -33,16 +33,14 @@ import numpy as np
 from .grid import GridConfidenceDistribution
 
 
-def _merge_grids(a: GridConfidenceDistribution,
-                 b: GridConfidenceDistribution) -> np.ndarray:
+def _merge_grids(a: GridConfidenceDistribution, b: GridConfidenceDistribution) -> np.ndarray:
     """Union of the two θ-grids, sorted and unique. Used for W₁."""
     merged = np.concatenate([a.theta_grid, b.theta_grid])
     merged.sort()
     return np.unique(merged)
 
 
-def wasserstein_1(a: GridConfidenceDistribution,
-                  b: GridConfidenceDistribution) -> float:
+def wasserstein_1(a: GridConfidenceDistribution, b: GridConfidenceDistribution) -> float:
     """W₁(F_a, F_b) = ∫|F_a(θ) − F_b(θ)| dθ.
 
     Both CDFs are evaluated by interpolation onto the union of the two
@@ -66,9 +64,9 @@ def wasserstein_1(a: GridConfidenceDistribution,
     return float(np.trapezoid(np.abs(fa - fb), grid))
 
 
-def wasserstein_2(a: GridConfidenceDistribution,
-                  b: GridConfidenceDistribution,
-                  *, n_quad: int = 64) -> float:
+def wasserstein_2(
+    a: GridConfidenceDistribution, b: GridConfidenceDistribution, *, n_quad: int = 64
+) -> float:
     """W₂(F_a, F_b) = sqrt(∫₀¹ (F_a^{-1}(u) − F_b^{-1}(u))² du).
 
     Computed via the change of variables `z = Φ⁻¹(u)`:
@@ -101,6 +99,7 @@ def wasserstein_2(a: GridConfidenceDistribution,
     """
     from numpy.polynomial.hermite_e import hermegauss
     from scipy import stats as _stats
+
     # `hermegauss(n)` returns nodes z_i and weights w_i such that
     # `∫ f(z) e^{-z²/2} dz ≈ Σ w_i f(z_i)`. Dividing by √(2π) converts
     # to expectation under the standard normal density φ(z).
@@ -115,8 +114,7 @@ def wasserstein_2(a: GridConfidenceDistribution,
     return float(np.sqrt(max(integral, 0.0)))
 
 
-def total_variation(a: GridConfidenceDistribution,
-                    b: GridConfidenceDistribution) -> float:
+def total_variation(a: GridConfidenceDistribution, b: GridConfidenceDistribution) -> float:
     """Kolmogorov-Smirnov distance: sup_θ |F_a(θ) − F_b(θ)|.
 
     Light add for completeness; not used as a headline metric in the
@@ -129,8 +127,8 @@ def total_variation(a: GridConfidenceDistribution,
 
 # ----- Closed-form references for testing -----
 
-def wasserstein_2_gaussian(mu_a: float, sigma_a: float,
-                            mu_b: float, sigma_b: float) -> float:
+
+def wasserstein_2_gaussian(mu_a: float, sigma_a: float, mu_b: float, sigma_b: float) -> float:
     """Closed-form W₂ between two univariate Gaussians.
 
     `W₂² = (μ_a − μ_b)² + (σ_a − σ_b)²` (Olkin–Pukelsheim 1982).
@@ -147,8 +145,7 @@ def wasserstein_1_gaussian_shift(mu_a: float, mu_b: float) -> float:
     return float(abs(mu_a - mu_b))
 
 
-def wasserstein_1_gaussian_zero_mean_scale(sigma_a: float,
-                                            sigma_b: float) -> float:
+def wasserstein_1_gaussian_zero_mean_scale(sigma_a: float, sigma_b: float) -> float:
     """Closed-form W₁ between two zero-mean Gaussians of differing scale.
 
     Derived from the quantile-axis form:

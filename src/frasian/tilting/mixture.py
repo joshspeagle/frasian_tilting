@@ -14,8 +14,9 @@ assumptions. Whether it is *useful* is what we are measuring.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable
+from typing import ClassVar
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -25,32 +26,31 @@ from ..models.base import Likelihood, Posterior, Prior
 from .base import ParamSpec, TiltingContext
 
 
-@register_tilting(name="mixture", brief="docs/methods/mixture.md",
-                  status="stub")
+@register_tilting(name="mixture", brief="docs/methods/mixture.md", status="stub")
 @dataclass(frozen=True)
 class MixtureTilting:
     """STUB. Convex mixture (1-eta)*prior + eta*posterior."""
 
-    name: str = "mixture"
+    name: ClassVar[str] = "mixture"
     param_space: ParamSpec = ParamSpec(
         eta_default=1.0,
         eta_identity=1.0,  # eta=1 recovers posterior
         description="STUB: eta in [0, 1]; 0=prior, 1=posterior.",
     )
 
-    def tilt(self, posterior: Posterior, prior: Prior, likelihood: Likelihood,
-             eta: ArrayLike) -> Posterior:
+    def tilt(
+        self, posterior: Posterior, prior: Prior, likelihood: Likelihood, eta: ArrayLike
+    ) -> Posterior:
         raise NotImplementedError(
             "MixtureTilting is a stub; see docs/methods/mixture.md. "
             "Output is not Gaussian; impl needs a Distribution wrapper "
             "for two-component mixtures."
         )
 
-    def path(self, posterior: Posterior, prior: Prior, likelihood: Likelihood,
-             ts: NDArray[np.float64]) -> Iterable[Posterior]:
-        raise NotImplementedError(
-            "MixtureTilting is a stub; see docs/methods/mixture.md."
-        )
+    def path(
+        self, posterior: Posterior, prior: Prior, likelihood: Likelihood, ts: NDArray[np.float64]
+    ) -> Iterable[Posterior]:
+        raise NotImplementedError("MixtureTilting is a stub; see docs/methods/mixture.md.")
 
     def is_identity(self, eta: float) -> bool:
         return eta == self.param_space.eta_identity

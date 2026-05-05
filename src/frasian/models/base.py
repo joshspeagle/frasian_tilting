@@ -79,13 +79,15 @@ class Model(Protocol):
         - `mle(sample_data(theta, ...))` is consistent under increasing n.
     """
 
-    name: str
-    param_dim: int
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def param_dim(self) -> int: ...
 
     def fingerprint(self) -> tuple: ...
 
-    def sample_data(self, theta: ArrayLike, rng: Generator, n: int
-                    ) -> NDArray[np.float64]: ...
+    def sample_data(self, theta: ArrayLike, rng: Generator, n: int) -> NDArray[np.float64]: ...
 
     def likelihood(self, data: NDArray[np.float64]) -> Likelihood: ...
 

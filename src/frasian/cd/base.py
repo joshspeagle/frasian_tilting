@@ -63,8 +63,11 @@ class ConfidenceDistribution(Protocol):
           across replicates (Singh–Xie–Strawderman 2005, Defn 2.1).
     """
 
-    name: str
-    theta_grid: NDArray[np.float64]
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def theta_grid(self) -> NDArray[np.float64]: ...
 
     def pdf(self, theta: ArrayLike) -> NDArray[np.float64]: ...
     def cdf(self, theta: ArrayLike) -> NDArray[np.float64]: ...

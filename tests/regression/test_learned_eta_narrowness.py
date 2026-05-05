@@ -33,7 +33,6 @@ from frasian.tilting.eta_selectors import LearnedDynamicEtaSelector
 from frasian.tilting.ot import OTTilting
 from frasian.tilting.power_law import PowerLawTilting
 
-
 _CHECKPOINTS = {
     "powerlaw": (
         Path("artifacts/learned_eta_canonical_normal_normal_powerlaw_v1.pt"),
@@ -79,7 +78,11 @@ def _measure_widths(
     for i in range(n_reps):
         D = rng.normal(theta_true, sigma)
         regions = scheme.confidence_regions(
-            alpha, np.asarray([D]), model, prior, WaldoStatistic(),
+            alpha,
+            np.asarray([D]),
+            model,
+            prior,
+            WaldoStatistic(),
         )
         widths[i] = sum(hi - lo for lo, hi in regions)
     return widths
@@ -94,7 +97,9 @@ def _build_scheme_and_priors(ckpt_path: Path, scheme_cls: type):
     mu0 = float(cfg["prior_fingerprint"][1])
     sigma0 = float(cfg["prior_fingerprint"][2])
     selector = LearnedDynamicEtaSelector(
-        artifact=artifact, sigma=sigma, mu0=mu0,
+        artifact=artifact,
+        sigma=sigma,
+        mu0=mu0,
     )
     scheme = scheme_cls(selector=selector)
     prior = NormalDistribution(loc=mu0, scale=sigma0)
@@ -106,7 +111,8 @@ def _build_scheme_and_priors(ckpt_path: Path, scheme_cls: type):
 @pytest.mark.slow
 @pytest.mark.parametrize("scheme_label", ["powerlaw", "ot"])
 @pytest.mark.parametrize(
-    "theta_true", [-3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0],
+    "theta_true",
+    [-3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0],
 )
 def test_learned_no_wider_than_wald(scheme_label, theta_true):
     """Headline claim 1: learned width ≤ Wald (3.92) + MC tolerance."""
@@ -119,7 +125,14 @@ def test_learned_no_wider_than_wald(scheme_label, theta_true):
         seed=42 + int(theta_true) + hash(scheme_label) % 50,
     )
     widths = _measure_widths(
-        learned, n_reps, rng, theta_true, sigma, prior, model, alpha,
+        learned,
+        n_reps,
+        rng,
+        theta_true,
+        sigma,
+        prior,
+        model,
+        alpha,
     )
 
     mean_w = float(widths.mean())
@@ -150,18 +163,29 @@ def test_learned_beats_bare_waldo_at_conflict(scheme_label, theta_true):
         seed=42 + int(theta_true) + hash(scheme_label) % 50,
     )
     widths_learned = _measure_widths(
-        learned, n_reps, rng, theta_true, sigma, prior, model, alpha,
+        learned,
+        n_reps,
+        rng,
+        theta_true,
+        sigma,
+        prior,
+        model,
+        alpha,
     )
     widths_bare = _measure_widths(
-        bare_waldo, n_reps, rng, theta_true, sigma, prior, model, alpha,
+        bare_waldo,
+        n_reps,
+        rng,
+        theta_true,
+        sigma,
+        prior,
+        model,
+        alpha,
     )
 
     mean_learned = float(widths_learned.mean())
     mean_bare = float(widths_bare.mean())
-    se_diff = float(np.sqrt(
-        widths_learned.var(ddof=1) / n_reps
-        + widths_bare.var(ddof=1) / n_reps
-    ))
+    se_diff = float(np.sqrt(widths_learned.var(ddof=1) / n_reps + widths_bare.var(ddof=1) / n_reps))
     threshold = mean_bare * (1.0 + rel_tol) + 2.0 * se_diff
     assert mean_learned <= threshold, (
         f"At conflict θ_true={theta_true} ({scheme_label}): learned "

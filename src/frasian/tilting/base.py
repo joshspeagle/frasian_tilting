@@ -13,8 +13,9 @@ the same interface and can be swapped.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Iterable, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -63,23 +64,32 @@ class TiltingScheme(Protocol):
           `TiltingDomainError`, never return NaN.
     """
 
-    name: str
-    param_space: ParamSpec
+    @property
+    def name(self) -> str: ...
 
-    def tilt(self, posterior: Posterior, prior: Prior, likelihood: Likelihood,
-             eta: ArrayLike) -> Posterior: ...
+    @property
+    def param_space(self) -> ParamSpec: ...
 
-    def path(self, posterior: Posterior, prior: Prior, likelihood: Likelihood,
-             ts: NDArray[np.float64]) -> Iterable[Posterior]: ...
+    def tilt(
+        self, posterior: Posterior, prior: Prior, likelihood: Likelihood, eta: ArrayLike
+    ) -> Posterior: ...
+
+    def path(
+        self, posterior: Posterior, prior: Prior, likelihood: Likelihood, ts: NDArray[np.float64]
+    ) -> Iterable[Posterior]: ...
 
     def is_identity(self, eta: float) -> bool: ...
 
     def admissible_range(self, context: TiltingContext) -> tuple[float, float]: ...
 
-    def confidence_interval(self, alpha: float, data: NDArray[np.float64],
-                            model: "Model", prior: Prior,
-                            statistic: "TestStatistic"
-                            ) -> tuple[float, float]:
+    def confidence_interval(
+        self,
+        alpha: float,
+        data: NDArray[np.float64],
+        model: Model,
+        prior: Prior,
+        statistic: TestStatistic,
+    ) -> tuple[float, float]:
         """Compute the (1-α) CI under this tilting and the given statistic.
 
         The uniform CI interface — single (lo, hi) tuple summary. For
@@ -92,10 +102,14 @@ class TiltingScheme(Protocol):
         """
         ...
 
-    def confidence_regions(self, alpha: float, data: NDArray[np.float64],
-                            model: "Model", prior: Prior,
-                            statistic: "TestStatistic"
-                            ) -> list[tuple[float, float]]:
+    def confidence_regions(
+        self,
+        alpha: float,
+        data: NDArray[np.float64],
+        model: Model,
+        prior: Prior,
+        statistic: TestStatistic,
+    ) -> list[tuple[float, float]]:
         """Return the (possibly multiple) region(s) of the (1-α) CI.
 
         Default behaviour (and what every static-η cell must satisfy):
@@ -111,9 +125,14 @@ class TiltingScheme(Protocol):
         """
         ...
 
-    def pvalue(self, theta: ArrayLike, data: NDArray[np.float64],
-               model: "Model", prior: Prior,
-               statistic: "TestStatistic") -> NDArray[np.float64]:
+    def pvalue(
+        self,
+        theta: ArrayLike,
+        data: NDArray[np.float64],
+        model: Model,
+        prior: Prior,
+        statistic: TestStatistic,
+    ) -> NDArray[np.float64]:
         """Selector-aware p-value at hypothesised θ values.
 
         Default (no tilting): delegate to `statistic.pvalue(θ, data, model, prior)`.
@@ -140,7 +159,9 @@ class EtaSelector(Protocol):
     (wraps a `LearnedArtifact` such as the monotonic MLP).
     """
 
-    name: str
+    @property
+    def name(self) -> str: ...
 
-    def select(self, context: TiltingContext, scheme: TiltingScheme,
-               *, statistic: TestStatistic) -> float: ...
+    def select(
+        self, context: TiltingContext, scheme: TiltingScheme, *, statistic: TestStatistic
+    ) -> float: ...

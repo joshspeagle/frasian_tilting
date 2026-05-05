@@ -17,6 +17,10 @@ Public entry points:
 - `ExperimentConfig`, `ThetaDistribution`, `UniformThetaDistribution`,
   `lhs_1d` (`.sampling`) — experiment specification + LHS sampling.
 - `fit_eta_artifact` (`.train`) — top-level training entry.
+
+The internal modules `_train_loop`, `_validity_data`,
+`_losses_compose`, and `_checkpoint` (Tier 1.2 §7 split) are not
+part of the public surface; consumers go through the entries above.
 """
 
 from __future__ import annotations

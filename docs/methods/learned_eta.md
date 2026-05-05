@@ -196,6 +196,20 @@ verifies in `tests/properties/test_loss_diff.py`.
   `MissingArtifactError`. The fingerprint excludes class-level
   identifiers (`name`, `param_dim`) which are `ClassVar` so an
   instance cannot lie about its identity past this check.
+
+  **`select` API contract (Phase 1c).** `LearnedDynamicEtaSelector.select`
+  and `select_grid` now require explicit `model_fingerprint=` and
+  `prior_fingerprint=` kwargs at every call site; bare
+  `select(ctx, scheme, statistic=...)` raises `ValueError` rather than
+  falling back to the w-only derived check (which cannot distinguish
+  two `(σ, σ₀)` pairs giving the same `w`). All in-framework callers
+  (`tilting/power_law.py`, `tilting/ot.py`, `experiments/smoothness.py`)
+  pass `model.fingerprint()` / `prior.fingerprint()` from the inference
+  call site; third-party callers must do the same. This contract change
+  is necessary to make the cross-experiment refusal strict — the
+  derived-w fallback could quietly pass a wrong-experiment checkpoint
+  whenever the trained and inference σ/σ₀ pairs happened to share the
+  same `w`.
 - **Validity vs distribution properness — known gap.** The
   per-sample validity criterion (`tilted_pvalue` returns a finite
   scalar in `[0, 1]`) checks the p-value output, not the underlying
@@ -392,6 +406,17 @@ checkpoint:
 | 2  | 3.92 | 3.75 | 3.92     | 3.67 |
 | 3  | 3.92 | 4.24 | **4.53** | **3.71** |
 | 4  | 3.92 | 4.85 | **5.23** | **3.80** |
+
+Single-seed v0_smoke checkpoint; standard error ≈ 0.05 across
+α=0.05 narrowness MC repeats. v1 production retraining will
+produce variability within ~1× this SE. To regenerate, run
+`python -m scripts.regen_headline` (requires torch).
+
+These numbers were trained with `antithetic=False` (the
+pre-Phase-4 default). The current default is `antithetic=True`
+(only effective for `loss_kind='static_width'`); re-trained
+checkpoints will produce different EtaNet weights — expected
+within MC noise of these values, but unverified.
 
 Headline:
 - **Conflict band (|θ|≥3)**: learned is ~20–30 % narrower than the

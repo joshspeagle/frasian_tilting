@@ -18,10 +18,9 @@ multimodal p-values; for single-region cells the two coincide.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
-from numpy.typing import NDArray
 
 from .._registry import register_experiment
 from ..config import Config
@@ -33,7 +32,7 @@ from ..simulation.raw import generate_normal_D_samples
 from ..statistics.base import TestStatistic
 from ..tilting.base import TiltingScheme
 from .base import ExperimentContext, RawResult
-from .coverage import _sigma0_from_w
+from .coverage import _call_with_config, _sigma0_from_w
 
 
 @register_experiment(name="width", brief="docs/methods/width_experiment.md")
@@ -41,7 +40,7 @@ from .coverage import _sigma0_from_w
 class WidthExperiment:
     """Mean CI width on a (theta_true, w) grid."""
 
-    name: str = "width"
+    name: ClassVar[str] = "width"
     sigma: float = 1.0
     mu0: float = 0.0
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -55,13 +54,16 @@ class WidthExperiment:
             },
             rng_seed=config.seed + 1,  # different RNG stream from coverage
             metadata={
-                "sigma": self.sigma, "mu0": self.mu0,
-                "alpha": config.alpha, "n_reps": config.n_reps,
+                "sigma": self.sigma,
+                "mu0": self.mu0,
+                "alpha": config.alpha,
+                "n_reps": config.n_reps,
             },
         )
 
-    def run_cell(self, ctx: ExperimentContext, tilting: TiltingScheme,
-                 statistic: TestStatistic) -> RawResult:
+    def run_cell(
+        self, ctx: ExperimentContext, tilting: TiltingScheme, statistic: TestStatistic
+    ) -> RawResult:
         theta_grid = ctx.grid["theta_grid"]
         w_grid = ctx.grid["w_grid"]
         alpha = ctx.config.alpha
@@ -70,8 +72,12 @@ class WidthExperiment:
         model = NormalNormalModel(sigma=self.sigma)
         rng = np.random.default_rng(ctx.rng_seed)
         raw = generate_normal_D_samples(
-            name="width", model=model, theta_grid=theta_grid,
-            n_reps=n_reps, rng=rng, seed=ctx.rng_seed,
+            name="width",
+            model=model,
+            theta_grid=theta_grid,
+            n_reps=n_reps,
+            rng=rng,
+            seed=ctx.rng_seed,
         )
 
         n_theta = theta_grid.size
@@ -90,8 +96,17 @@ class WidthExperiment:
                 for k in range(n_reps):
                     D = raw.D[i, k]
                     try:
-                        regions = tilting.confidence_regions(
-                            alpha, np.asarray([D]), model, prior, statistic,
+                        # Pass ctx.config so the dynamic-CI scan reads
+                        # `dynamic_n_grid/coarse_n/search_mult` from
+                        # Config. Skeptic Phase 5 vector #2.
+                        regions = _call_with_config(
+                            tilting.confidence_regions,
+                            alpha,
+                            np.asarray([D]),
+                            model,
+                            prior,
+                            statistic,
+                            config=ctx.config,
                         )
                     except NotImplementedError:
                         supported = False
@@ -125,8 +140,7 @@ class WidthExperiment:
                 "n_reps": n_reps,
                 "sigma": self.sigma,
                 "mu0": self.mu0,
-                "selector": getattr(getattr(tilting, "selector", None),
-                                    "name", None),
+                "selector": getattr(getattr(tilting, "selector", None), "name", None),
             },
         )
 

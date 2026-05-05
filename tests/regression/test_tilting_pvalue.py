@@ -41,19 +41,33 @@ class TestTiltingPvalueDispatch:
 
     def test_identity_wald_delegates(self):
         scheme_p = IdentityTilting().pvalue(
-            self.thetas, self.D, self.model, self.prior, WaldStatistic(),
+            self.thetas,
+            self.D,
+            self.model,
+            self.prior,
+            WaldStatistic(),
         )
         direct = WaldStatistic().pvalue(
-            self.thetas, self.D, self.model, self.prior,
+            self.thetas,
+            self.D,
+            self.model,
+            self.prior,
         )
         np.testing.assert_allclose(scheme_p, direct, atol=1e-12)
 
     def test_identity_waldo_delegates(self):
         scheme_p = IdentityTilting().pvalue(
-            self.thetas, self.D, self.model, self.prior, WaldoStatistic(),
+            self.thetas,
+            self.D,
+            self.model,
+            self.prior,
+            WaldoStatistic(),
         )
         direct = WaldoStatistic().pvalue(
-            self.thetas, self.D, self.model, self.prior,
+            self.thetas,
+            self.D,
+            self.model,
+            self.prior,
         )
         np.testing.assert_allclose(scheme_p, direct, atol=1e-12)
 
@@ -62,10 +76,18 @@ class TestTiltingPvalueDispatch:
         when paired with WALDO."""
         scheme = PowerLawTilting(selector=FixedEtaSelector(eta=0.0))
         scheme_p = scheme.pvalue(
-            self.thetas, self.D, self.model, self.prior, WaldoStatistic(),
+            self.thetas,
+            self.D,
+            self.model,
+            self.prior,
+            WaldoStatistic(),
         )
         ident_p = IdentityTilting().pvalue(
-            self.thetas, self.D, self.model, self.prior, WaldoStatistic(),
+            self.thetas,
+            self.D,
+            self.model,
+            self.prior,
+            WaldoStatistic(),
         )
         np.testing.assert_allclose(scheme_p, ident_p, atol=1e-12)
 
@@ -74,11 +96,19 @@ class TestTiltingPvalueDispatch:
         """Static dispatch: scheme.pvalue should match tilted_pvalue(eta)."""
         scheme = PowerLawTilting(selector=FixedEtaSelector(eta=eta))
         scheme_p = scheme.pvalue(
-            self.thetas, self.D, self.model, self.prior, WaldoStatistic(),
+            self.thetas,
+            self.D,
+            self.model,
+            self.prior,
+            WaldoStatistic(),
         )
         direct = scheme.tilted_pvalue(
-            self.thetas, float(self.D[0]), self.model, self.prior,
-            eta, "waldo",
+            self.thetas,
+            float(self.D[0]),
+            self.model,
+            self.prior,
+            eta,
+            "waldo",
         )
         np.testing.assert_allclose(scheme_p, direct, atol=1e-12)
 
@@ -86,32 +116,42 @@ class TestTiltingPvalueDispatch:
         """Dynamic dispatch: scheme.pvalue should match
         dynamic_tilted_pvalue when given the same eta_at_theta lookup
         the selector would produce."""
-        sel = DynamicNumericalEtaSelector(sigma=1.0, mu0=0.0,
-                                            n_grid=401, coarse_n=25)
+        sel = DynamicNumericalEtaSelector(sigma=1.0, mu0=0.0, n_grid=401, coarse_n=25)
         scheme = PowerLawTilting(selector=sel)
 
         scheme_p = scheme.pvalue(
-            self.thetas, self.D, self.model, self.prior, WaldoStatistic(),
+            self.thetas,
+            self.D,
+            self.model,
+            self.prior,
+            WaldoStatistic(),
         )
 
         # Reconstruct the eta_at_theta lookup the dispatch would use.
         sigma = self.model.sigma
         mu0 = self.prior.loc
         sigma0 = self.prior.scale
-        w = sigma0 ** 2 / (sigma ** 2 + sigma0 ** 2)
+        w = sigma0**2 / (sigma**2 + sigma0**2)
         abs_delta_theta = np.abs((1.0 - w) * (mu0 - self.thetas) / sigma)
         coarse_n = 25
         ad_max = float(abs_delta_theta.max()) + 1e-6
         coarse_grid = np.linspace(0.0, ad_max, coarse_n)
         coarse_eta = sel.select_grid(
-            coarse_grid, scheme,
-            statistic=_NamedStatistic("waldo"), w=w, alpha=0.05,
+            coarse_grid,
+            scheme,
+            statistic=_NamedStatistic("waldo"),
+            w=w,
+            alpha=0.05,
         )
         eta_at_theta = np.interp(abs_delta_theta, coarse_grid, coarse_eta)
 
         direct = scheme.dynamic_tilted_pvalue(
-            self.thetas, float(self.D[0]), self.model, self.prior,
-            "waldo", eta_at_theta,
+            self.thetas,
+            float(self.D[0]),
+            self.model,
+            self.prior,
+            "waldo",
+            eta_at_theta,
         )
 
         np.testing.assert_allclose(scheme_p, direct, atol=1e-9)
@@ -119,7 +159,11 @@ class TestTiltingPvalueDispatch:
     def test_pvalue_returns_array_of_correct_shape(self):
         scheme = PowerLawTilting(selector=FixedEtaSelector(eta=0.0))
         result = scheme.pvalue(
-            self.thetas, self.D, self.model, self.prior, WaldoStatistic(),
+            self.thetas,
+            self.D,
+            self.model,
+            self.prior,
+            WaldoStatistic(),
         )
         assert result.shape == self.thetas.shape
-        assert np.all((0.0 <= result) & (result <= 1.0))
+        assert np.all((result >= 0.0) & (result <= 1.0))

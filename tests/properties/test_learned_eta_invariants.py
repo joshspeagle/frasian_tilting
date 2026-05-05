@@ -24,7 +24,6 @@ from frasian.learned.eta_artifact import EtaArtifact
 from frasian.tilting.ot import OTTilting
 from frasian.tilting.power_law import PowerLawTilting
 
-
 _CHECKPOINTS = [
     (
         "power_law",
@@ -40,16 +39,12 @@ _CHECKPOINTS = [
 
 
 def _available_checkpoints():
-    return [
-        (name, p, cls) for (name, p, cls) in _CHECKPOINTS if p.exists()
-    ]
+    return [(name, p, cls) for (name, p, cls) in _CHECKPOINTS if p.exists()]
 
 
 @pytest.mark.L1
 @pytest.mark.properties
-@pytest.mark.parametrize(
-    "scheme_name,path,scheme_cls", _available_checkpoints()
-)
+@pytest.mark.parametrize("scheme_name,path,scheme_cls", _available_checkpoints())
 def test_eta_predominantly_in_admissible_range(scheme_name, path, scheme_cls):
     """≥99% of predicted η on the trained θ-range is admissible.
 
@@ -67,7 +62,7 @@ def test_eta_predominantly_in_admissible_range(scheme_name, path, scheme_cls):
     theta_hi = float(cfg["theta_distribution_fingerprint"][2])
     sigma = float(cfg["model_fingerprint"][1])
     sigma0 = float(cfg["prior_fingerprint"][2])
-    w = sigma0 ** 2 / (sigma ** 2 + sigma0 ** 2)
+    w = sigma0**2 / (sigma**2 + sigma0**2)
 
     theta_grid = np.linspace(theta_lo, theta_hi, 401)
     eta = artifact.predict_eta(theta_grid)

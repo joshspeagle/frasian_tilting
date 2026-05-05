@@ -40,7 +40,7 @@ Applications* 48: 257–263.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 
@@ -60,13 +60,14 @@ from .base import ExperimentContext, RawResult
 from .coverage import _sigma0_from_w
 
 
-@register_experiment(name="confidence_distribution",
-                      brief="docs/methods/confidence_distribution_experiment.md")
+@register_experiment(
+    name="confidence_distribution", brief="docs/methods/confidence_distribution_experiment.md"
+)
 @dataclass(frozen=True)
 class ConfidenceDistributionExperiment:
     """Per-cell distributional summaries on a (theta_true, w) grid."""
 
-    name: str = "confidence_distribution"
+    name: ClassVar[str] = "confidence_distribution"
     sigma: float = 1.0
     mu0: float = 0.0
     n_grid_cd: int = 401
@@ -82,15 +83,18 @@ class ConfidenceDistributionExperiment:
             },
             rng_seed=config.seed + 3,  # different stream from coverage/width/smoothness
             metadata={
-                "sigma": self.sigma, "mu0": self.mu0,
-                "alpha": config.alpha, "n_reps": config.n_reps,
+                "sigma": self.sigma,
+                "mu0": self.mu0,
+                "alpha": config.alpha,
+                "n_reps": config.n_reps,
                 "n_grid_cd": self.n_grid_cd,
                 "half_width_sigma_cd": self.half_width_sigma_cd,
             },
         )
 
-    def run_cell(self, ctx: ExperimentContext, tilting: TiltingScheme,
-                 statistic: TestStatistic) -> RawResult:
+    def run_cell(
+        self, ctx: ExperimentContext, tilting: TiltingScheme, statistic: TestStatistic
+    ) -> RawResult:
         theta_grid = ctx.grid["theta_grid"]
         w_grid = ctx.grid["w_grid"]
         n_reps = ctx.config.n_reps
@@ -98,8 +102,12 @@ class ConfidenceDistributionExperiment:
         model = NormalNormalModel(sigma=self.sigma)
         rng = np.random.default_rng(ctx.rng_seed)
         raw = generate_normal_D_samples(
-            name="confidence_distribution", model=model,
-            theta_grid=theta_grid, n_reps=n_reps, rng=rng, seed=ctx.rng_seed,
+            name="confidence_distribution",
+            model=model,
+            theta_grid=theta_grid,
+            n_reps=n_reps,
+            rng=rng,
+            seed=ctx.rng_seed,
         )
 
         n_theta = theta_grid.size
@@ -126,12 +134,17 @@ class ConfidenceDistributionExperiment:
                     D = float(raw.D[i, k])
                     try:
                         cd = build_cd_from_pvalue(
-                            tilting, statistic, D, model, prior,
+                            tilting,
+                            statistic,
+                            D,
+                            model,
+                            prior,
                             n_grid=self.n_grid_cd,
                             half_width_sigma=self.half_width_sigma_cd,
                         )
                         wald_ref = wald_cd(
-                            D, self.sigma,
+                            D,
+                            self.sigma,
                             theta_grid=cd.theta_grid,
                         )
                     except (NotImplementedError, ValueError, RuntimeError):
@@ -176,8 +189,7 @@ class ConfidenceDistributionExperiment:
                 "sigma": self.sigma,
                 "mu0": self.mu0,
                 "n_grid_cd": self.n_grid_cd,
-                "selector": getattr(getattr(tilting, "selector", None),
-                                    "name", None),
+                "selector": getattr(getattr(tilting, "selector", None), "name", None),
             },
         )
 

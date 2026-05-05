@@ -19,8 +19,7 @@ class TestBetaDistribution:
     def test_mean_var_match_formula(self):
         d = BetaDistribution(alpha=2.0, beta=3.0)
         np.testing.assert_allclose(d.mean(), 2.0 / 5.0, atol=1e-12)
-        np.testing.assert_allclose(d.var(), (2.0 * 3.0) / (5.0 ** 2 * 6.0),
-                                    atol=1e-12)
+        np.testing.assert_allclose(d.var(), (2.0 * 3.0) / (5.0**2 * 6.0), atol=1e-12)
 
     def test_pdf_integrates_to_one(self):
         d = BetaDistribution(alpha=2.0, beta=5.0)
@@ -71,17 +70,23 @@ class TestBernoulliModel:
     def test_mle_is_sample_mean(self):
         model = BernoulliModel()
         np.testing.assert_allclose(
-            model.mle(np.array([1.0, 1.0, 0.0, 1.0, 0.0])), 0.6, atol=1e-12,
+            model.mle(np.array([1.0, 1.0, 0.0, 1.0, 0.0])),
+            0.6,
+            atol=1e-12,
         )
 
     def test_fisher_information_formula(self):
         model = BernoulliModel()
         # I(theta) = 1 / (theta (1 - theta))
         np.testing.assert_allclose(
-            model.fisher_information(0.5), 4.0, atol=1e-12,
+            model.fisher_information(0.5),
+            4.0,
+            atol=1e-12,
         )
         np.testing.assert_allclose(
-            model.fisher_information(0.25), 1 / (0.25 * 0.75), atol=1e-12,
+            model.fisher_information(0.25),
+            1 / (0.25 * 0.75),
+            atol=1e-12,
         )
 
     def test_support(self):
@@ -108,5 +113,4 @@ class TestBernoulliModel:
 
         model = BernoulliModel()
         with pytest.raises(NotImplementedError):
-            model.posterior(np.array([1.0, 0.0]),
-                             NormalDistribution(loc=0.0, scale=1.0))
+            model.posterior(np.array([1.0, 0.0]), NormalDistribution(loc=0.0, scale=1.0))

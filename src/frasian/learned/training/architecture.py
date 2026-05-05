@@ -19,16 +19,23 @@ require a refactor.
 
 from __future__ import annotations
 
-from typing import Tuple
+from typing import Any
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+
+# Architecture version, single source of truth in ``_checkpoint.py``
+# (kept torch-free so ``arch_spec_sha`` is importable without torch).
+# Bump rule on the canonical version string is documented at
+# ``_checkpoint._architecture_version``.
+from ._checkpoint import _architecture_version as _read_arch_version
+
+__version__: str = _read_arch_version()
 
 
 def _build_mlp(
     in_features: int,
-    hidden_sizes: Tuple[int, ...],
+    hidden_sizes: tuple[int, ...],
     out_features: int,
 ) -> nn.Sequential:
     """GELU-activated MLP: in → h0 → ... → out (linear final)."""
@@ -42,7 +49,7 @@ def _build_mlp(
     return nn.Sequential(*layers)
 
 
-class EtaNet(nn.Module):
+class EtaNet(nn.Module):  # type: ignore[misc,unused-ignore]
     """Smooth MLP from θ ∈ R^p to raw η ∈ R.
 
     No bounded output, no monotonicity constraint. Validity is
@@ -62,7 +69,7 @@ class EtaNet(nn.Module):
     def __init__(
         self,
         theta_dim: int = 1,
-        hidden_sizes: Tuple[int, ...] = (64, 64),
+        hidden_sizes: tuple[int, ...] = (64, 64),
     ):
         super().__init__()
         if theta_dim < 1:
@@ -91,7 +98,7 @@ class EtaNet(nn.Module):
                     f"{self.theta_dim}) input; got 1D shape "
                     f"{tuple(theta.shape)}."
                 )
-            x = theta.unsqueeze(-1)                              # (N, 1)
+            x = theta.unsqueeze(-1)  # (N, 1)
         elif theta.dim() == 2:
             if theta.size(-1) != self.theta_dim:
                 raise ValueError(
@@ -101,13 +108,10 @@ class EtaNet(nn.Module):
                 )
             x = theta
         else:
-            raise ValueError(
-                f"EtaNet expects 1D or 2D input; got shape "
-                f"{tuple(theta.shape)}."
-            )
-        return self.mlp(x).squeeze(-1)                           # (N,)
+            raise ValueError(f"EtaNet expects 1D or 2D input; got shape " f"{tuple(theta.shape)}.")
+        return self.mlp(x).squeeze(-1)  # (N,)
 
-    def architecture_kwargs(self) -> dict:
+    def architecture_kwargs(self) -> dict[str, Any]:
         """Kwargs to re-instantiate this exact architecture."""
         return {
             "theta_dim": self.theta_dim,
@@ -115,7 +119,7 @@ class EtaNet(nn.Module):
         }
 
 
-class ValidityNet(nn.Module):
+class ValidityNet(nn.Module):  # type: ignore[misc,unused-ignore]
     """MLP from (θ, η) to a single logit.
 
     Trained on validity labels (whether ``scheme.tilted_pvalue`` at
@@ -136,7 +140,7 @@ class ValidityNet(nn.Module):
     def __init__(
         self,
         theta_dim: int = 1,
-        hidden_sizes: Tuple[int, ...] = (64, 64),
+        hidden_sizes: tuple[int, ...] = (64, 64),
     ):
         super().__init__()
         if theta_dim < 1:
@@ -164,9 +168,9 @@ class ValidityNet(nn.Module):
                 f"input shape (N, {self.theta_dim + 1}); got "
                 f"{tuple(inputs.shape)}."
             )
-        return self.mlp(inputs).squeeze(-1)                      # (N,)
+        return self.mlp(inputs).squeeze(-1)  # (N,)
 
-    def architecture_kwargs(self) -> dict:
+    def architecture_kwargs(self) -> dict[str, Any]:
         return {
             "theta_dim": self.theta_dim,
             "hidden_sizes": self.hidden_sizes,

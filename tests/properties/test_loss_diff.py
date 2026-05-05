@@ -6,9 +6,11 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from frasian.learned.training.losses import (cd_variance_loss,
-                                                integrated_pvalue_loss,
-                                                static_width_loss)
+from frasian.learned.training.losses import (
+    cd_variance_loss,
+    integrated_pvalue_loss,
+    static_width_loss,
+)
 
 
 def _random_p_theta(B: int = 2, N: int = 17, seed: int = 0):

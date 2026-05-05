@@ -55,6 +55,16 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = "-v --tb=short --strict-markers"
+filterwarnings = [
+    # Phase 4 skeptic §5: surface every RuntimeWarning emitted by the
+    # learned-η subpackage so a metadata-mismatch / NaN-drift / class-
+    # degenerate warning does not get suppressed by Python's default
+    # "show once per (message, module, lineno)" filter.
+    "error::RuntimeWarning:frasian.learned.training._checkpoint",
+    "error::RuntimeWarning:frasian.learned.training._losses_compose",
+    "error::RuntimeWarning:frasian.learned.training._train_loop",
+    "error::RuntimeWarning:frasian.learned.eta_artifact",
+]
 markers = [
     "L0: scalar math primitives (atol 1e-12)",
     "L1: protocol invariants (hypothesis property tests)",
@@ -73,3 +83,51 @@ target-version = ["py39", "py310", "py311", "py312"]
 [tool.isort]
 profile = "black"
 line_length = 100
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+extend-exclude = ["legacy", "build", "dist", ".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM"]
+ignore = [
+  "E501",  # line too long — ignore until reformat decision
+  "B008",  # function call in default arg — common in dataclasses
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["F401", "F811", "E402"]
+"tests/properties/*" = ["F401", "F811"]
+"src/frasian/_registry_bootstrap.py" = ["F401"]
+"src/frasian/learned/training/__init__.py" = ["E402"]
+"src/frasian/experiments/illustrations/learned_eta_demo.py" = ["E402"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["frasian"]
+
+[tool.mypy]
+python_version = "3.11"
+strict_optional = true
+no_implicit_optional = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unreachable = true
+exclude = ["legacy/", "tests/properties/", "build/", "dist/"]
+
+[[tool.mypy.overrides]]
+module = ["scipy.*", "matplotlib.*", "h5py.*", "pandas.*", "yaml.*", "hypothesis.*", "tqdm.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["torch", "torch.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "frasian.learned.*"
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+
+[[tool.mypy.overrides]]
+module = "frasian.tilting.*"
+warn_return_any = true

@@ -10,9 +10,12 @@ from __future__ import annotations
 
 import itertools
 import json
+import traceback
+import warnings
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any
 
 import pandas as pd
 
@@ -63,9 +66,13 @@ def _to_jsonable(obj: Any) -> Any:
     if isinstance(obj, Path):
         return str(obj)
     if isinstance(obj, CellSummary):
-        return {"tilting": obj.tilting, "statistic": obj.statistic,
-                "cache_path": obj.cache_path,
-                "status": obj.status, "reason": obj.reason}
+        return {
+            "tilting": obj.tilting,
+            "statistic": obj.statistic,
+            "cache_path": obj.cache_path,
+            "status": obj.status,
+            "reason": obj.reason,
+        }
     if isinstance(obj, dict):
         return {k: _to_jsonable(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
@@ -86,7 +93,8 @@ def _instantiate(obj: Any) -> Any:
 def _cell_name(tilting: Any) -> str:
     """Display name used in the manifest. Tiltings may opt into a
     `cell_name` property to encode their selector; fall back to `name`."""
-    return getattr(tilting, "cell_name", None) or getattr(tilting, "name", "?")
+    name = getattr(tilting, "cell_name", None) or getattr(tilting, "name", "?")
+    return str(name)
 
 
 def run_experiment(
@@ -137,31 +145,63 @@ def run_experiment(
 
     ctx = experiment.setup(config)
     raw_results: list[RawResult] = []
-    for tilting_obj, statistic_obj in itertools.product(
-        tilting_classes, statistic_classes
-    ):
+    for tilting_obj, statistic_obj in itertools.product(tilting_classes, statistic_classes):
         tilting = _instantiate(tilting_obj)
         statistic = _instantiate(statistic_obj)
         cell_tilting_name = _cell_name(tilting)
         cell_statistic_name = getattr(statistic, "name", "?")
 
         if not _accepts_tilting(statistic, tilting):
-            summary.cells.append(CellSummary(
-                tilting=cell_tilting_name,
-                statistic=cell_statistic_name,
-                cache_path="",
-                status="incompatible",
-                reason=(f"{cell_statistic_name} declines pairing with "
-                        f"{cell_tilting_name}"),
-            ))
+            summary.cells.append(
+                CellSummary(
+                    tilting=cell_tilting_name,
+                    statistic=cell_statistic_name,
+                    cache_path="",
+                    status="incompatible",
+                    reason=(f"{cell_statistic_name} declines pairing with " f"{cell_tilting_name}"),
+                )
+            )
             continue
 
-        result = experiment.run_cell(ctx, tilting, statistic)
-        raw_fp = str(result.metadata.get("raw_fingerprint", ""))
-        path = persist_cell(
-            raw_result=result, config=config, cache_root=cache_root,
-            raw_fingerprint=raw_fp,
-        )
+        # Per-cell resilience (Tier 1.7-C3): a single bad cell must NOT
+        # take the whole experiment with it. Catch broad Exception (but
+        # NOT KeyboardInterrupt / SystemExit), record the failure in the
+        # manifest with status="error" + a truncated traceback, and
+        # continue. The manifest is still written at the end.
+        try:
+            result = experiment.run_cell(ctx, tilting, statistic)
+            raw_fp = str(result.metadata.get("raw_fingerprint", ""))
+            path = persist_cell(
+                raw_result=result,
+                config=config,
+                cache_root=cache_root,
+                raw_fingerprint=raw_fp,
+                tilting=tilting,
+            )
+        except Exception as exc:  # noqa: BLE001 — see comment above.
+            tb = traceback.format_exc(limit=8)
+            # Surface the failure at runtime in addition to the manifest
+            # record. A long sweep with N silent failures otherwise looks
+            # "successful" from the caller's POV; a RuntimeWarning makes
+            # the failure visible without aborting (Tier 1.7-C3 follow-
+            # up; skeptic Phase 5 vector #6).
+            warnings.warn(
+                f"cell {cell_tilting_name}/{cell_statistic_name} raised "
+                f"{type(exc).__name__}: {exc}; recorded as status=error",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            summary.cells.append(
+                CellSummary(
+                    tilting=cell_tilting_name,
+                    statistic=cell_statistic_name,
+                    cache_path="",
+                    status="error",
+                    reason=f"{type(exc).__name__}: {exc!s}\n{tb}",
+                )
+            )
+            continue
+
         raw_results.append(result)
         # Record path *relative to out_dir* so the manifest is byte-reproducible
         # across machines / temp dirs.
@@ -169,11 +209,13 @@ def run_experiment(
             rel = path.resolve().relative_to(out_dir.resolve())
         except ValueError:
             rel = path.resolve()
-        summary.cells.append(CellSummary(
-            tilting=result.tilting,
-            statistic=result.statistic,
-            cache_path=str(rel),
-        ))
+        summary.cells.append(
+            CellSummary(
+                tilting=result.tilting,
+                statistic=result.statistic,
+                cache_path=str(rel),
+            )
+        )
 
     # Diagnostics: each diagnostic compute()s on every cell, concatenates
     # into a single tidy DataFrame, then render()s once.
@@ -208,9 +250,7 @@ def run_experiment(
         "diagnostics": summary.diagnostics,
         "figures": summary.figures,
     }
-    (out_dir / "manifest.json").write_text(
-        json.dumps(manifest, indent=2, sort_keys=True)
-    )
+    (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True))
     return summary
 
 

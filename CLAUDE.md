@@ -192,6 +192,17 @@ power_law[numerical]        3.35   3.50   3.92   4.53   5.23   ← legacy: infla
 power_law[learned]          3.67   3.67   3.67   3.71   3.80   ← calibrated AND ≤ Wald
 ```
 
+Single-seed v0_smoke checkpoint; standard error ≈ 0.05 across α=0.05
+narrowness MC repeats. v1 production retraining will produce
+variability within ~1× this SE. To regenerate, run
+`python -m scripts.regen_headline` (requires torch).
+
+Headline numbers were trained with `antithetic=False` (the
+pre-Phase-4 default). The current default is `antithetic=True`
+(only effective for `loss_kind='static_width'`); re-trained
+checkpoints will produce different EtaNet weights — expected
+within MC noise of these values, but unverified.
+
 The headline table is for `power_law` only. `ot[learned]` is wired
 into `default_tiltings()` and runs through the coverage/width
 experiments, but the OT smoke checkpoint is undertrained relative
@@ -412,7 +423,7 @@ python -m scripts.run --fast experiment=smoothness
 python -m scripts.figures results/coverage
 
 # Run the test suite
-python -m pytest                    # ~1042 passing + 23 stub-skipped
+python -m pytest                    # ~830 tests across L0-L4 (37 stub-skips), ~2 min
 python -m pytest -m L0              # math primitives only
 python -m pytest -m "L0 or L1"      # core + properties
 python -m pytest -m L4              # end-to-end

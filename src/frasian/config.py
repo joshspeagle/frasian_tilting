@@ -7,8 +7,8 @@ explicitly via `Config.from_overrides(...)` rather than monkey-patching globals.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
-from typing import Mapping
 
 import numpy as np
 
@@ -50,27 +50,29 @@ class Config:
     brentq_maxiter: int = 200
     bracket_doubling_max: int = 16
 
+    # --- dynamic CI scan params (consumed by tilting._dynamic.dynamic_ci_scan) ---
+    # Live in Config so Config.fingerprint() invalidates the cache when
+    # they change (Tier 1.7-C2 in the audit). Function-default fall-backs
+    # in dynamic_ci_scan match these values for backward compatibility.
+    dynamic_n_grid: int = 401
+    dynamic_coarse_n: int = 25
+    dynamic_search_mult: float = 8.0
+
     # --- grids (defaults; experiments override) ---
-    delta_grid: GridSpec = field(
-        default_factory=lambda: GridSpec("abs_delta", 0.0, 5.0, 51)
-    )
-    w_grid: GridSpec = field(
-        default_factory=lambda: GridSpec("w", 0.05, 0.95, 19)
-    )
-    theta_grid: GridSpec = field(
-        default_factory=lambda: GridSpec("theta", -4.0, 6.0, 21)
-    )
+    delta_grid: GridSpec = field(default_factory=lambda: GridSpec("abs_delta", 0.0, 5.0, 51))
+    w_grid: GridSpec = field(default_factory=lambda: GridSpec("w", 0.05, 0.95, 19))
+    theta_grid: GridSpec = field(default_factory=lambda: GridSpec("theta", -4.0, 6.0, 21))
 
     # --- IO ---
     cache_enabled: bool = True
 
     @classmethod
-    def default(cls) -> "Config":
+    def default(cls) -> Config:
         """Production-resolution config (n_reps=10_000, full grids)."""
         return cls()
 
     @classmethod
-    def fast(cls) -> "Config":
+    def fast(cls) -> Config:
         """Smoke-mode config: small enough to run end-to-end in seconds.
 
         Use this for `--fast` CLI flag, examples, and sanity checks. The
@@ -85,7 +87,7 @@ class Config:
             theta_grid=GridSpec("theta", -3.0, 4.0, 8),
         )
 
-    def from_overrides(self, **overrides) -> "Config":
+    def from_overrides(self, **overrides) -> Config:
         """Return a derived `Config` with the named fields replaced.
 
         The fingerprint changes accordingly, so cached results computed
@@ -111,6 +113,9 @@ class Config:
             "brentq_rtol": self.brentq_rtol,
             "brentq_maxiter": self.brentq_maxiter,
             "bracket_doubling_max": self.bracket_doubling_max,
+            "dynamic_n_grid": self.dynamic_n_grid,
+            "dynamic_coarse_n": self.dynamic_coarse_n,
+            "dynamic_search_mult": self.dynamic_search_mult,
             "delta_grid": self.delta_grid.__dict__,
             "w_grid": self.w_grid.__dict__,
             "theta_grid": self.theta_grid.__dict__,

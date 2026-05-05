@@ -32,12 +32,10 @@ current power_law / OT path) or call this helper from their own
 from __future__ import annotations
 
 import functools
-import math
-from typing import Any, Callable, Tuple
+from typing import Any, Callable
 
 import numpy as np
-from numpy.typing import ArrayLike, NDArray
-
+from numpy.typing import NDArray
 
 # ----- Validity oracle ---------------------------------------------------
 
@@ -79,7 +77,7 @@ def numerical_admissible_range(
     atol: float = 1e-3,
     max_outer_iter: int = 30,
     max_bisect_iter: int = 30,
-) -> Tuple[float, float]:
+) -> tuple[float, float]:
     """Find `(eta_low, eta_high)` such that `validity_fn(eta)` is True
     for `eta_low < eta < eta_high`.
 
@@ -155,17 +153,16 @@ def _cached_call(
     atol: float,
     max_outer_iter: int,
     max_bisect_iter: int,
-) -> Tuple[float, float]:
+) -> tuple[float, float]:
     raise NotImplementedError(
-        "Internal: should not be called directly; use "
-        "`numerical_admissible_range_cached`."
+        "Internal: should not be called directly; use " "`numerical_admissible_range_cached`."
     )
 
 
 # Top-level dict cache keyed by (cache_key, atol). Functools.lru_cache
 # can't cache arbitrary Callable args (id() changes each call); a
 # manual dict is simpler.
-_RANGE_CACHE: dict[Tuple[Any, float], Tuple[float, float]] = {}
+_RANGE_CACHE: dict[tuple[Any, float], tuple[float, float]] = {}
 
 
 def numerical_admissible_range_cached(
@@ -175,7 +172,7 @@ def numerical_admissible_range_cached(
     eta_id: float,
     atol: float = 1e-3,
     **kwargs: Any,
-) -> Tuple[float, float]:
+) -> tuple[float, float]:
     """Cached variant of `numerical_admissible_range`.
 
     `cache_key` should be a hashable tuple capturing every input that
@@ -192,7 +189,10 @@ def numerical_admissible_range_cached(
     if cached is not None:
         return cached
     result = numerical_admissible_range(
-        validity_fn, eta_id=eta_id, atol=atol, **kwargs,
+        validity_fn,
+        eta_id=eta_id,
+        atol=atol,
+        **kwargs,
     )
     if len(_RANGE_CACHE) >= _CACHE_MAX_SIZE:
         # Simple LRU-ish: drop the first inserted entry. Good enough
@@ -234,13 +234,16 @@ def make_default_validity_fn(
     if D_probe is None:
         D_probe = float(prior.loc)
     half = 3.0 * float(prior.scale)
-    theta_probes = np.linspace(prior.loc - half, prior.loc + half,
-                                  n_theta_probes)
+    theta_probes = np.linspace(prior.loc - half, prior.loc + half, n_theta_probes)
 
     def validity_fn(eta: float) -> bool:
         try:
             p = scheme.tilted_pvalue(
-                theta_probes, D_probe, model, prior, float(eta),
+                theta_probes,
+                D_probe,
+                model,
+                prior,
+                float(eta),
                 statistic_name,
             )
         except Exception:
@@ -248,8 +251,6 @@ def make_default_validity_fn(
         p_arr = np.asarray(p, dtype=np.float64)
         if not np.all(np.isfinite(p_arr)):
             return False
-        if np.any(p_arr < -p_atol) or np.any(p_arr > 1.0 + p_atol):
-            return False
-        return True
+        return not (np.any(p_arr < -p_atol) or np.any(p_arr > 1.0 + p_atol))
 
     return validity_fn

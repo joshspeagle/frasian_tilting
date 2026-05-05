@@ -24,15 +24,14 @@ Conventions:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
-from numpy.typing import NDArray
 
 from .._registry import register_experiment
 from ..config import Config
-from ..diagnostics.coverage_table import CoverageRateDiagnostic
 from ..diagnostics.base import Diagnostic
+from ..diagnostics.coverage_table import CoverageRateDiagnostic
 from ..models.distributions import NormalDistribution
 from ..models.normal_normal import NormalNormalModel
 from ..simulation.raw import generate_normal_D_samples
@@ -48,12 +47,33 @@ def _sigma0_from_w(w: float, sigma: float) -> float:
     return float(np.sqrt(w / (1.0 - w)) * sigma)
 
 
+def _call_with_config(fn, *args: Any, config: Config, **kwargs: Any) -> Any:
+    """Invoke ``fn`` passing ``config=config`` only if its signature accepts it.
+
+    All in-tree TiltingScheme `confidence_regions` methods adopt the
+    ``config`` kw-only arg so the Config-derived dynamic-CI scan
+    parameters drive computation. Third-party plugin schemes that
+    haven't yet adopted the kwarg are tolerated by introspection here:
+    they fall back to the pre-fix selector-derived defaults. Skeptic
+    Phase 5 vector #2.
+    """
+    import inspect
+
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return fn(*args, **kwargs)
+    if "config" in sig.parameters:
+        kwargs["config"] = config
+    return fn(*args, **kwargs)
+
+
 @register_experiment(name="coverage", brief="docs/methods/coverage_experiment.md")
 @dataclass(frozen=True)
 class CoverageExperiment:
     """Frequentist coverage on a (theta_true, w) grid."""
 
-    name: str = "coverage"
+    name: ClassVar[str] = "coverage"
     sigma: float = 1.0
     mu0: float = 0.0
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -67,13 +87,16 @@ class CoverageExperiment:
             },
             rng_seed=config.seed,
             metadata={
-                "sigma": self.sigma, "mu0": self.mu0,
-                "alpha": config.alpha, "n_reps": config.n_reps,
+                "sigma": self.sigma,
+                "mu0": self.mu0,
+                "alpha": config.alpha,
+                "n_reps": config.n_reps,
             },
         )
 
-    def run_cell(self, ctx: ExperimentContext, tilting: TiltingScheme,
-                 statistic: TestStatistic) -> RawResult:
+    def run_cell(
+        self, ctx: ExperimentContext, tilting: TiltingScheme, statistic: TestStatistic
+    ) -> RawResult:
         theta_grid = ctx.grid["theta_grid"]
         w_grid = ctx.grid["w_grid"]
         alpha = ctx.config.alpha
@@ -82,8 +105,12 @@ class CoverageExperiment:
         model = NormalNormalModel(sigma=self.sigma)
         rng = np.random.default_rng(ctx.rng_seed)
         raw = generate_normal_D_samples(
-            name="coverage", model=model, theta_grid=theta_grid,
-            n_reps=n_reps, rng=rng, seed=ctx.rng_seed,
+            name="coverage",
+            model=model,
+            theta_grid=theta_grid,
+            n_reps=n_reps,
+            rng=rng,
+            seed=ctx.rng_seed,
         )
 
         n_theta = theta_grid.size
@@ -100,8 +127,18 @@ class CoverageExperiment:
                 for k in range(n_reps):
                     D = raw.D[i, k]
                     try:
-                        regions = tilting.confidence_regions(
-                            alpha, np.asarray([D]), model, prior, statistic,
+                        # Pass ctx.config so the dynamic-CI scan reads
+                        # `dynamic_n_grid/coarse_n/search_mult` from
+                        # Config, not from the selector defaults.
+                        # Skeptic Phase 5 vector #2.
+                        regions = _call_with_config(
+                            tilting.confidence_regions,
+                            alpha,
+                            np.asarray([D]),
+                            model,
+                            prior,
+                            statistic,
+                            config=ctx.config,
                         )
                     except NotImplementedError:
                         # Cell that does not support CI inversion: record NaN.
@@ -114,9 +151,7 @@ class CoverageExperiment:
                     p = hits / n_reps
                     coverage[i, j] = p
                     # Wald-binomial SE; clipped to avoid 0 at extremes.
-                    coverage_se[i, j] = float(
-                        np.sqrt(max(p * (1.0 - p), 1e-12) / n_reps)
-                    )
+                    coverage_se[i, j] = float(np.sqrt(max(p * (1.0 - p), 1e-12) / n_reps))
 
         cell_name = getattr(tilting, "cell_name", tilting.name)
         return RawResult(
@@ -135,8 +170,7 @@ class CoverageExperiment:
                 "n_reps": n_reps,
                 "sigma": self.sigma,
                 "mu0": self.mu0,
-                "selector": getattr(getattr(tilting, "selector", None),
-                                    "name", None),
+                "selector": getattr(getattr(tilting, "selector", None), "name", None),
             },
         )
 

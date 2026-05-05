@@ -75,8 +75,7 @@ class TestWaldoCIMatchesLegacy:
         model = NormalNormalModel(sigma=sigma)
         prior = NormalDistribution(loc=mu0, scale=sigma0)
         stat = WaldoStatistic()
-        new_lo, new_hi = stat.confidence_interval(alpha, np.asarray([D]),
-                                                   model, prior)
+        new_lo, new_hi = stat.confidence_interval(alpha, np.asarray([D]), model, prior)
         old_lo, old_hi = _legacy_waldo_ci(D, mu0, sigma, sigma0, alpha)
         np.testing.assert_allclose(new_lo, old_lo, atol=1e-7)
         np.testing.assert_allclose(new_hi, old_hi, atol=1e-7)
