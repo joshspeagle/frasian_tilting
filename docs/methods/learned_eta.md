@@ -196,6 +196,20 @@ verifies in `tests/properties/test_loss_diff.py`.
   `MissingArtifactError`. The fingerprint excludes class-level
   identifiers (`name`, `param_dim`) which are `ClassVar` so an
   instance cannot lie about its identity past this check.
+
+  **`select` API contract (Phase 1c).** `LearnedDynamicEtaSelector.select`
+  and `select_grid` now require explicit `model_fingerprint=` and
+  `prior_fingerprint=` kwargs at every call site; bare
+  `select(ctx, scheme, statistic=...)` raises `ValueError` rather than
+  falling back to the w-only derived check (which cannot distinguish
+  two `(σ, σ₀)` pairs giving the same `w`). All in-framework callers
+  (`tilting/power_law.py`, `tilting/ot.py`, `experiments/smoothness.py`)
+  pass `model.fingerprint()` / `prior.fingerprint()` from the inference
+  call site; third-party callers must do the same. This contract change
+  is necessary to make the cross-experiment refusal strict — the
+  derived-w fallback could quietly pass a wrong-experiment checkpoint
+  whenever the trained and inference σ/σ₀ pairs happened to share the
+  same `w`.
 - **Validity vs distribution properness — known gap.** The
   per-sample validity criterion (`tilted_pvalue` returns a finite
   scalar in `[0, 1]`) checks the p-value output, not the underlying

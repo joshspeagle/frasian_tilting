@@ -246,6 +246,62 @@ class TestQuantileMixturePathBetaEndpoints:
 
 
 @pytest.mark.L2
+class TestQuantileMixtureBoundary:
+    """Pin the cdf/pdf outside-support behaviour.
+
+    The cdf returns exact 0.0 below support and exact 1.0 above support.
+    The pdf returns exact 0.0 outside support, computed symmetrically
+    with cdf's boundary detector (against the endpoint quantiles), so
+    a future refactor of cdf's exact-boundary return value can not
+    silently re-introduce ~3.6e-9 chain-rule garbage in the pdf.
+    """
+
+    def test_cdf_below_support_returns_zero(self):
+        # Beta(2,5) and Beta(5,2) both supported on [0,1]. The path's
+        # support is [0, 1]; -1.0 is strictly below.
+        p = BetaDistribution(alpha=2.0, beta=5.0)
+        q = BetaDistribution(alpha=5.0, beta=2.0)
+        path = QuantileMixturePath(p=p, q=q, t=0.5)
+        x_below = np.asarray(-1.0)
+        u = path.cdf(x_below)
+        np.testing.assert_array_equal(np.asarray(u), 0.0)
+
+    def test_cdf_above_support_returns_one(self):
+        p = BetaDistribution(alpha=2.0, beta=5.0)
+        q = BetaDistribution(alpha=5.0, beta=2.0)
+        path = QuantileMixturePath(p=p, q=q, t=0.5)
+        x_above = np.asarray(2.0)
+        u = path.cdf(x_above)
+        np.testing.assert_array_equal(np.asarray(u), 1.0)
+
+    def test_pdf_outside_support_is_exact_zero(self):
+        """pdf at x outside support must be exactly 0.0 (not ~3.6e-9).
+
+        Pins 1.5-O3's fix: the chain-rule expression underflows to a
+        tiny positive number near the support boundary, but the
+        outside-support mask zeroes it out.
+        """
+        p = BetaDistribution(alpha=2.0, beta=5.0)
+        q = BetaDistribution(alpha=5.0, beta=2.0)
+        path = QuantileMixturePath(p=p, q=q, t=0.5)
+        # Symmetric outside-support detection: anything below the lower
+        # endpoint quantile or above the upper.
+        x_below = np.asarray(-0.5)
+        x_above = np.asarray(1.5)
+        np.testing.assert_array_equal(np.asarray(path.pdf(x_below)), 0.0)
+        np.testing.assert_array_equal(np.asarray(path.pdf(x_above)), 0.0)
+
+    def test_pdf_inside_support_is_finite_positive(self):
+        p = BetaDistribution(alpha=2.0, beta=5.0)
+        q = BetaDistribution(alpha=5.0, beta=2.0)
+        path = QuantileMixturePath(p=p, q=q, t=0.5)
+        # 0.5 is interior to the support of every Beta(α, β) with α, β > 0.
+        x_in = np.asarray(0.5)
+        f = float(np.asarray(path.pdf(x_in)))
+        assert np.isfinite(f) and f > 0.0
+
+
+@pytest.mark.L2
 class TestOTPathAgreementGaussianEndpoints:
     """Fast-path (closed-form) vs general path (QuantileMixturePath) on Gaussians.
 

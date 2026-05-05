@@ -47,9 +47,13 @@ def persist_cell(
             fp_fn = getattr(artifact, "fingerprint", None) if artifact is not None else None
             if callable(fp_fn):
                 extra["selector_artifact_fingerprint"] = str(fp_fn())
-        except Exception:
-            # Non-learned selectors / stubs without fingerprint() — skip silently;
-            # cache key falls back to the (cell_name, config, git_sha) tuple.
+        except (AttributeError, TypeError):
+            # Narrow scope: only the "no fingerprint method" cases (a bare
+            # selector or an artifact whose fingerprint signature mismatches)
+            # are silently skipped. Real failures — OSError when the
+            # checkpoint is missing on disk, MissingArtifactError, etc. —
+            # propagate so the runner fails loudly rather than collapsing
+            # the cache key onto a stale entry.
             pass
 
     key = CacheKey(

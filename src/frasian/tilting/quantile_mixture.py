@@ -88,10 +88,40 @@ class QuantileMixturePath:
             except ValueError:
                 # x outside the support of the path — return exact 0.0 / 1.0.
                 # f(eps) > 0 means quantile(eps) > xi, i.e. xi is below support.
-                out[i] = 0.0 if f(eps) > 0.0 else 1.0
+                # Defensive: if quantile(eps) is non-finite (pathological
+                # endpoint distribution), the `f_eps > 0` test would silently
+                # fall through to 1.0 (the wrong tail). Refuse explicitly so
+                # the failure surfaces.
+                f_eps = f(eps)
+                if not np.isfinite(f_eps):
+                    raise ValueError(
+                        f"QuantileMixturePath.cdf cannot decide tail for "
+                        f"x={xi!r}: f(eps={eps!r})={f_eps!r} is non-finite. "
+                        f"Endpoint quantile() likely returned NaN/Inf at "
+                        f"the support boundary."
+                    )
+                out[i] = 0.0 if f_eps > 0.0 else 1.0
                 continue
             out[i] = u_star
         return out if x_arr.size > 1 else np.asarray(float(out[0]))
+
+    def _outside_support_mask(self, x_arr: NDArray[np.float64]
+                              ) -> NDArray[np.bool_]:
+        """True at indices where `x_arr[i]` lies outside the path's support.
+
+        Symmetric with `cdf`'s boundary detector: an x lies outside the
+        path's support iff `quantile(eps) > x` (below the lower endpoint)
+        or `quantile(1-eps) < x` (above the upper endpoint). Computing
+        this directly — instead of inferring from `cdf` returning exact
+        0.0 / 1.0 — keeps `pdf` robust against future refactors that
+        might change `cdf`'s exact-boundary return value.
+        """
+        eps = 1e-12
+        q_lo = float(np.asarray(self.quantile(np.asarray(eps)),
+                                  dtype=np.float64))
+        q_hi = float(np.asarray(self.quantile(np.asarray(1.0 - eps)),
+                                  dtype=np.float64))
+        return (x_arr < q_lo) | (x_arr > q_hi)
 
     def pdf(self, x: ArrayLike) -> NDArray[np.float64]:
         """f_t(x) = 1 / (d/du F_t^{-1}(u))|_{u = F_t(x)}.
@@ -102,10 +132,14 @@ class QuantileMixturePath:
         x_arr = np.atleast_1d(np.asarray(x, dtype=np.float64))
         u = self.cdf(x_arr)
         u_arr = np.atleast_1d(u)
-        # u == 0.0 or u == 1.0 from cdf() means x lies outside the support;
-        # return exact 0.0 density there rather than relying on the chain-rule
-        # quotient (which can underflow to a tiny positive number).
-        outside = (u_arr <= 0.0) | (u_arr >= 1.0)
+        # Compute the outside-support mask symmetrically with `cdf`'s own
+        # boundary detector (compare x to the path's endpoint quantiles)
+        # rather than inferring it from `u_arr <= 0.0 | u_arr >= 1.0`.
+        # The asymmetric inference happened to work today but is fragile:
+        # any future change to cdf's exact-boundary return value would
+        # silently re-introduce the chain-rule's ~3.6e-9 garbage at the
+        # support boundary that 1.5-O3 set out to fix.
+        outside = self._outside_support_mask(x_arr)
         xp = np.asarray(self.p.quantile(u_arr), dtype=np.float64)
         xq = np.asarray(self.q.quantile(u_arr), dtype=np.float64)
         fp = np.asarray(self.p.pdf(xp), dtype=np.float64)

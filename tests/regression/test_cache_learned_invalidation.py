@@ -154,3 +154,200 @@ class TestLearnedCheckpointInvalidatesCache:
             tilting=_BareTilting(),
         )
         assert path_bare.exists() or path_bare.parent.exists()
+
+    def test_persist_cell_swallows_attribute_or_type_error_on_fingerprint(
+        self, tmp_path,
+    ):
+        """Pin the narrow except: an artifact whose `.fingerprint()` raises
+        AttributeError or TypeError must be skipped silently (treated as
+        "no fingerprint method available"). Real failures (OSError,
+        MissingArtifactError) propagate — covered by
+        ``test_persist_cell_propagates_oserror_on_fingerprint``.
+        """
+        from dataclasses import dataclass, field
+        from typing import Any
+
+        import numpy as np
+
+        from frasian.config import Config
+        from frasian.experiments.base import RawResult
+        from frasian.simulation.runner import persist_cell
+
+        class _AttrErrArtifact:
+            def fingerprint(self):
+                raise AttributeError("simulated missing-attr in fingerprint")
+
+        class _TypeErrArtifact:
+            def fingerprint(self):
+                raise TypeError("simulated bad-arg in fingerprint")
+
+        @dataclass
+        class _StubSelector:
+            artifact: Any = None
+
+        @dataclass
+        class _StubTilting:
+            selector: Any = field(default_factory=_StubSelector)
+
+        cfg = Config.fast()
+        raw = RawResult(
+            experiment="coverage",
+            tilting="power_law[learned_dynamic]",
+            statistic="waldo",
+            arrays={"x": np.zeros(1)},
+            metadata={"alpha": 0.05},
+        )
+
+        # AttributeError path.
+        tilt_attr = _StubTilting(selector=_StubSelector(artifact=_AttrErrArtifact()))
+        path_attr = persist_cell(
+            raw_result=raw, config=cfg, cache_root=tmp_path / "ca",
+            tilting=tilt_attr,
+        )
+        assert path_attr.exists() or path_attr.parent.exists()
+
+        # TypeError path.
+        tilt_type = _StubTilting(selector=_StubSelector(artifact=_TypeErrArtifact()))
+        path_type = persist_cell(
+            raw_result=raw, config=cfg, cache_root=tmp_path / "ct",
+            tilting=tilt_type,
+        )
+        assert path_type.exists() or path_type.parent.exists()
+
+    def test_persist_cell_propagates_oserror_on_fingerprint(self, tmp_path):
+        """Pin the narrow except: an artifact whose `.fingerprint()` raises
+        OSError must propagate (it's a real I/O failure, not a "no
+        fingerprint method" case). A bare ``except Exception`` would
+        silently collapse the cache key onto the no-fingerprint fallback,
+        which is exactly the failure mode 1.7-C1 was meant to prevent.
+        """
+        from dataclasses import dataclass, field
+        from typing import Any
+
+        import numpy as np
+        import pytest as _pt
+
+        from frasian.config import Config
+        from frasian.experiments.base import RawResult
+        from frasian.simulation.runner import persist_cell
+
+        class _OSErrArtifact:
+            def fingerprint(self):
+                raise OSError("simulated checkpoint missing on disk")
+
+        @dataclass
+        class _StubSelector:
+            artifact: Any = None
+
+        @dataclass
+        class _StubTilting:
+            selector: Any = field(default_factory=_StubSelector)
+
+        cfg = Config.fast()
+        raw = RawResult(
+            experiment="coverage",
+            tilting="power_law[learned_dynamic]",
+            statistic="waldo",
+            arrays={"x": np.zeros(1)},
+            metadata={"alpha": 0.05},
+        )
+        tilt = _StubTilting(selector=_StubSelector(artifact=_OSErrArtifact()))
+        with _pt.raises(OSError, match=r"simulated checkpoint missing"):
+            persist_cell(
+                raw_result=raw, config=cfg, cache_root=tmp_path / "co",
+                tilting=tilt,
+            )
+
+    def test_runner_plumbs_artifact_fingerprint_end_to_end(
+        self, tmp_path, monkeypatch, bootstrapped_registry,
+    ):
+        """End-to-end: ``run_experiment`` must pass ``tilting=tilting`` to
+        ``persist_cell`` so the runner-level cache key picks up the
+        learned-η artifact fingerprint. This catches a regression where
+        someone drops ``tilting=tilting`` from the
+        ``frasian._runner.run_experiment`` call site at line 163.
+
+        Strategy: monkeypatch ``persist_cell`` in the runner to record
+        the kwargs each call received, then confirm the runner forwarded
+        a tilting whose selector carries a fingerprintable artifact.
+        """
+        from dataclasses import dataclass, field
+        from pathlib import Path as _Path
+        from typing import Any
+
+        import numpy as np
+
+        from frasian import Config, registry, run_experiment
+        from frasian._registry_bootstrap import bootstrap
+        from frasian.config import GridSpec
+        from frasian.statistics.waldo import WaldoStatistic
+        from frasian.tilting.identity import IdentityTilting
+
+        bootstrap()
+
+        @dataclass
+        class _RecorderArtifact:
+            fp: str = "stub_fingerprint_xyz"
+
+            def fingerprint(self) -> str:
+                return self.fp
+
+        @dataclass
+        class _RecorderSelector:
+            artifact: Any = field(default_factory=_RecorderArtifact)
+            name: str = "recorder"
+            is_dynamic: bool = False
+
+        # Wrap IdentityTilting so the runner's `_accepts_tilting` passes
+        # through (waldo accepts any tilting; identity is the simplest).
+        @dataclass(frozen=True)
+        class _RecorderTilting(IdentityTilting):
+            name: str = "identity_recorder"
+            selector: Any = field(default_factory=_RecorderSelector)
+
+            @property
+            def cell_name(self) -> str:
+                return self.name
+
+        captured: list[dict] = []
+        from frasian import _runner as runner_mod
+        real_persist = runner_mod.persist_cell
+
+        def _spy_persist(**kwargs):
+            captured.append(kwargs)
+            return real_persist(**kwargs)
+
+        monkeypatch.setattr(runner_mod, "persist_cell", _spy_persist)
+
+        cfg = Config.fast().from_overrides(
+            n_reps=4,
+            theta_grid=GridSpec("theta", -1.0, 1.0, 2),
+            w_grid=GridSpec("w", 0.5, 0.5, 1),
+        )
+        run_experiment(
+            experiment=registry.experiments["width"](),
+            tiltings=[_RecorderTilting()],
+            statistics=[WaldoStatistic()],
+            config=cfg,
+            out_dir=tmp_path,
+        )
+
+        # The runner must have called persist_cell at least once with a
+        # non-None `tilting` kwarg matching our recorder. A regression
+        # that drops `tilting=tilting` would fail this assertion: the
+        # spy would still be called, but `kwargs.get("tilting")` would
+        # be None.
+        assert captured, "persist_cell was never called by run_experiment"
+        forwarded = [c.get("tilting") for c in captured]
+        assert all(t is not None for t in forwarded), (
+            "run_experiment dropped `tilting=tilting`; "
+            f"forwarded={forwarded!r}"
+        )
+        # And the forwarded tilting must carry our fingerprintable artifact.
+        for t in forwarded:
+            sel = getattr(t, "selector", None)
+            art = getattr(sel, "artifact", None) if sel else None
+            assert art is not None, (
+                f"runner forwarded a tilting without selector.artifact: {t!r}"
+            )
+            assert art.fingerprint() == "stub_fingerprint_xyz"
