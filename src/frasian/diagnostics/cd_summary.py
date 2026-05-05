@@ -113,9 +113,9 @@ class CDSummaryDiagnostic:
             w_vals = np.sort(gdf["w"].unique())
             extent = [w_vals[0], w_vals[-1], theta_vals[0], theta_vals[-1]]
 
-            def _grid(col: str) -> np.ndarray:
-                return (gdf.pivot(index="theta_true", columns="w", values=col)
-                           .reindex(index=theta_vals, columns=w_vals)
+            def _grid(col: str, _gdf=gdf, _theta=theta_vals, _w=w_vals) -> np.ndarray:
+                return (_gdf.pivot(index="theta_true", columns="w", values=col)
+                           .reindex(index=_theta, columns=_w)
                            .to_numpy())
 
             for c_idx, (col, title, cmap) in enumerate(metrics):

@@ -91,8 +91,8 @@ class WaldoStatistic:
         D_lo = np.empty_like(theta_arr)
         D_hi = np.empty_like(theta_arr)
         for i, theta_val in enumerate(theta_arr):
-            def f(D_val: float) -> float:
-                return float(self.pvalue(float(theta_val),
+            def f(D_val: float, _theta=theta_val) -> float:
+                return float(self.pvalue(float(_theta),
                                           np.asarray([D_val]), m, pi)) - alpha
             # The p-value at D = theta is 1 (mu_n = theta when prior is at D);
             # bracket outward from there.

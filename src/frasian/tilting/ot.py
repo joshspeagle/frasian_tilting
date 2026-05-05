@@ -257,6 +257,16 @@ class OTTilting:
                 f"theta and eta_at_theta must have the same shape; got "
                 f"{theta_arr.shape!r} and {eta_arr.shape!r}."
             )
+        # Pre-validate the eta array so a partial population on raise can
+        # not happen mid-loop; surface the offending index/value cleanly.
+        valid = np.isfinite(eta_arr) & (eta_arr >= 0.0) & (eta_arr <= 1.0)
+        if not np.all(valid):
+            bad = np.argmax(~valid)
+            raise TiltingDomainError(
+                f"OTTilting.dynamic_tilted_pvalue requires eta in [0, 1] "
+                f"and finite; offending index {int(bad)} eta="
+                f"{float(eta_arr.flat[int(bad)])!r}."
+            )
         out = np.empty_like(theta_arr)
         for i in range(theta_arr.size):
             out[i] = float(self.tilted_pvalue(

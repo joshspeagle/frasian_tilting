@@ -86,8 +86,10 @@ class QuantileMixturePath:
             try:
                 u_star = optimize.brentq(f, eps, 1.0 - eps, xtol=1e-10)
             except ValueError:
-                # x outside the support of the path — clamp.
-                u_star = eps if f(eps) > 0.0 else 1.0 - eps
+                # x outside the support of the path — return exact 0.0 / 1.0.
+                # f(eps) > 0 means quantile(eps) > xi, i.e. xi is below support.
+                out[i] = 0.0 if f(eps) > 0.0 else 1.0
+                continue
             out[i] = u_star
         return out if x_arr.size > 1 else np.asarray(float(out[0]))
 
@@ -100,6 +102,10 @@ class QuantileMixturePath:
         x_arr = np.atleast_1d(np.asarray(x, dtype=np.float64))
         u = self.cdf(x_arr)
         u_arr = np.atleast_1d(u)
+        # u == 0.0 or u == 1.0 from cdf() means x lies outside the support;
+        # return exact 0.0 density there rather than relying on the chain-rule
+        # quotient (which can underflow to a tiny positive number).
+        outside = (u_arr <= 0.0) | (u_arr >= 1.0)
         xp = np.asarray(self.p.quantile(u_arr), dtype=np.float64)
         xq = np.asarray(self.q.quantile(u_arr), dtype=np.float64)
         fp = np.asarray(self.p.pdf(xp), dtype=np.float64)
@@ -108,6 +114,7 @@ class QuantileMixturePath:
         denom = np.where(fp > 0, (1.0 - self.t) / np.where(fp > 0, fp, 1.0), 0.0) \
               + np.where(fq > 0, self.t / np.where(fq > 0, fq, 1.0), 0.0)
         out = np.where(denom > 0, 1.0 / np.where(denom > 0, denom, 1.0), 0.0)
+        out = np.where(outside, 0.0, out)
         return out if x_arr.size > 1 else np.asarray(float(out[0]))
 
     def logpdf(self, x: ArrayLike) -> NDArray[np.float64]:
