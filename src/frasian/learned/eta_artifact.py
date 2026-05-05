@@ -89,6 +89,7 @@ class EtaArtifact:
         except ImportError as exc:  # pragma: no cover
             raise ImportError("EtaArtifact.load requires torch.") from exc
 
+        from .training._checkpoint import warn_on_metadata_mismatch
         from .training.architecture import EtaNet, ValidityNet
 
         device = self._resolve_device()
@@ -113,6 +114,12 @@ class EtaArtifact:
                 f"EtaArtifact: expected architecture "
                 f"'EtaNet+ValidityNet', got {state['architecture']!r}."
             )
+
+        # 1.4-S3 / 1.2-NN3: torch version + architecture-shape compat
+        # diagnostic. Both are warnings (not raises) so a user with a
+        # slightly different torch can still load and decide whether
+        # to retrain.
+        warn_on_metadata_mismatch(state, artifact_path=path)
 
         eta_net = EtaNet(**state["eta_architecture_kwargs"])
         eta_net.load_state_dict(state["eta_state_dict"])
