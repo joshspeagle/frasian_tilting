@@ -192,6 +192,12 @@ power_law[numerical]        3.35   3.50   3.92   4.53   5.23   ← legacy: infla
 power_law[learned]          3.67   3.67   3.67   3.71   3.80   ← calibrated AND ≤ Wald
 ```
 
+Headline numbers were trained with `antithetic=False` (the
+pre-Phase-4 default). The current default is `antithetic=True`
+(only effective for `loss_kind='static_width'`); re-trained
+checkpoints will produce different EtaNet weights — expected
+within MC noise of these values, but unverified.
+
 The headline table is for `power_law` only. `ot[learned]` is wired
 into `default_tiltings()` and runs through the coverage/width
 experiments, but the OT smoke checkpoint is undertrained relative

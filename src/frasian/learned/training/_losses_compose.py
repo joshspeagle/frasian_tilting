@@ -102,7 +102,7 @@ def compose_width_loss(
     config: ExperimentConfig,
     loss_kind: str,
     alpha: float | None,
-    beta: float = 200.0,
+    beta: float | None = None,
 ) -> torch.Tensor:
     """Integrated-p (or variant) width loss averaged over a D batch.
 
@@ -115,7 +115,9 @@ def compose_width_loss(
 
     The ``beta`` argument is forwarded to ``static_width_loss`` only
     (the other two losses are α-marginalised and don't use a
-    sigmoid-relaxed indicator).
+    sigmoid-relaxed indicator). For ``static_width`` it must be a
+    finite positive scalar; for the symmetric losses it is ignored
+    (passing a value emits no warning, but is dead code).
     """
     w, mu0, sigma = extract_normal_normal_params(config.model, config.prior)
     w_t = torch.tensor(w, dtype=theta_grid_t.dtype, device=theta_grid_t.device)
@@ -164,6 +166,13 @@ def compose_width_loss(
     if loss_kind == "static_width":
         if alpha is None:
             raise ValueError("static_width loss requires alpha not None")
+        if beta is None:
+            raise ValueError(
+                "compose_width_loss(loss_kind='static_width') requires "
+                "beta to be passed explicitly (the sigmoid-relaxed "
+                "indicator's sharpness). Use beta_schedule(epoch, n_epochs) "
+                "or a fixed value."
+            )
         return static_width_loss(p_grid, theta_grid_b, alpha=alpha, sharpness=beta)
     raise ValueError(f"Unknown loss_kind={loss_kind!r}")
 

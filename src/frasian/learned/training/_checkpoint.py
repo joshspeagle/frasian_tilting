@@ -30,6 +30,26 @@ if TYPE_CHECKING:
     from .architecture import EtaNet, ValidityNet
 
 
+def _architecture_version() -> str:
+    """Return the architecture-spec version string.
+
+    Lives here (not in ``architecture.py``) so ``arch_spec_sha`` stays
+    torch-free — ``architecture.py`` imports torch at module top, but
+    the sha helper must remain importable in environments without
+    torch (the audit env, the metadata-compat tests).
+
+    Bump rule: on any breaking change to ``EtaNet`` / ``ValidityNet``
+    that does NOT change parameter-tensor shapes — e.g., swapping the
+    activation, changing the weight-init scheme, inserting a Dropout
+    layer between linear+activation. Shape-only changes (hidden width,
+    depth, theta_dim) are already covered by ``architecture_kwargs()``
+    so they don't need a bump.
+
+    Hashed into ``arch_spec_sha`` so a mismatch warns at load time.
+    """
+    return "1.0"
+
+
 def _torch_version() -> str | None:
     """Return ``torch.__version__`` if torch is importable, else None.
 
@@ -50,15 +70,18 @@ def arch_spec_sha(
 ) -> str:
     """SHA-256 (24 hex chars) over a stable JSON of the architecture spec.
 
-    The spec covers ``theta_dim`` and ``hidden_sizes`` for both nets —
-    everything that uniquely identifies the parameter-tensor shapes.
+    The spec covers ``theta_dim`` and ``hidden_sizes`` for both nets
+    plus ``architecture.__version__`` — together this identifies the
+    parameter-tensor shapes AND the activation / init / layer types.
     Used to detect architecture drift between training time and
     inference time (e.g., training on a future torch where
-    ``architecture.py`` has been modified).
+    ``architecture.py`` swapped GELU for LeakyReLU; the shape-only
+    sha would not have caught that).
     """
     blob = {
         "eta": _stable_kwargs(eta_kwargs),
         "validity": _stable_kwargs(validity_kwargs),
+        "arch_version": _architecture_version(),
     }
     payload = json.dumps(blob, sort_keys=True).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()[:24]

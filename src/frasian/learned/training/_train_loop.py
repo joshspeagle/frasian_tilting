@@ -120,8 +120,43 @@ def evaluate_head_b_accuracy(
     return float((pred == valid_held).mean())
 
 
+def compute_final_eta_pred_valid_rate(
+    *,
+    eta_net: EtaNet,
+    scheme: Any,
+    theta_held: np.ndarray,
+    D_held: np.ndarray,
+    config: ExperimentConfig,
+    device: str,
+) -> float:
+    """Empirical validity rate of Head A's predicted η on held-out θ.
+
+    For each held-out θ, predict η = EtaNet(θ); pair with the
+    pre-sampled D_held; ask the scheme's tilted_pvalue whether the
+    (θ, η, D) triple yields a finite p-value in [0, 1]. Mean of that
+    indicator is the rate. Used as a final calibration diagnostic.
+    """
+    from .validity import compute_pvalues_per_sample, validity_mask
+
+    with torch.no_grad():
+        eta_pred_held_t = eta_net(
+            torch.as_tensor(theta_held, dtype=torch.float32, device=device)
+        )
+    eta_pred_held = eta_pred_held_t.cpu().numpy().astype(np.float64)
+    p_pred = compute_pvalues_per_sample(
+        scheme,
+        theta_held,
+        D_held,
+        config.model,
+        config.prior,
+        eta_pred_held,
+        config.statistic_name,
+    )
+    return float(validity_mask(p_pred).mean())
+
+
 def _training_step(
-    args: LoopArgs, *, theta_batch_np: np.ndarray, beta: float, lam: float, step_idx: int
+    args: LoopArgs, *, theta_batch_np: np.ndarray, beta: float | None, lam: float, step_idx: int
 ) -> tuple[float, float, float, float] | None:
     """Run one minibatch step. Returns metrics or None if the step is skipped."""
     theta_batch_t = torch.as_tensor(theta_batch_np, dtype=torch.float32, device=args.device)
@@ -181,7 +216,7 @@ def _training_step(
 
 
 def _run_epoch_steps(
-    args: LoopArgs, *, n_train: int, steps_per_epoch: int, beta: float, lam: float
+    args: LoopArgs, *, n_train: int, steps_per_epoch: int, beta: float | None, lam: float
 ) -> _EpochAggregates:
     """Inner per-step loop. Returns one epoch's aggregates."""
     args.eta_net.train()
@@ -211,7 +246,7 @@ def _run_epoch_steps(
 
 
 def _evaluate_epoch(
-    args: LoopArgs, beta: float
+    args: LoopArgs, beta: float | None
 ) -> tuple[float, float]:
     """Compute (val_loss, head_b_accuracy) on the frozen held-out set."""
     args.eta_net.eval()
@@ -253,13 +288,14 @@ def _maybe_warn_class_degenerate(epoch: int, mean_aux_rate: float) -> None:
 def _maybe_log_epoch(
     *, epoch: int, n_epochs: int, out: EpochLoopOutputs,
     v_loss: float, head_b_acc: float, mean_aux_rate: float,
-    lam: float, beta: float, verbose: bool,
+    lam: float, beta: float | None, verbose: bool,
 ) -> None:
     """Print one verbose-mode line every ~10 % of epochs (and on epoch 0)."""
     if not verbose:
         return
     if not ((epoch + 1) % max(n_epochs // 10, 1) == 0 or epoch == 0):
         return
+    beta_str = "n/a" if beta is None else f"{beta:.0f}"
     print(
         f"[epoch {epoch + 1}/{n_epochs}] "
         f"loss_a={out.train_losses[-1]:.4f} "
@@ -269,7 +305,7 @@ def _maybe_log_epoch(
         f"best={out.best_val:.4f} (ep {out.best_epoch + 1}) "
         f"head_b_acc={head_b_acc:.3f} "
         f"aux_valid={mean_aux_rate:.2f} "
-        f"λ={lam:.2f} β={beta:.0f}"
+        f"λ={lam:.2f} β={beta_str}"
     )
 
 
@@ -293,7 +329,11 @@ def _epoch_iteration(
     """
     out.epochs_run = epoch + 1
     lam = lambda_schedule(epoch, args.n_epochs, args.lambda_max, args.lambda_warmup_frac)
-    beta = beta_schedule(epoch, args.n_epochs) if args.loss_kind == "static_width" else 200.0
+    # β is the sigmoid-sharpness for ``static_width_loss`` only; the
+    # α-marginalised losses don't use a relaxed indicator. Pass None
+    # so ``compose_width_loss`` would raise if anyone wires β through
+    # for the wrong loss kind by accident.
+    beta = beta_schedule(epoch, args.n_epochs) if args.loss_kind == "static_width" else None
 
     agg = _run_epoch_steps(
         args, n_train=n_train, steps_per_epoch=steps_per_epoch, beta=beta, lam=lam

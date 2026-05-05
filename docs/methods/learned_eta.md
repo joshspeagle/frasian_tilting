@@ -407,6 +407,12 @@ checkpoint:
 | 3  | 3.92 | 4.24 | **4.53** | **3.71** |
 | 4  | 3.92 | 4.85 | **5.23** | **3.80** |
 
+These numbers were trained with `antithetic=False` (the
+pre-Phase-4 default). The current default is `antithetic=True`
+(only effective for `loss_kind='static_width'`); re-trained
+checkpoints will produce different EtaNet weights — expected
+within MC noise of these values, but unverified.
+
 Headline:
 - **Conflict band (|θ|≥3)**: learned is ~20–30 % narrower than the
   `numerical` Dynamic selector *and* narrower than bare WALDO.

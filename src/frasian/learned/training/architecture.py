@@ -24,6 +24,14 @@ from typing import Any
 import torch
 import torch.nn as nn
 
+# Architecture version, single source of truth in ``_checkpoint.py``
+# (kept torch-free so ``arch_spec_sha`` is importable without torch).
+# Bump rule on the canonical version string is documented at
+# ``_checkpoint._architecture_version``.
+from ._checkpoint import _architecture_version as _read_arch_version
+
+__version__: str = _read_arch_version()
+
 
 def _build_mlp(
     in_features: int,

@@ -139,6 +139,31 @@ def test_arch_spec_sha_is_24_hex_chars():
     assert all(c in "0123456789abcdef" for c in sha)
 
 
+def test_arch_spec_sha_changes_when_architecture_version_changes(monkeypatch):
+    """Bumping ``architecture.__version__`` flips the sha so the load-time
+    mismatch warning fires even when shapes are unchanged.
+
+    Phase 4 skeptic §4: the sha previously SHA'd only over kwargs
+    (``theta_dim`` + ``hidden_sizes``). A future PR swapping GELU for
+    LeakyReLU in ``architecture.py`` would not change the kwargs, so
+    the old sha stayed equal and ``warn_on_metadata_mismatch`` did
+    not fire. Including the bumpable ``__version__`` covers that
+    failure mode.
+    """
+    eta_kwargs = {"theta_dim": 1, "hidden_sizes": (64, 64)}
+    validity_kwargs = {"theta_dim": 1, "hidden_sizes": (64, 64)}
+    sha_at_v1 = arch_spec_sha(eta_kwargs, validity_kwargs)
+    monkeypatch.setattr(
+        "frasian.learned.training._checkpoint._architecture_version",
+        lambda: "9.9-test",
+    )
+    sha_at_v2 = arch_spec_sha(eta_kwargs, validity_kwargs)
+    assert sha_at_v1 != sha_at_v2, (
+        "arch_spec_sha must include architecture.__version__ so a bump "
+        "of the version string flips the sha."
+    )
+
+
 @pytest.mark.L2
 def test_unknown_torch_returns_none(monkeypatch):
     """When torch isn't installed, ``_torch_version`` returns None and

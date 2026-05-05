@@ -55,6 +55,16 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = "-v --tb=short --strict-markers"
+filterwarnings = [
+    # Phase 4 skeptic §5: surface every RuntimeWarning emitted by the
+    # learned-η subpackage so a metadata-mismatch / NaN-drift / class-
+    # degenerate warning does not get suppressed by Python's default
+    # "show once per (message, module, lineno)" filter.
+    "error::RuntimeWarning:frasian.learned.training._checkpoint",
+    "error::RuntimeWarning:frasian.learned.training._losses_compose",
+    "error::RuntimeWarning:frasian.learned.training._train_loop",
+    "error::RuntimeWarning:frasian.learned.eta_artifact",
+]
 markers = [
     "L0: scalar math primitives (atol 1e-12)",
     "L1: protocol invariants (hypothesis property tests)",

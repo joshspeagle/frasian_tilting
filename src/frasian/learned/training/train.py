@@ -3,13 +3,22 @@
 This module keeps only the public entry ``fit_eta_artifact``; the
 heavy lifting lives in:
 
+- ``_setup`` — pre-flight (device / determinism / loss-kind / RNGs)
 - ``_train_loop.run_epoch_loop`` — minibatch / optimiser / early-stop
 - ``_validity_data`` — LHS sampling, validity batch building, antithetic
 - ``_losses_compose`` — width loss, boundary penalty, λ + β schedules
 - ``_checkpoint`` — atomic save + torch_version / arch_sha metadata
 
 The training step is documented in ``_train_loop.py``; this file
-just wires the pieces together.
+just wires the pieces together. Phase 4 skeptic §8 audit-line target
+is ~150; we land at ~310, with the remaining residual being the
+17-kwarg ``fit_eta_artifact`` signature (most are tunables that
+must surface to the public API), the ~40-line ``LoopArgs``
+construction (one kwarg per LoopArgs field — collapsing this
+into a builder would just relocate the ceremony), and the
+~25-line ``save_checkpoint`` call (one kwarg per metadata field —
+same trade-off). Further factoring would add indirection
+without reducing the underlying parameter-passing complexity.
 
 **Determinism (1.2-NN4).** When torch is available, the orchestrator
 sets ``torch.use_deterministic_algorithms(True)`` and the cudnn flags
@@ -21,16 +30,22 @@ var ``CUBLAS_WORKSPACE_CONFIG=:4096:8`` (set by the orchestrator).
 
 from __future__ import annotations
 
-import os as _os
+import warnings as _warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import torch
 
 from ..._registry import registry as _registry
 from ._checkpoint import save_checkpoint
+
+# === Back-compat aliases for tests/properties/test_dual_head_invariants.py ===
+# These three names are imported by the property tests at lines
+# 645, 730, 852 of that file. Do NOT remove without first migrating
+# the test imports to the canonical names in
+# _losses_compose.{extract_normal_normal_params, compose_width_loss,
+# lambda_schedule}.
 from ._losses_compose import (
     compose_width_loss as _width_loss,  # noqa: F401  (test back-compat)
 )
@@ -40,13 +55,31 @@ from ._losses_compose import (
 from ._losses_compose import (
     lambda_schedule as _lambda_schedule,  # noqa: F401  (test back-compat)
 )
-from ._train_loop import LoopArgs, evaluate_head_b_accuracy, run_epoch_loop
+
+# Pre-flight helpers (resolve device / determinism / loss-kind / RNGs)
+# live in ``_setup.py`` per Phase 4 skeptic §8. The ``_enable_determinism``
+# alias is kept for ``tests/regression/test_torch_determinism.py``.
+from ._setup import (
+    enable_determinism as _enable_determinism,
+)
+from ._setup import (
+    resolve_device as _resolve_device,
+)
+from ._setup import (
+    spawn_rngs as _spawn_rngs,
+)
+from ._setup import (
+    validate_loss_kind as _validate_loss_kind,
+)
+from ._train_loop import (
+    LoopArgs,
+    compute_final_eta_pred_valid_rate,
+    evaluate_head_b_accuracy,
+    run_epoch_loop,
+)
 from ._validity_data import prepare_held_out_validity, sample_data_per_theta
 from .architecture import EtaNet, ValidityNet
 from .sampling import ExperimentConfig, lhs_1d
-from .validity import compute_pvalues_per_sample, validity_mask
-
-_LOSS_KINDS = ("integrated_p", "cd_variance", "static_width")
 
 
 @dataclass
@@ -59,62 +92,6 @@ class EtaTrainResult:
     head_b_accuracy: list[float]
     final_val_loss: float
     metadata: dict[str, Any]
-
-
-def _resolve_device(device: str) -> str:
-    if device != "auto":
-        return device
-    return "cuda" if torch.cuda.is_available() else "cpu"
-
-
-def _enable_determinism(seed: int) -> None:
-    """Enable deterministic torch + numpy paths.
-
-    Called at the top of ``fit_eta_artifact`` before any torch-side
-    state is created. CUBLAS deterministic mode requires the
-    workspace config env var; we set it lazily so users who don't
-    care about CUDA are unaffected.
-    """
-    _os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
-    torch.use_deterministic_algorithms(True, warn_only=True)
-    if hasattr(torch.backends, "cudnn"):
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-
-
-def _validate_loss_kind(loss_kind: str, alpha: float | None) -> None:
-    if loss_kind not in _LOSS_KINDS:
-        raise ValueError(f"loss_kind must be one of {_LOSS_KINDS}; got {loss_kind!r}")
-    if loss_kind == "static_width":
-        if alpha is None:
-            raise ValueError("loss_kind=static_width requires alpha")
-        if not (np.isfinite(alpha) and 0.0 < float(alpha) < 1.0):
-            raise ValueError(f"alpha must be finite and in (0, 1); got {alpha!r}")
-    elif alpha is not None:
-        # Skeptic E.3 #7: an integrated_p / cd_variance run is
-        # α-marginalised; recording a non-None alpha would lock the
-        # checkpoint to that one α at inference, defeating the
-        # marginalisation. Refuse loudly.
-        raise ValueError(
-            f"alpha={alpha} given but loss_kind={loss_kind!r} is "
-            f"α-marginalised; pass alpha=None."
-        )
-
-
-def _spawn_rngs(
-    seed: int,
-) -> tuple[
-    np.random.Generator, np.random.Generator, np.random.Generator, np.random.Generator
-]:
-    """Sub-spawn 4 independent RNGs (skeptic block #11)."""
-    base_rng = np.random.default_rng(seed)
-    if hasattr(base_rng, "spawn"):
-        rngs = [np.random.default_rng(s) for s in base_rng.spawn(4) if s is not None]
-    else:
-        rngs = [np.random.default_rng(seed + i) for i in range(4)]
-    return rngs[0], rngs[1], rngs[2], rngs[3]
 
 
 def fit_eta_artifact(
@@ -157,10 +134,15 @@ def fit_eta_artifact(
     Parameters of note
     ------------------
     antithetic
-        If True (default), each Monte-Carlo D draw is paired with
-        its ``2θ − D`` antithetic partner, halving variance on
-        even loss components for Normal-Normal symmetry. Set False
-        to reproduce the legacy estimator.
+        Effective only when ``loss_kind == "static_width"``: each
+        Monte-Carlo D draw is paired with its ``2θ − D`` partner,
+        reducing variance on the sigmoid-relaxed indicator (which
+        has odd Taylor structure in ``D − θ``). For
+        ``integrated_p`` / ``cd_variance`` the integrand is even in
+        ``D − θ`` on the θ-symmetric grid, so the paired and IID
+        estimators are algebraically identical — passing
+        ``antithetic=True`` with those losses emits a
+        ``UserWarning`` and proceeds with antithetic=False.
 
     Notes
     -----
@@ -171,6 +153,21 @@ def fit_eta_artifact(
     if not present).
     """
     _validate_loss_kind(loss_kind, alpha)
+    # Phase 4 skeptic §1: antithetic pairing is a no-op for the
+    # α-marginalised losses (their integrand is even in D − θ over a
+    # θ-symmetric grid, so the paired and IID estimators coincide).
+    # Honour the flag only for ``static_width`` and warn otherwise.
+    effective_antithetic = bool(antithetic) and loss_kind == "static_width"
+    if antithetic and not effective_antithetic:
+        _warnings.warn(
+            f"antithetic=True is a no-op for loss_kind={loss_kind!r}: the "
+            f"integrated_p / cd_variance losses are even in D − θ on the "
+            f"θ-symmetric grid, so paired and IID estimators are "
+            f"algebraically identical. Proceeding with antithetic=False. "
+            f"Set antithetic=True only with loss_kind='static_width'.",
+            UserWarning,
+            stacklevel=2,
+        )
     _enable_determinism(config.seed)
 
     device_resolved = _resolve_device(device)
@@ -245,7 +242,7 @@ def fit_eta_artifact(
             lambda_warmup_frac=lambda_warmup_frac,
             patience=patience,
             min_delta=min_delta,
-            antithetic=antithetic,
+            antithetic=effective_antithetic,
             device=device_resolved,
             verbose=verbose,
         )
@@ -263,21 +260,14 @@ def fit_eta_artifact(
         valid_held,
         device_resolved,
     )
-    with torch.no_grad():
-        eta_pred_held_t = eta_net(
-            torch.as_tensor(theta_held, dtype=torch.float32, device=device_resolved)
-        )
-    eta_pred_held = eta_pred_held_t.cpu().numpy().astype(np.float64)
-    p_pred = compute_pvalues_per_sample(
-        scheme,
-        theta_held,
-        D_held,
-        config.model,
-        config.prior,
-        eta_pred_held,
-        config.statistic_name,
+    final_eta_pred_valid_rate = compute_final_eta_pred_valid_rate(
+        eta_net=eta_net,
+        scheme=scheme,
+        theta_held=theta_held,
+        D_held=D_held,
+        config=config,
+        device=device_resolved,
     )
-    final_eta_pred_valid_rate = float(validity_mask(p_pred).mean())
 
     out_path = Path(out_path)
     metadata = save_checkpoint(
@@ -310,7 +300,7 @@ def fit_eta_artifact(
         final_val_loss=out.best_val,
         final_head_b_accuracy=final_head_b_acc,
         final_eta_pred_valid_rate=final_eta_pred_valid_rate,
-        antithetic=antithetic,
+        antithetic=effective_antithetic,
     )
     if verbose:
         print(
