@@ -40,7 +40,7 @@ Applications* 48: 257–263.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 
@@ -67,7 +67,7 @@ from .coverage import _sigma0_from_w
 class ConfidenceDistributionExperiment:
     """Per-cell distributional summaries on a (theta_true, w) grid."""
 
-    name: str = "confidence_distribution"
+    name: ClassVar[str] = "confidence_distribution"
     sigma: float = 1.0
     mu0: float = 0.0
     n_grid_cd: int = 401

@@ -9,6 +9,7 @@ Specializes on `NormalNormalModel` (port from legacy `waldo.py:wald_ci`).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import ClassVar
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -30,7 +31,7 @@ def _require_normal_normal(model: Model) -> NormalNormalModel:
 class WaldStatistic:
     """Wald statistic for the Normal location family."""
 
-    name: str = "wald"
+    name: ClassVar[str] = "wald"
     asymptotic_null: AsymptoticDistribution = AsymptoticDistribution(
         family="chi2",
         df=1,

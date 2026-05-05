@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import ClassVar
 
 import matplotlib
 
@@ -20,7 +21,7 @@ from .base import DiagnosticTable
 class CoverageRateDiagnostic:
     """Compute and render the coverage-rate table."""
 
-    name: str = "coverage_rate"
+    name: ClassVar[str] = "coverage_rate"
 
     def compute(self, raw: RawResult) -> DiagnosticTable:
         theta_grid = raw.arrays["theta_grid"]

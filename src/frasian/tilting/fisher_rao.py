@@ -29,6 +29,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import ClassVar
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -44,7 +45,7 @@ class FisherRaoTilting:
     """STUB. Fisher-Rao (information-geometric) geodesic on the
     Gaussian half-plane. eta=0 -> posterior, eta=1 -> likelihood-as-Gaussian."""
 
-    name: str = "fisher_rao"
+    name: ClassVar[str] = "fisher_rao"
     param_space: ParamSpec = ParamSpec(
         eta_default=0.0,
         eta_identity=0.0,

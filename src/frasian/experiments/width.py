@@ -18,7 +18,7 @@ multimodal p-values; for single-region cells the two coincide.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 
@@ -40,7 +40,7 @@ from .coverage import _sigma0_from_w
 class WidthExperiment:
     """Mean CI width on a (theta_true, w) grid."""
 
-    name: str = "width"
+    name: ClassVar[str] = "width"
     sigma: float = 1.0
     mu0: float = 0.0
     metadata: dict[str, Any] = field(default_factory=dict)

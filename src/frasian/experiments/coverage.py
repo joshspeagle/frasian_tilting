@@ -24,7 +24,7 @@ Conventions:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 
@@ -52,7 +52,7 @@ def _sigma0_from_w(w: float, sigma: float) -> float:
 class CoverageExperiment:
     """Frequentist coverage on a (theta_true, w) grid."""
 
-    name: str = "coverage"
+    name: ClassVar[str] = "coverage"
     sigma: float = 1.0
     mu0: float = 0.0
     metadata: dict[str, Any] = field(default_factory=dict)

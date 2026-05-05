@@ -20,7 +20,7 @@ the diagnostic preserves them.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 
@@ -41,7 +41,7 @@ from .base import ExperimentContext, RawResult
 class SmoothnessExperiment:
     """Sweep |Δ| at fixed (w, α, σ) and record η*(|Δ|) plus CI endpoints."""
 
-    name: str = "smoothness"
+    name: ClassVar[str] = "smoothness"
     sigma: float = 1.0
     mu0: float = 0.0
     w: float = 0.5

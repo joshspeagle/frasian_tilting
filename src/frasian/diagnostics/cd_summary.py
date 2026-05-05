@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import ClassVar
 
 import matplotlib
 
@@ -30,7 +31,7 @@ from .base import DiagnosticTable
 class CDSummaryDiagnostic:
     """Per-cell heatmaps of CD distributional summaries."""
 
-    name: str = "cd_summary"
+    name: ClassVar[str] = "cd_summary"
 
     def compute(self, raw: RawResult) -> DiagnosticTable:
         theta_grid = raw.arrays["theta_grid"]

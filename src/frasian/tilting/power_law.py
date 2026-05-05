@@ -29,6 +29,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from typing import ClassVar, cast
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -86,7 +87,7 @@ class PowerLawTilting:
     `power_law[dynamic_numerical]`.
     """
 
-    name: str = "power_law"
+    name: ClassVar[str] = "power_law"
     param_space: ParamSpec = ParamSpec(
         eta_default=0.0,
         eta_identity=0.0,
@@ -346,10 +347,11 @@ class PowerLawTilting:
         dynamic p-value is multimodal."""
         self._require_normal_sandbox(model, prior)
         # Narrow types after the dispatch check (mypy can't infer through it).
+        # `cast` is `-O`-safe; the runtime gate is `_require_normal_sandbox` above.
         from ..models.normal_normal import NormalNormalModel
 
-        assert isinstance(model, NormalNormalModel)
-        assert isinstance(prior, NormalDistribution)
+        model = cast(NormalNormalModel, model)
+        prior = cast(NormalDistribution, prior)
         D = float(np.atleast_1d(np.asarray(data, dtype=np.float64)).mean())
         sigma = model.sigma
         sigma0 = prior.scale
@@ -428,10 +430,11 @@ class PowerLawTilting:
         """
         self._require_normal_sandbox(model, prior)
         # Narrow types after the dispatch check (mypy can't infer through it).
+        # `cast` is `-O`-safe; the runtime gate is `_require_normal_sandbox` above.
         from ..models.normal_normal import NormalNormalModel
 
-        assert isinstance(model, NormalNormalModel)
-        assert isinstance(prior, NormalDistribution)
+        model = cast(NormalNormalModel, model)
+        prior = cast(NormalDistribution, prior)
         from ..config import Config
         from .eta_selectors import _NamedStatistic
 

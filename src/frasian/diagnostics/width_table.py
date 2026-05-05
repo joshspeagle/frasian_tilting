@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import ClassVar
 
 import matplotlib
 
@@ -20,7 +21,7 @@ from .base import DiagnosticTable
 class MeanWidthDiagnostic:
     """Compute and render the mean-CI-width table."""
 
-    name: str = "mean_width"
+    name: ClassVar[str] = "mean_width"
 
     def compute(self, raw: RawResult) -> DiagnosticTable:
         theta_grid = raw.arrays["theta_grid"]

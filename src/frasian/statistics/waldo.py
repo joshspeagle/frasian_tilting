@@ -13,7 +13,7 @@ Specializes on `NormalNormalModel` and a `NormalDistribution` prior.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -52,7 +52,7 @@ def _pvalue_components(
 class WaldoStatistic:
     """WALDO statistic for the Normal-Normal model."""
 
-    name: str = "waldo"
+    name: ClassVar[str] = "waldo"
     asymptotic_null: AsymptoticDistribution = AsymptoticDistribution(
         family="weighted_chi2",
         df=1,

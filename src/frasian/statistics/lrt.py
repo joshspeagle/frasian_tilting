@@ -13,6 +13,7 @@ can cleanly extend.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import ClassVar
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -27,7 +28,7 @@ from .base import AsymptoticDistribution
 class LRTStatistic:
     """STUB. Likelihood-ratio test statistic."""
 
-    name: str = "lrt"
+    name: ClassVar[str] = "lrt"
     asymptotic_null: AsymptoticDistribution = AsymptoticDistribution(
         family="chi2",
         df=1,

@@ -12,6 +12,7 @@ is the related variance shrinkage applied to LRT itself.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import ClassVar
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -26,7 +27,7 @@ from .base import AsymptoticDistribution
 class SignedRootStatistic:
     """STUB. Signed-root LRT (r-statistic)."""
 
-    name: str = "signed_root"
+    name: ClassVar[str] = "signed_root"
     asymptotic_null: AsymptoticDistribution = AsymptoticDistribution(
         family="normal",
         df=None,

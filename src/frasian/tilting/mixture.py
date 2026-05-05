@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import ClassVar
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -30,7 +31,7 @@ from .base import ParamSpec, TiltingContext
 class MixtureTilting:
     """STUB. Convex mixture (1-eta)*prior + eta*posterior."""
 
-    name: str = "mixture"
+    name: ClassVar[str] = "mixture"
     param_space: ParamSpec = ParamSpec(
         eta_default=1.0,
         eta_identity=1.0,  # eta=1 recovers posterior

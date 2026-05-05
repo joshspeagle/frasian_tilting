@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from typing import ClassVar
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -32,7 +33,7 @@ from .eta_selectors import FixedEtaSelector
 class IdentityTilting:
     """No-op tilting: `tilt(...)` returns the input posterior verbatim."""
 
-    name: str = "identity"
+    name: ClassVar[str] = "identity"
     param_space: ParamSpec = ParamSpec(
         eta_default=0.0,
         eta_identity=0.0,

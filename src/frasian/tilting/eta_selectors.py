@@ -44,11 +44,12 @@ The two selector flavours have **different coverage properties**:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import ClassVar
 
 import numpy as np
 from scipy import optimize
 
-from ..learned.eta_artifact import EtaArtifact
+from ..learned.base import LearnedArtifact
 from ..models.distributions import NormalDistribution
 from ..models.normal_normal import NormalNormalModel
 from ..statistics.base import TestStatistic
@@ -84,7 +85,7 @@ class FixedEtaSelector:
     """
 
     eta: float = 0.0
-    name: str = "fixed"
+    name: ClassVar[str] = "fixed"
     is_dynamic: bool = False
 
     def select(
@@ -130,7 +131,7 @@ class NumericalEtaSelector:
     solver up to bracket bookkeeping.
     """
 
-    name: str = "numerical"
+    name: ClassVar[str] = "numerical"
     sigma: float = 1.0
     mu0: float = 0.0
     eta_min_buffer: float = 1e-3
@@ -293,7 +294,7 @@ class DynamicNumericalEtaSelector:
     the selector first.
     """
 
-    name: str = "dynamic_numerical"
+    name: ClassVar[str] = "dynamic_numerical"
     sigma: float = 1.0
     mu0: float = 0.0
     eta_min_buffer: float = 1e-3
@@ -407,8 +408,8 @@ class LearnedDynamicEtaSelector:
     so no per-(w, α) cache is needed beyond the artifact load.
     """
 
-    artifact: EtaArtifact  # Phase E v2 dual-head checkpoint
-    name: str = "learned_dynamic"
+    artifact: LearnedArtifact  # any Phase E v2 dual-head artifact (concrete EtaArtifact, NullArtifact stub, ...)
+    name: ClassVar[str] = "learned_dynamic"
     sigma: float = 1.0
     mu0: float = 0.0
     is_dynamic: bool = True

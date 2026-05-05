@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import ClassVar
 
 import matplotlib
 
@@ -85,7 +86,7 @@ def _spectral_roughness(y: np.ndarray) -> float:
 class SmoothnessDiagnostic:
     """Compute and render smoothness metrics on η*(|Δ|) and CI endpoints."""
 
-    name: str = "smoothness"
+    name: ClassVar[str] = "smoothness"
 
     def compute(self, raw: RawResult) -> DiagnosticTable:
         delta = np.asarray(raw.arrays["abs_delta_grid"], dtype=np.float64)
