@@ -64,7 +64,7 @@ python -m scripts.figures results/coverage                      # regenerate fig
 | Kind        | Count | Implemented                                                  | Stubs |
 |-------------|------:|--------------------------------------------------------------|-------|
 | Models      | 2     | normal_normal, bernoulli                                     | —     |
-| Tiltings    | 6     | identity, power_law                                          | ot_normal, geodesic_normal, mixture, exp_family |
+| Tiltings    | 5     | identity, power_law, ot                                      | fisher_rao, mixture |
 | Statistics  | 5     | wald, waldo                                                  | lrt, signed_root, bartlett |
 | Experiments | 4     | coverage, width, smoothness, confidence_distribution         | —     |
 
@@ -96,9 +96,10 @@ whether a tilting scheme produces sharp transitions in `η*(|Δ|)`. On a
 
 The `(identity, wald)` row is the smoothness floor (η-independent).
 The `(power_law, waldo)` row shows the kink at |Δ|≈0.3 where η* leaves
-the admissible-range clamp. Future tilting schemes (`ot_normal`,
-`geodesic_normal`, `mixture`, `exp_family`) must beat these numbers
-to justify their existence.
+the admissible-range clamp. Alternative tilting schemes — `ot` (W2
+geodesic, implemented), `fisher_rao` (Levi-Civita geodesic, stub), and
+`mixture` (m-geodesic, stub) — must beat these numbers to justify
+their existence.
 
 ## The confidence distribution
 
@@ -121,7 +122,7 @@ corners (large |θ_true|, small w).
 ## Adding a new method
 
 ```
-/propose-method ot_normal tilting
+/propose-method ot tilting
 ```
 
 This Claude Code slash command orchestrates the framework's three

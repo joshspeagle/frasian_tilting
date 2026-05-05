@@ -8,6 +8,19 @@ The legacy η-tilting scheme as a `TiltingScheme` plugin. Tilts the prior
 by a power: `q(theta; eta) ∝ L(theta) * pi(theta)^(1 - eta)`. Identity
 element is `eta = 0` (recovers WALDO); `eta = 1` recovers Wald.
 
+Geometrically, this is the **e-geodesic** (exponential / log-linear /
+geometric-mean path) of Amari's information geometry — affine in the
+natural parameters of the conjugate exponential family. On the
+Normal-Normal sandbox, "interpolating natural parameters between
+posterior and likelihood" is *algebraically identical* to
+`q ∝ L · pi^(1-eta)`, so an `exp_family` natural-parameter scheme
+would produce numerically the same path as `power_law` and is omitted
+as redundant. The dual partner under the Fisher metric is the
+**m-geodesic** (linear-density / arithmetic-mean path), implemented
+as `mixture`. A third, distinct geometry — Wasserstein-2 — is
+`ot`. See Amari & Nagaoka 2000 §3 for the dually-flat structure that
+ties these together.
+
 The class takes an `EtaSelector` constructor argument: a static selector
 (`FixedEtaSelector`, `NumericalEtaSelector`) chooses one η for the whole
 inversion; a dynamic selector (`DynamicNumericalEtaSelector`) varies η
@@ -90,6 +103,16 @@ a follow-up cleanup task.
   *J. Amer. Statist. Assoc.* 114 (2019): 1113–1125. (Tempering.)
 - Bissiri, P. G., Holmes, C. C., Walker, S. G. "A general framework for
   updating belief distributions." *J. Royal Stat. Soc. B* 78 (2016).
+- Neal, R. M. "Annealed importance sampling." *Stat. Comput.* 11
+  (2001): 125–139. — Geometric-path tempering, explicitly contrasted
+  with the linear/m-geodesic path; cite for the e-geodesic framing.
+- Friel, N., Pettitt, A. N. "Marginal likelihood estimation via power
+  posteriors." *J. R. Stat. Soc. B* 70 (2008): 589–607. — Power
+  posteriors as the Bayesian-statistics e-geodesic.
+- Amari, S., Nagaoka, H. *Methods of Information Geometry.* AMS /
+  Oxford, 2000. — Foundational reference for the e-/m-/Levi-Civita
+  α-connections that classify `power_law` (e), `mixture` (m), and
+  `fisher_rao` (Levi-Civita).
 
 ## Links
 
@@ -134,5 +157,10 @@ with the static optimum without the conflict-band detour?** That is
 what the OT / Fisher-Rao / mixture / exp-family stubs are intended to
 explore.
 
-Optimal-transport, Fisher–Rao-geodesic, and mixture tilting
-alternatives are scheduled stubs (see `docs/methods/{ot_normal,geodesic_normal,mixture,exp_family}.md`).
+Optimal-transport (`ot`), Fisher–Rao-geodesic (`fisher_rao`), and
+mixture (`mixture`) tilting alternatives sit alongside `power_law` in
+the framework's geodesic taxonomy:
+`power_law` is the e-geodesic; `mixture` is the dual m-geodesic;
+`fisher_rao` is the Levi-Civita / intrinsic Riemannian geodesic;
+`ot` is the Wasserstein / mass-displacement geodesic. Briefs:
+`docs/methods/{ot,fisher_rao,mixture}.md`.

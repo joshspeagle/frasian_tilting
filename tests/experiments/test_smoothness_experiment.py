@@ -43,12 +43,13 @@ class TestSmoothnessExperimentEndToEnd:
         )
         manifest = json.loads((tmp_path / "manifest.json").read_text())
         assert manifest["experiment"] == "smoothness"
-        # 2 tiltings × 2 statistics = 4 cells; (power_law, wald) gated out.
+        # 3 tiltings × 2 statistics = 6 cells; (wald × power_law) and
+        # (wald × ot) gated out as incompatible.
         ok = [c for c in manifest["cells"] if c["status"] == "ok"]
         skipped = [c for c in manifest["cells"]
                    if c["status"] == "incompatible"]
-        assert len(ok) == 3
-        assert len(skipped) == 1
+        assert len(ok) == 4
+        assert len(skipped) == 2
         assert "smoothness" in manifest["diagnostics"]
         assert (tmp_path / "figures" / "smoothness_metrics.png").exists()
         assert (tmp_path / "smoothness.csv").exists()

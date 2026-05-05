@@ -4,7 +4,7 @@ description: Run the deriver subagent to produce or verify a method's derivation
 
 Run the `deriver` subagent on `$ARGUMENTS`.
 
-The argument is the method name (e.g. `ot_normal`). The deriver will:
+The argument is the method name (e.g. `fisher_rao`). The deriver will:
 
 1. Read `docs/methods/<name>.md` (Definition, Predicted behavior).
 2. Read the framework's math primitives at

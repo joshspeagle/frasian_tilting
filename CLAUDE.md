@@ -104,14 +104,20 @@ restriction explicitly via `models/_dispatch.require_model`).
 
 ## Tilting Schemes (status)
 
-| Name              | Status        | Notes                                     |
-|-------------------|---------------|-------------------------------------------|
-| `identity`        | implemented   | No-op tilting; identity element of the matrix |
-| `power_law`       | implemented   | Ported Theorem 6 from legacy `tilting.py` |
-| `ot_normal`       | stub          | W2 geodesic between Gaussians             |
-| `geodesic_normal` | stub          | Fisher-Rao geodesic for Gaussians         |
-| `mixture`         | stub          | Convex prior-posterior mixture            |
-| `exp_family`      | stub          | Natural-parameter interpolation           |
+| Name         | Status        | Notes                                                                                |
+|--------------|---------------|--------------------------------------------------------------------------------------|
+| `identity`   | implemented   | No-op tilting; identity element of the matrix                                        |
+| `power_law`  | implemented   | e-geodesic / log-linear (geometric mean); Theorem 6 closed form on Normal-Normal     |
+| `ot`         | implemented   | W2 geodesic; general 1D quantile-mixture, Gaussian fast path; posterior↔likelihood   |
+| `mixture`    | stub          | m-geodesic / linear-density (arithmetic mean); dual partner of `power_law`           |
+| `fisher_rao` | stub          | Levi-Civita geodesic (intrinsic Riemannian); Gaussian half-plane closed form planned |
+
+These four cover the canonical geodesic taxonomy: e-/m-geodesics
+(`power_law`/`mixture` — the dually-flat pair under the Fisher
+metric), the Levi-Civita / Fisher-Rao geodesic (`fisher_rao`), and
+the Wasserstein geodesic (`ot`). An `exp_family` natural-parameter
+scheme would be redundant with `power_law` on conjugate exponential
+families and is omitted by design.
 
 Each `TiltingScheme` owns its **selector** (`EtaSelector`) as a
 constructor argument: `FixedEtaSelector` is the static identity,
@@ -123,6 +129,24 @@ paired with `waldo`. The `identity` tilting + a uniform
 `tilting.confidence_interval(alpha, data, model, prior, statistic)`
 API let coverage / width / smoothness all share one cell loop.
 
+**CI region semantics — important.** Dynamic-η inversion can produce
+a CI that is the union of multiple disjoint regions (the dynamic
+p-value is non-monotone in θ at conflict). Two methods on
+`TiltingScheme` resolve this:
+
+- `confidence_regions(...) -> list[(lo, hi)]` returns the **actual
+  union**: every disjoint accept-region, sorted. This is what
+  `coverage` and `width` experiments call. `width` records
+  `sum(hi - lo)` — true union width, NOT the convex hull.
+- `confidence_interval(...) -> (lo, hi)` returns the **convex hull**
+  `(min lo, max hi)` as a single-tuple summary. Use this only when a
+  caller needs a single interval.
+
+Single-region cells (Wald, identity, fixed-η static cells) have
+`len(regions) == 1` so the two coincide. Multi-region cells (e.g.
+`power_law[dynamic_numerical]` at extreme conflict) — `confidence_regions`
+gives the honest answer, `confidence_interval` over-counts the gaps.
+
 **Calibration caveat — important.** The framework's calibrated default
 is `DynamicNumericalEtaSelector`: η at each θ depends only on θ (not
 on D), so the WALDO p-value at any fixed η is U[0,1] under H0 and the
@@ -133,6 +157,47 @@ pinned by `tests/regression/test_post_selection_coverage.py`. The
 static selector is exposed via `post_selection_demo_tiltings()` only
 to make the trade-off measurable; never use it for production CI
 estimation.
+
+**Calibrated AND narrow: `LearnedDynamicEtaSelector`.** The
+`numerical` dynamic selector is calibrated but inflates width by
+~30 % at the conflict band (|Δ|≥2) because the inner
+`NumericalEtaSelector` slams η to the lower clamp at small |Δ|.
+The Phase E **dual-head** learned selector (`EtaNet` + `ValidityNet`,
+in `src/frasian/learned/eta_artifact.py` + `learned/training/`)
+trains a smooth GELU-MLP on θ directly — no monotonicity prior, no
+bounded sigmoid, no `(w, |Δ|)` features. Validity is enforced via
+a `-log P(valid | θ, η)` boundary penalty driven by Head B
+(`ValidityNet`), which learns the admissible region from observed
+`(θ, η, valid)` triples during training. Per-experiment: each
+checkpoint is trained for one `(model, prior, scheme)` and the
+selector refuses cross-experiment use via tuple-equal fingerprint
+compare. Smoke fixtures live in
+`artifacts/learned_eta_<config_name>_v0_smoke.pt`; production v1
+checkpoints are not committed (re-train via
+`scripts.train_learned_eta --config experiments/<config>.yaml`).
+Activate via env var:
+
+```
+export FRASIAN_DEFAULT_DYNAMIC_ETA=learned   # vs default "numerical"
+```
+
+Headline empirical result on the canonical sandbox (w=0.5,
+n_reps=200, α=0.05; v0_smoke checkpoint):
+
+```
+                            θ=0    θ=1    θ=2    θ=3    θ=4
+Wald                        3.92   3.92   3.92   3.92   3.92
+bare WALDO                  3.32   3.44   3.75   4.24   4.85
+power_law[numerical]        3.35   3.50   3.92   4.53   5.23   ← legacy: inflates
+power_law[learned]          3.67   3.67   3.67   3.71   3.80   ← calibrated AND ≤ Wald
+```
+
+The headline table is for `power_law` only. `ot[learned]` is wired
+into `default_tiltings()` and runs through the coverage/width
+experiments, but the OT smoke checkpoint is undertrained relative
+to power_law (Head B accuracy ~0.67 on the v0_smoke; train a v1
+checkpoint for production-grade OT). See
+`docs/methods/learned_eta.md` for the full method brief.
 
 ## Test Statistics (status)
 
@@ -180,24 +245,35 @@ src/frasian/
   _runner.py                 # cross-product runner + manifest writer
   _errors.py                 # FrasianError, EmptyRegistryError, etc.
 
+  _default_cells.py          # default (tiltings, statistics) cell list, env-var dispatch
+
   models/
-    base.py                  # Model, Prior, Posterior, Likelihood protocols
-    distributions.py         # NormalDistribution, GaussianLikelihood
+    base.py                  # Model, Prior, Posterior, Likelihood protocols (incl. fingerprint())
+    _dispatch.py             # require_model decorator (Normal-only gating)
+    distributions.py         # NormalDistribution, BetaDistribution, Gaussian/Bernoulli likelihoods
     normal_normal.py         # NormalNormalModel + math primitives
+    bernoulli.py             # BernoulliModel + Beta-conjugate posterior
 
   tilting/
     base.py                  # TiltingScheme, EtaSelector, TiltingDomainError
     _solvers.py              # ONE brentq_with_doubling
-    eta_selectors.py         # Fixed / Numerical / DynamicNumerical EtaSelectors
+    _admissible.py           # numerical_admissible_range probe (cached debug helper)
+    _dynamic.py              # shared dynamic-η-per-θ CI scan (used by power_law/ot)
+    eta_selectors.py         # Fixed / Numerical / DynamicNumerical / LearnedDynamic
     identity.py              # IdentityTilting (no-op identity element)
-    power_law.py             # PowerLawTilting (Theorem 6)
-    {ot_normal,geodesic_normal,mixture,exp_family}.py  # planned stubs
+    power_law.py             # PowerLawTilting (e-geodesic / Theorem 6)
+    ot.py                    # OTTilting (W2 geodesic, general 1D + Gaussian fast path)
+    quantile_mixture.py      # QuantileMixturePath: 1D W2-geodesic Distribution wrapper
+    fisher_rao.py            # planned stub
+    mixture.py               # planned stub
 
   statistics/
     base.py                  # TestStatistic + AsymptoticDistribution
     wald.py                  # WaldStatistic
     waldo.py                 # WaldoStatistic
-    {lrt,signed_root,bartlett}.py  # planned stubs
+    lrt.py                   # planned stub
+    signed_root.py           # planned stub
+    bartlett.py              # planned stub
 
   cd/
     base.py                  # ConfidenceDistribution protocol
@@ -213,7 +289,9 @@ src/frasian/
     smoothness.py            # SmoothnessExperiment
     confidence_distribution.py  # ConfidenceDistributionExperiment
     illustrations/           # one demo per registered method
-      {identity,wald,waldo,power_law,smoothness,confidence_distribution}_demo.py
+      identity_demo.py, wald_demo.py, waldo_demo.py,
+      power_law_demo.py, ot_demo.py, learned_eta_demo.py,
+      smoothness_demo.py, confidence_distribution_demo.py
 
   diagnostics/
     base.py                  # Diagnostic + DiagnosticTable
@@ -230,8 +308,18 @@ src/frasian/
     runner.py                # persist_cell helper
 
   learned/
-    base.py                  # LearnedArtifact protocol (unused; future hook)
+    base.py                  # LearnedArtifact protocol
     null.py                  # NullArtifact (for tests)
+    eta_artifact.py          # Phase E EtaArtifact (loads dual-head v2 checkpoint)
+    training/
+      __init__.py            # public surface: EtaNet, ValidityNet, fit_eta_artifact, ...
+      architecture.py        # EtaNet (θ → η) + ValidityNet ((θ, η) → logit), GELU MLPs
+      losses.py              # integrated_p / cd_variance / static_width + boundary_penalty_from_validity
+      validity.py            # is_pair_valid, validity_mask, compute_pvalues_per_sample
+      sampling.py            # ExperimentConfig, ThetaDistribution, UniformThetaDistribution, lhs_1d
+      pvalue_torch.py        # torch ports of tilted_pvalue per scheme (autograd path)
+      cd_torch.py            # torch port of CD density (for cd_variance loss)
+      train.py               # fit_eta_artifact: dual-head training loop
 
 tests/
   conftest.py                # autouse registry isolation + bootstrapped fixture
@@ -249,6 +337,13 @@ docs/
 scripts/
   run.py                     # python -m scripts.run [--list] [--fast] experiment=<name>
   figures.py                 # python -m scripts.figures <results_dir>
+  train_learned_eta.py       # train Phase E EtaNet+ValidityNet from an experiment YAML
+
+experiments/
+  canonical_normal_normal_powerlaw.yaml  # Phase E ExperimentConfig fixture
+  canonical_normal_normal_ot.yaml        # Phase E ExperimentConfig fixture
+
+artifacts/                   # trained Phase E v0_smoke checkpoints (committed); v1 not committed
 
 tools/
   check_method_completeness.py  # verify brief + tests + illustration per method
@@ -317,7 +412,7 @@ python -m scripts.run --fast experiment=smoothness
 python -m scripts.figures results/coverage
 
 # Run the test suite
-python -m pytest                    # all 406 passing + 32 stub-skipped
+python -m pytest                    # ~1042 passing + 23 stub-skipped
 python -m pytest -m L0              # math primitives only
 python -m pytest -m "L0 or L1"      # core + properties
 python -m pytest -m L4              # end-to-end
@@ -350,6 +445,8 @@ clean tree is byte-reproducible.
 | 6    | done   | Stubs: OT / geodesic / mixture / exp_family / LRT / SR / BCLRT  |
 | 7    | done   | .claude/ subagents + slash commands + GitHub Actions CI gates   |
 | 8    | done   | Selector-as-tilting-member refactor: IdentityTilting + accepts_tilting + uniform `tilting.confidence_interval`; dynamic_ci subsumed by coverage/width |
+| 9    | done   | Geodesic taxonomy refactor: `ot_normal`→`ot` (general 1D W2 + Gaussian fast path implemented); `geodesic_normal`→`fisher_rao` (renamed stub); `exp_family` dropped (redundant with `power_law` on conjugate exp-families); `mixture` reframed as m-geodesic / dual partner of `power_law`'s e-geodesic |
+| 10   | done   | Phase E learned-η rewrite: model-agnostic dual-head selector (`EtaNet` + `ValidityNet`) trained per-experiment; replaces Phase D `MonotonicEtaNet` (deleted). `EtaNet`: smooth GELU-MLP from raw θ → η, no monotonicity prior, no bounded sigmoid. `ValidityNet`: learns `P(valid \| θ, η)` from observed `(θ, η, valid)` triples; provides `-log P(valid)` boundary penalty for Head A. Per-experiment fingerprints (`Prior.fingerprint()`/`Model.fingerprint()`) + strict cross-experiment refusal. New `ExperimentConfig` YAML schema. Smoke fixtures `learned_eta_canonical_normal_normal_<scheme>_v0_smoke.pt` committed for `power_law` and `ot`. |
 
 ## Key Anti-Patterns to Avoid
 

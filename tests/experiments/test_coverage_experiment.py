@@ -57,15 +57,17 @@ class TestCoverageExperimentEndToEnd:
         manifest = json.loads((tmp_path / "manifest.json").read_text())
         assert manifest["experiment"] == "coverage"
         assert manifest["config_fingerprint"] == cfg.fingerprint()
-        # 4 cells in the cross-product; one (wald x power_law[dyn]) gated
-        # out as incompatible. Three cells run.
+        # 6 cells in the cross-product (3 tiltings × 2 statistics); the two
+        # (wald × non-identity) cells gate out as incompatible. Four run.
         ok = [c for c in manifest["cells"] if c["status"] == "ok"]
         skipped = [c for c in manifest["cells"]
                    if c["status"] == "incompatible"]
-        assert len(ok) == 3
-        assert len(skipped) == 1
-        assert skipped[0]["statistic"] == "wald"
-        assert skipped[0]["tilting"].startswith("power_law")
+        assert len(ok) == 4
+        assert len(skipped) == 2
+        for sk in skipped:
+            assert sk["statistic"] == "wald"
+            assert (sk["tilting"].startswith("power_law")
+                    or sk["tilting"].startswith("ot"))
         assert "coverage_rate" in manifest["diagnostics"]
         # Cache paths are relative to the manifest directory.
         for cell in ok:

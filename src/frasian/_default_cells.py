@@ -42,30 +42,113 @@ if TYPE_CHECKING:
     from .tilting.base import TiltingScheme
 
 
+def _resolve_dynamic_eta_mode() -> str:
+    """Read FRASIAN_DEFAULT_DYNAMIC_ETA env var.
+
+    Values:
+      - "numerical" (default): `DynamicNumericalEtaSelector` wrapping
+        `NumericalEtaSelector`. Calibrated by construction but
+        inflates CI width at conflict (kinky η*(|Δ|) curve).
+      - "learned": `LearnedDynamicEtaSelector` reading the trained
+        Phase E `EtaArtifact` at the canonical YAML's smoke /
+        production path. Calibrated AND narrow (the headline claim).
+
+    Default is `numerical`.
+    """
+    import os
+    return os.environ.get("FRASIAN_DEFAULT_DYNAMIC_ETA", "numerical").lower()
+
+
+_PHASE_E_CHECKPOINT_FOR_SCHEME = {
+    "power_law": "canonical_normal_normal_powerlaw",
+    "ot": "canonical_normal_normal_ot",
+}
+
+
+def _make_learned_selector(scheme_name: str):
+    """Build a `LearnedDynamicEtaSelector` for a Phase E checkpoint.
+
+    Looks up the YAML config name for ``scheme_name`` and prefers the
+    production checkpoint; falls back to the smoke checkpoint. Raises
+    a clear error when neither exists — train via
+    ``python -m scripts.train_learned_eta --config <yaml>``.
+    """
+    from pathlib import Path
+    from .learned.eta_artifact import EtaArtifact
+    from .tilting.eta_selectors import LearnedDynamicEtaSelector
+
+    config_name = _PHASE_E_CHECKPOINT_FOR_SCHEME.get(scheme_name)
+    if config_name is None:
+        raise ValueError(
+            f"No Phase E experiment config registered for scheme "
+            f"{scheme_name!r}. Add an entry to "
+            f"`_PHASE_E_CHECKPOINT_FOR_SCHEME` and a YAML under "
+            f"`experiments/`."
+        )
+    # Anchor at the project root so resolution doesn't depend on CWD;
+    # `_default_cells.py` lives at `<root>/src/frasian/`.
+    project_root = Path(__file__).resolve().parents[2]
+    candidates = [
+        project_root / "artifacts" / f"learned_eta_{config_name}_v1.pt",
+        project_root / "artifacts" / f"learned_eta_{config_name}_v0_smoke.pt",
+    ]
+    chosen = next((c for c in candidates if c.exists()), None)
+    if chosen is None:
+        raise FileNotFoundError(
+            f"FRASIAN_DEFAULT_DYNAMIC_ETA=learned but no Phase E "
+            f"checkpoint found for scheme {scheme_name!r} at any of "
+            f"{candidates}. Train one via `python -m "
+            f"scripts.train_learned_eta --config "
+            f"experiments/{config_name}.yaml --out "
+            f"{candidates[0]}`."
+        )
+    artifact = EtaArtifact(artifact_path=chosen)
+    return LearnedDynamicEtaSelector(artifact=artifact)
+
+
 def default_tiltings(*, sigma: float = 1.0, mu0: float = 0.0,
                      n_grid: int = 401, coarse_n: int = 25,
                      ) -> list["TiltingScheme"]:
     """For coverage / width: tiltings *with their selector baked in*.
 
-    Identity + power_law[dynamic_numerical]. The fixed-η=0 power_law
-    cell is omitted as numerically redundant with identity. Future
-    smooth schemes (OT / geodesic / mixture / exp_family) plug in here
-    once their stubs are implemented.
+    Identity + power_law[dynamic] + ot[dynamic]. The fixed-η=0 power_law
+    cell is omitted as numerically redundant with identity. The
+    "dynamic" selector is gated by `FRASIAN_DEFAULT_DYNAMIC_ETA`:
+
+      - `numerical` (default): `DynamicNumericalEtaSelector`. Calibrated
+        but kinky; inflates CI width at conflict.
+      - `learned`: `LearnedDynamicEtaSelector` with the trained MLP.
+        Calibrated AND narrow.
+
+    Future smoother geodesic schemes (`fisher_rao`, `mixture`) plug
+    in here once their stubs land.
     """
-    # Imports inside the function body keep `import frasian` side-effect-
-    # free: only callers that actually need the cell instances trigger
-    # the tilting/statistic module registrations.
     from .tilting.eta_selectors import DynamicNumericalEtaSelector
     from .tilting.identity import IdentityTilting
+    from .tilting.ot import OTTilting
     from .tilting.power_law import PowerLawTilting
+
+    mode = _resolve_dynamic_eta_mode()
+    if mode == "learned":
+        pl_selector = _make_learned_selector("power_law")
+        ot_selector = _make_learned_selector("ot")
+    elif mode == "numerical":
+        pl_selector = DynamicNumericalEtaSelector(
+            sigma=sigma, mu0=mu0, n_grid=n_grid, coarse_n=coarse_n,
+        )
+        ot_selector = DynamicNumericalEtaSelector(
+            sigma=sigma, mu0=mu0, n_grid=n_grid, coarse_n=coarse_n,
+        )
+    else:
+        raise ValueError(
+            f"FRASIAN_DEFAULT_DYNAMIC_ETA={mode!r}; "
+            f"expected 'numerical' or 'learned'."
+        )
+
     return [
         IdentityTilting(),
-        PowerLawTilting(
-            selector=DynamicNumericalEtaSelector(
-                sigma=sigma, mu0=mu0,
-                n_grid=n_grid, coarse_n=coarse_n,
-            ),
-        ),
+        PowerLawTilting(selector=pl_selector),
+        OTTilting(selector=ot_selector),
     ]
 
 
@@ -101,8 +184,9 @@ def default_smoothness_tiltings() -> list["TiltingScheme"]:
     pass the bare family instances to avoid duplicate output.
     """
     from .tilting.identity import IdentityTilting
+    from .tilting.ot import OTTilting
     from .tilting.power_law import PowerLawTilting
-    return [IdentityTilting(), PowerLawTilting()]
+    return [IdentityTilting(), PowerLawTilting(), OTTilting()]
 
 
 def default_statistics() -> list["TestStatistic"]:

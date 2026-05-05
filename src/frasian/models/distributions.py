@@ -53,6 +53,9 @@ class NormalDistribution:
     def sample(self, rng: Generator, n: int) -> NDArray[np.float64]:
         return rng.normal(loc=self.loc, scale=self.scale, size=n)
 
+    def fingerprint(self) -> tuple:
+        return ("normal", float(self.loc), float(self.scale))
+
 
 @dataclass(frozen=True)
 class BetaDistribution:
@@ -97,6 +100,9 @@ class BetaDistribution:
 
     def sample(self, rng: Generator, n: int) -> NDArray[np.float64]:
         return rng.beta(self.alpha, self.beta, size=n)
+
+    def fingerprint(self) -> tuple:
+        return ("beta", float(self.alpha), float(self.beta))
 
 
 @dataclass(frozen=True)

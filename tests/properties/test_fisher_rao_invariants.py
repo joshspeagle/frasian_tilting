@@ -1,19 +1,19 @@
-"""Skipped property tests for GeodesicNormalTilting (stub).
+"""Skipped property tests for FisherRaoTilting (stub).
 
-Mirrors invariants in `docs/methods/geodesic_normal.md`. Flipping
-`skip` → passing is the unit of progress.
+Mirrors invariants in `docs/methods/fisher_rao.md`. Flipping
+`skip` -> passing is the unit of progress.
 """
 
 from __future__ import annotations
 
 import pytest
 
-_STUB_REASON = "stub - see docs/methods/geodesic_normal.md"
+_STUB_REASON = "stub - see docs/methods/fisher_rao.md"
 
 
 @pytest.mark.L1
 @pytest.mark.properties
-class TestGeodesicNormalInvariants:
+class TestFisherRaoInvariants:
     @pytest.mark.skip(reason=_STUB_REASON)
     def test_identity_at_eta_identity(self):
         """tilt(eta=eta_identity) returns the chosen reference Gaussian."""
@@ -31,5 +31,5 @@ class TestGeodesicNormalInvariants:
         """Step-5 diagnostic: lipschitz_eta < 1.0 (claim)."""
 
     @pytest.mark.skip(reason=_STUB_REASON)
-    def test_differs_from_ot_normal_when_variances_differ(self):
+    def test_differs_from_ot_when_variances_differ(self):
         """Fisher-Rao != W2 unless sigma_a = sigma_b."""

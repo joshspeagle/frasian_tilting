@@ -260,104 +260,38 @@ class PowerLawTilting:
     ) -> tuple[list[tuple[float, float]], float, int]:
         """Dynamic-η CI: η = η*(|Δ(θ)|) per θ.
 
-        Algorithm:
-          1. Build a coarse |Δ| grid covering the search range.
-          2. Compute η*(|Δ|) on the coarse grid via `eta_selector.select_grid`.
-          3. Build a fine θ scan; interpolate η* to each θ from the coarse grid.
-          4. Compute the dynamic p-value at each θ.
-          5. Find α-crossings; refine each via brentq.
-          6. Stitch crossings into intervals (region count may be > 1: the
-             dynamic p-value can be multimodal at low |Δ|).
-
-        Returns `(regions, total_width, n_regions)`.
+        Delegates the scan + α-crossing algorithm to
+        `frasian.tilting._dynamic.dynamic_ci_scan` (see that function's
+        docstring for the documented step-by-step recipe). The
+        scheme-specific bit is the `tilted_pvalue` closure.
         """
         from ..models.normal_normal import NormalNormalModel
-        from scipy import optimize
+        from ._dynamic import dynamic_ci_scan
 
         if not isinstance(model, NormalNormalModel):
             raise NotImplementedError(
                 "dynamic_tilted_confidence_interval currently requires "
                 "NormalNormalModel."
             )
-        sigma = model.sigma
-        mu0 = prior.loc
-        sigma0 = prior.scale
+        sigma = float(model.sigma)
+        mu0 = float(prior.loc)
+        sigma0 = float(prior.scale)
         w = sigma0 ** 2 / (sigma ** 2 + sigma0 ** 2)
 
-        # Search range centred on D; theta and D agree in scale on canonical sandbox.
-        search_half = search_mult * sigma
-        theta_lo = D - search_half
-        theta_hi = D + search_half
-        theta_grid = np.linspace(theta_lo, theta_hi, n_grid)
-
-        # |Delta(theta)| over the scan.
-        abs_delta_theta = np.abs((1.0 - w) * (mu0 - theta_grid) / sigma)
-
-        # Coarse η* lookup.
-        from .eta_selectors import _NamedStatistic
-        ad_max = float(abs_delta_theta.max()) + 1e-6
-        coarse_grid = np.linspace(0.0, ad_max, coarse_n)
-        coarse_eta = eta_selector.select_grid(
-            coarse_grid, self, statistic=_NamedStatistic(statistic_name),
-            w=w, alpha=alpha,
-        )
-        # Interpolate to the fine θ scan.
-        eta_at_theta = np.interp(abs_delta_theta, coarse_grid, coarse_eta)
-
-        # Dynamic p-values at each θ on the fine grid.
-        p_theta = np.empty_like(theta_grid)
-        for i in range(theta_grid.size):
-            p_theta[i] = float(self.tilted_pvalue(
-                float(theta_grid[i]), D, model, prior,
-                float(eta_at_theta[i]), statistic_name,
+        def _tilted_pvalue_fn(theta: float, eta: float) -> float:
+            return float(self.tilted_pvalue(
+                theta, D, model, prior, eta, statistic_name,
             ))
 
-        # Find α-crossings.
-        diff = p_theta - alpha
-        crossings: list[float] = []
-        for i in range(theta_grid.size - 1):
-            if diff[i] * diff[i + 1] < 0.0:
-                # Brentq refines on the dynamic-p function.
-                def _f(theta_val: float, _i=i) -> float:
-                    ad = abs((1.0 - w) * (mu0 - theta_val) / sigma)
-                    eta = float(np.interp(ad, coarse_grid, coarse_eta))
-                    return float(self.tilted_pvalue(
-                        theta_val, D, model, prior, eta, statistic_name,
-                    )) - alpha
-                try:
-                    cross = optimize.brentq(
-                        _f, theta_grid[i], theta_grid[i + 1], xtol=1e-9,
-                    )
-                    crossings.append(float(cross))
-                except ValueError:
-                    # Linear interpolation fallback.
-                    t = diff[i] / (diff[i] - diff[i + 1])
-                    crossings.append(
-                        float(theta_grid[i] + t * (theta_grid[i + 1]
-                                                    - theta_grid[i]))
-                    )
-
-        # Build intervals from crossings. We treat the scan endpoints as
-        # closed: if p > alpha there, we include the endpoint as an
-        # implicit crossing.
-        regions: list[tuple[float, float]] = []
-        if not crossings:
-            # No crossings — either entirely inside or entirely outside.
-            if p_theta[len(p_theta) // 2] >= alpha:
-                regions = [(float(theta_lo), float(theta_hi))]
-        else:
-            entries = list(crossings)
-            # Prepend / append endpoints if needed so the parity comes out right.
-            if p_theta[0] >= alpha:
-                entries = [float(theta_lo)] + entries
-            if p_theta[-1] >= alpha:
-                entries = entries + [float(theta_hi)]
-            # Pair them up.
-            for i in range(0, len(entries) - 1, 2):
-                regions.append((entries[i], entries[i + 1]))
-
-        total = float(sum(hi - lo for lo, hi in regions))
-        return regions, total, len(regions)
+        return dynamic_ci_scan(
+            tilted_pvalue_fn=_tilted_pvalue_fn,
+            alpha=alpha, D=D, w=w, mu0=mu0, sigma=sigma,
+            eta_selector=eta_selector, scheme=self,
+            statistic_name=statistic_name,
+            n_grid=n_grid, coarse_n=coarse_n, search_mult=search_mult,
+            model_fingerprint=model.fingerprint(),
+            prior_fingerprint=prior.fingerprint(),
+        )
 
     # ----- Uniform CI / regions / pvalue interface (called by experiments) -----
 
@@ -456,9 +390,24 @@ class PowerLawTilting:
             coarse_n = int(getattr(self.selector, "coarse_n", 25))
             ad_max = float(abs_delta_theta.max()) + 1e-6
             coarse_grid = np.linspace(0.0, ad_max, coarse_n)
-            coarse_eta = self.selector.select_grid(
-                coarse_grid, self, statistic=_NamedStatistic(statistic.name),
+            # Plumb fingerprints so the Phase E selector applies the
+            # strict cross-experiment check; legacy selectors ignore
+            # the kwargs.
+            select_kwargs = dict(
+                statistic=_NamedStatistic(statistic.name),
                 w=w, alpha=alpha,
+            )
+            try:
+                import inspect
+                sig = inspect.signature(self.selector.select_grid)
+                if "model_fingerprint" in sig.parameters:
+                    select_kwargs["model_fingerprint"] = model.fingerprint()
+                if "prior_fingerprint" in sig.parameters:
+                    select_kwargs["prior_fingerprint"] = prior.fingerprint()
+            except (TypeError, ValueError):
+                pass
+            coarse_eta = self.selector.select_grid(
+                coarse_grid, self, **select_kwargs,
             )
             eta_at_theta = np.interp(abs_delta_theta, coarse_grid, coarse_eta)
             return self.dynamic_tilted_pvalue(
