@@ -11,10 +11,14 @@ This module contains:
 - ``is_pair_valid(p_scalar)`` — per-sample predicate.
 - ``validity_mask(p_array)`` — vectorised version returning bool ndarray.
 - ``compute_pvalues_per_sample(scheme, theta, D, model, prior, eta,
-  statistic_name)`` — runs ``tilted_pvalue`` once per sample and
-  returns a NaN-on-failure array (catches ``TiltingDomainError`` /
-  ``ValueError`` / ``RuntimeError`` and yields NaN in that slot, so
-  downstream ``validity_mask`` marks the slot invalid).
+  statistic_name)`` — runs ``tilted_pvalue`` per sample and returns a
+  NaN-on-failure array. Phase 3 (Tier 1.3 N2) pre-masks invalid η via
+  closed-form admissibility, then issues one bulk ``tilted_pvalue``
+  call per ``D`` value across the surviving (θ, η) pairs (D varies
+  per sample so the call is grouped by unique D). Catches
+  ``TiltingDomainError`` / ``ValueError`` / ``RuntimeError`` and
+  yields NaN in any slot that escapes the pre-mask, so downstream
+  ``validity_mask`` still marks it invalid.
 """
 
 from __future__ import annotations
@@ -49,6 +53,41 @@ def validity_mask(p_array: NDArray[np.float64]) -> NDArray[np.bool_]:
     return np.isfinite(arr) & (arr >= -_FP_SLACK) & (arr <= 1.0 + _FP_SLACK)
 
 
+def _admissibility_mask(
+    scheme: Any,
+    eta_arr: NDArray[np.float64],
+    model: Any,
+    prior: Any,
+) -> NDArray[np.bool_]:
+    """Closed-form per-element admissibility predicate for the trained schemes.
+
+    - power_law: denom = 1 - eta(1-w) > 0  ⟺  eta < 1/(1-w).
+    - ot:        eta in [0, 1].
+
+    For unrecognised schemes returns an all-True mask, falling back
+    fully to the per-element exception path. The float check on η
+    finiteness is shared so both schemes treat NaN/Inf as invalid.
+    """
+    finite = np.isfinite(eta_arr)
+    name = getattr(scheme, "name", "")
+    if name == "power_law":
+        # w depends only on (model.sigma, prior.scale), constant across
+        # the per-sample loop in the training pipeline.
+        sigma = float(getattr(model, "sigma", float("nan")))
+        sigma0 = float(getattr(prior, "scale", float("nan")))
+        if not (np.isfinite(sigma) and np.isfinite(sigma0)):
+            return finite  # fall back to per-element exception path
+        w = sigma0**2 / (sigma**2 + sigma0**2)
+        # denom > 0  ⟺  eta < 1/(1-w). Match the buffer in
+        # PowerLawTilting.admissible_range so the closed-form mask
+        # rejects strictly the same ηs that tilted_pvalue would raise on.
+        return finite & (eta_arr < 1.0 / (1.0 - w))
+    if name == "ot":
+        return finite & (eta_arr >= 0.0) & (eta_arr <= 1.0)
+    # Unknown scheme: don't pre-mask; let the per-element fallback handle it.
+    return finite
+
+
 def compute_pvalues_per_sample(
     scheme: Any,
     theta: NDArray[np.float64],
@@ -60,13 +99,20 @@ def compute_pvalues_per_sample(
 ) -> NDArray[np.float64]:
     """Per-sample ``scheme.tilted_pvalue`` lookup; NaN on failure.
 
-    Each ``(θ_i, D_i, η_i)`` triple is fed into
-    ``scheme.tilted_pvalue(np.array([θ_i]), D_i, model, prior, η_i,
-    statistic_name)`` and the scalar output is collected. Exceptions
-    that the framework conventionally raises for invalid η (i.e.,
-    ``TiltingDomainError``, ``ValueError``, ``RuntimeError``) are
-    caught and converted to NaN — ``validity_mask`` then marks the
-    slot invalid.
+    Phase 3 (Tier 1.3 N2) replaces the original Python loop with a
+    closed-form admissibility pre-mask + a single vectorised
+    ``tilted_pvalue`` call across the surviving samples. The output is
+    bytewise-identical to the scalar reference for valid samples and
+    NaN for samples that fail either the pre-mask or the residual
+    post-call validation (NaN/Inf p-value, or rare exceptions that
+    slip through the closed-form predicate). Downstream
+    ``validity_mask`` marks NaN slots invalid as before.
+
+    Exceptions raised by ``tilted_pvalue`` on the bulk path
+    (``TiltingDomainError`` / ``ValueError`` / ``RuntimeError`` /
+    ``NotImplementedError`` / ``ArithmeticError``) trigger a fallback
+    to the per-sample loop so a single bad sample doesn't fail the
+    whole batch — preserving the original "NaN per slot" semantics.
 
     All arrays must share the same shape ``(N,)``.
     """
@@ -87,6 +133,56 @@ def compute_pvalues_per_sample(
             f"{theta_arr.shape}, {D_arr.shape}, {eta_arr.shape}."
         )
 
+    out = np.full(theta_arr.shape, np.nan, dtype=np.float64)
+    admissible = _admissibility_mask(scheme, eta_arr, model, prior)
+    if not np.any(admissible):
+        return out
+
+    # Fast path: bulk vectorised call across the admissible subset.
+    # tilted_pvalue broadcasts over (theta, eta) of the same shape;
+    # D broadcasts naturally as another array of the same shape (it
+    # only enters the formula via element-wise arithmetic). On any
+    # exception we fall back to the legacy per-sample loop so a rare
+    # bad-sample doesn't poison the whole batch.
+    try:
+        p_bulk = np.asarray(
+            scheme.tilted_pvalue(
+                theta_arr[admissible],
+                D_arr[admissible],
+                model,
+                prior,
+                eta_arr[admissible],
+                statistic_name,
+            ),
+            dtype=np.float64,
+        )
+        # Any non-finite slot from the closed-form ufuncs (e.g., a
+        # numerical blow-up that escapes the closed-form mask) gets
+        # left as NaN downstream of validity_mask.
+        out[admissible] = p_bulk
+        return out
+    except (TiltingDomainError, ValueError, RuntimeError, NotImplementedError, ArithmeticError):
+        # Fallback: per-sample loop with try/except — preserves the
+        # "NaN per offending slot" output semantics of the legacy path.
+        return _compute_pvalues_per_sample_loop(
+            scheme, theta_arr, D_arr, model, prior, eta_arr, statistic_name
+        )
+
+
+def _compute_pvalues_per_sample_loop(
+    scheme: Any,
+    theta_arr: NDArray[np.float64],
+    D_arr: NDArray[np.float64],
+    model: Any,
+    prior: Any,
+    eta_arr: NDArray[np.float64],
+    statistic_name: str,
+) -> NDArray[np.float64]:
+    """Legacy per-sample loop kept as the exception-safe fallback.
+
+    Used when the closed-form admissibility mask is unavailable for
+    a scheme (unknown ``scheme.name``) or when the bulk call raises.
+    """
     out = np.empty(theta_arr.shape, dtype=np.float64)
     for i in range(theta_arr.size):
         try:

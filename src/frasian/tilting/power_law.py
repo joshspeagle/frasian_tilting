@@ -172,13 +172,18 @@ class PowerLawTilting:
         D: float,
         model: object,
         prior: NormalDistribution,
-        eta: float,
+        eta: ArrayLike,
         statistic_name: str,
     ) -> NDArray[np.float64]:
         """p-value of `statistic_name` evaluated against the tilted posterior.
 
         Specialized for (power_law, waldo) — Theorem 8 closed form — and
         (power_law, wald) — eta-independent two-sided Wald.
+
+        ``eta`` accepts either a scalar (the historical contract) or an
+        array broadcastable to ``theta``. The array path is what
+        ``dynamic_ci_scan`` (and ``dynamic_tilted_pvalue``) use to evaluate
+        a per-θ varying η in one bulk numpy call (Tier 1.3 N1/N3).
         """
         from ..models.normal_normal import NormalNormalModel
 
@@ -195,11 +200,27 @@ class PowerLawTilting:
         mu0 = prior.loc
         sigma0 = prior.scale
         w = sigma0**2 / (sigma**2 + sigma0**2)
-        denom = _denom(w, eta)
-        if denom <= 0.0:
-            raise TiltingDomainError(f"eta={eta!r} drives denom to {denom!r} <= 0 with w={w!r}.")
 
         theta_arr = np.asarray(theta, dtype=np.float64)
+        eta_arr = np.asarray(eta, dtype=np.float64)
+
+        # Vectorised admissibility: denom = 1 - eta(1-w) > 0. Scalar eta
+        # produces a 0-d array and the same logic applies; raising surfaces
+        # the offending value either way.
+        denom = 1.0 - eta_arr * (1.0 - w)
+        if np.any(denom <= 0.0):
+            if eta_arr.ndim == 0:
+                raise TiltingDomainError(
+                    f"eta={float(eta_arr)!r} drives denom to "
+                    f"{float(denom)!r} <= 0 with w={w!r}."
+                )
+            bad = int(np.argmax(denom <= 0.0))
+            raise TiltingDomainError(
+                f"PowerLawTilting.tilted_pvalue: eta drives denom <= 0 at "
+                f"index {bad} (eta={float(eta_arr.flat[bad])!r}, "
+                f"denom={float(np.asarray(denom).flat[bad])!r}, w={w!r})."
+            )
+
         if statistic_name == "wald":
             # Wald is eta-independent: 2 * (1 - Phi(|D - theta| / sigma)).
             from scipy import stats as _stats
@@ -209,10 +230,10 @@ class PowerLawTilting:
         if statistic_name == "waldo":
             from scipy import stats as _stats
 
-            mu_eta = (w * D + (1.0 - eta) * (1.0 - w) * mu0) / denom
+            mu_eta = (w * D + (1.0 - eta_arr) * (1.0 - w) * mu0) / denom
             norm_factor = w * sigma / denom
             a_eta = np.abs(mu_eta - theta_arr) / norm_factor
-            b_eta = (1.0 - eta) * (1.0 - w) * (mu0 - theta_arr) / (denom * norm_factor)
+            b_eta = (1.0 - eta_arr) * (1.0 - w) * (mu0 - theta_arr) / (denom * norm_factor)
             return np.asarray(
                 _stats.norm.cdf(b_eta - a_eta) + _stats.norm.cdf(-a_eta - b_eta),
                 dtype=np.float64,
@@ -245,18 +266,15 @@ class PowerLawTilting:
                 f"theta and eta_at_theta must have the same shape; got "
                 f"{theta_arr.shape!r} and {eta_arr.shape!r}."
             )
-        out = np.empty_like(theta_arr)
-        for i in range(theta_arr.size):
-            out[i] = float(
-                self.tilted_pvalue(
-                    float(theta_arr[i]),
-                    D,
-                    model,
-                    prior,
-                    float(eta_arr[i]),
-                    statistic_name,
-                )
-            )
+        # Vectorised path: `tilted_pvalue` now broadcasts over array eta,
+        # so one bulk call replaces the scalar Python loop. Behaviour is
+        # byte-identical to the previous per-element evaluation; an
+        # invalid eta in any slot still raises TiltingDomainError with
+        # the offending index identified (Tier 1.3 N3).
+        out = np.asarray(
+            self.tilted_pvalue(theta_arr, D, model, prior, eta_arr, statistic_name),
+            dtype=np.float64,
+        )
         return out if out.size > 1 else np.asarray(float(out.item()))
 
     def dynamic_tilted_confidence_interval(
@@ -302,8 +320,23 @@ class PowerLawTilting:
                 )
             )
 
+        def _tilted_pvalue_vec_fn(
+            theta_arr: np.ndarray, eta_arr: np.ndarray
+        ) -> np.ndarray:
+            # Bulk path: tilted_pvalue broadcasts over array eta when
+            # eta has the same shape as theta. Single numpy/scipy call
+            # replaces the scalar Python loop in dynamic_ci_scan
+            # (Tier 1.3 N1).
+            return np.asarray(
+                self.tilted_pvalue(
+                    theta_arr, D, model, prior, eta_arr, statistic_name
+                ),
+                dtype=np.float64,
+            )
+
         return dynamic_ci_scan(
             tilted_pvalue_fn=_tilted_pvalue_fn,
+            tilted_pvalue_vec_fn=_tilted_pvalue_vec_fn,
             alpha=alpha,
             D=D,
             w=w,

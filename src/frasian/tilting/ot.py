@@ -144,7 +144,7 @@ class OTTilting:
         D: float,
         model: Model,
         prior: NormalDistribution,
-        eta: float,
+        eta: ArrayLike,
         statistic_name: str,
     ) -> NDArray[np.float64]:
         """Tilted p-value evaluated against the W2-tilted Gaussian.
@@ -157,6 +157,11 @@ class OTTilting:
 
         Endpoint sanity: at eta=0 reduces to bare WALDO; at eta=1 reduces
         to bare Wald (s_t -> sigma, mu_t -> D, b -> 0, a -> |D-theta|/sigma).
+
+        ``eta`` accepts either a scalar (the historical contract) or an
+        array broadcastable to ``theta``; the array path lets
+        ``dynamic_ci_scan`` (and ``dynamic_tilted_pvalue``) evaluate a
+        per-θ varying η in one bulk numpy call (Tier 1.3 N1/N3).
         """
         from ..models.normal_normal import NormalNormalModel
 
@@ -174,17 +179,27 @@ class OTTilting:
         sigma0 = float(prior.scale)
         w = sigma0**2 / (sigma**2 + sigma0**2)
 
+        theta_arr = np.asarray(theta, dtype=np.float64)
+        eta_arr = np.asarray(eta, dtype=np.float64)
+
         # Mirror the admissibility check in `tilt()` (line 101): η outside
         # [0, 1] makes the W2 interpolation a non-distribution and yields
         # a non-positive scale `s_t = (w + eta(1-w))*sigma`, producing a
         # finite-but-mathematically-bogus p-value. Refuse explicitly.
-        eta_f = float(eta)
-        if not (0.0 <= eta_f <= 1.0):
+        # Vectorised: any out-of-range element raises with the offending
+        # index. Scalar eta still produces a clear scalar message.
+        invalid = ~(np.isfinite(eta_arr) & (eta_arr >= 0.0) & (eta_arr <= 1.0))
+        if np.any(invalid):
+            if eta_arr.ndim == 0:
+                raise TiltingDomainError(
+                    f"OTTilting.tilted_pvalue requires eta in [0, 1], got "
+                    f"{float(eta_arr)!r}."
+                )
+            bad = int(np.argmax(invalid))
             raise TiltingDomainError(
-                f"OTTilting.tilted_pvalue requires eta in [0, 1], got " f"{eta_f!r}."
+                f"OTTilting.tilted_pvalue requires eta in [0, 1] and finite; "
+                f"offending index {bad} eta={float(eta_arr.flat[bad])!r}."
             )
-
-        theta_arr = np.asarray(theta, dtype=np.float64)
 
         if statistic_name == "wald":
             z = np.abs(D - theta_arr) / sigma
@@ -192,10 +207,10 @@ class OTTilting:
 
         if statistic_name == "waldo":
             mu_n = w * D + (1.0 - w) * mu0
-            mu_t = (1.0 - eta_f) * mu_n + eta_f * D
-            s_t = (w + eta_f * (1.0 - w)) * sigma
+            mu_t = (1.0 - eta_arr) * mu_n + eta_arr * D
+            s_t = (w + eta_arr * (1.0 - w)) * sigma
             a = np.abs(mu_t - theta_arr) / s_t
-            b = (1.0 - eta_f) * (1.0 - w) * (mu0 - theta_arr) / s_t
+            b = (1.0 - eta_arr) * (1.0 - w) * (mu0 - theta_arr) / s_t
             return np.asarray(
                 stats.norm.cdf(b - a) + stats.norm.cdf(-a - b),
                 dtype=np.float64,
@@ -266,6 +281,10 @@ class OTTilting:
             )
         # Pre-validate the eta array so a partial population on raise can
         # not happen mid-loop; surface the offending index/value cleanly.
+        # (`tilted_pvalue` performs the same check internally now, but
+        # keeping the upfront guard here preserves the Phase 1 skeptic
+        # vector #5 contract — a single pre-loop validation rather than
+        # per-element raise.)
         valid = np.isfinite(eta_arr) & (eta_arr >= 0.0) & (eta_arr <= 1.0)
         if not np.all(valid):
             bad = np.argmax(~valid)
@@ -274,18 +293,12 @@ class OTTilting:
                 f"and finite; offending index {int(bad)} eta="
                 f"{float(eta_arr.flat[int(bad)])!r}."
             )
-        out = np.empty_like(theta_arr)
-        for i in range(theta_arr.size):
-            out[i] = float(
-                self.tilted_pvalue(
-                    float(theta_arr[i]),
-                    D,
-                    model,
-                    prior,
-                    float(eta_arr[i]),
-                    statistic_name,
-                )
-            )
+        # Vectorised path: `tilted_pvalue` now broadcasts over array eta,
+        # so one bulk call replaces the scalar Python loop (Tier 1.3 N3).
+        out = np.asarray(
+            self.tilted_pvalue(theta_arr, D, model, prior, eta_arr, statistic_name),
+            dtype=np.float64,
+        )
         return out if out.size > 1 else np.asarray(float(out.item()))
 
     def dynamic_tilted_confidence_interval(
@@ -331,8 +344,23 @@ class OTTilting:
                 )
             )
 
+        def _tilted_pvalue_vec_fn(
+            theta_arr: np.ndarray, eta_arr: np.ndarray
+        ) -> np.ndarray:
+            # Bulk path: tilted_pvalue broadcasts over array eta when
+            # eta has the same shape as theta. Single numpy/scipy call
+            # replaces the scalar Python loop in dynamic_ci_scan
+            # (Tier 1.3 N1).
+            return np.asarray(
+                self.tilted_pvalue(
+                    theta_arr, D, model, prior, eta_arr, statistic_name
+                ),
+                dtype=np.float64,
+            )
+
         return dynamic_ci_scan(
             tilted_pvalue_fn=_tilted_pvalue_fn,
+            tilted_pvalue_vec_fn=_tilted_pvalue_vec_fn,
             alpha=alpha,
             D=D,
             w=w,
