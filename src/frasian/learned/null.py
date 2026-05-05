@@ -1,8 +1,10 @@
 """Trivial LearnedArtifact used to test the framework without any real model.
 
 Used by the cache and runner tests where we want to inject an artifact of
-known behavior. Concrete artifacts (the monotonic eta MLP) land in a
-later step alongside the experiments that use them.
+known behavior. The production concrete artifact is the Phase E dual-head
+``EtaArtifact`` (in ``eta_artifact.py``), which wraps an ``EtaNet`` (θ → η)
+plus a ``ValidityNet`` ((θ, η) → P(valid)) trained per-experiment. The
+Phase D ``MonotonicEtaNet`` predictor it replaced has been retired.
 """
 
 from __future__ import annotations

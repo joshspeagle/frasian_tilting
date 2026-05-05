@@ -62,6 +62,26 @@ from .eta_selectors import FixedEtaSelector
 from .quantile_mixture import QuantileMixturePath
 
 
+def _data_to_scalar_D(data: NDArray[np.float64]) -> float:
+    """Coerce ``data`` to a single scalar D for the n=1 sandbox.
+
+    The framework's Normal-Normal contract is single-observation
+    (CLAUDE.md "1D conjugate Normal-Normal sandbox"). Earlier code
+    silently used ``data.mean()`` which produced wrong CI widths for
+    n>1 (the effective σ would shrink as σ/√n, not σ). Make the
+    assumption explicit: refuse n>1 with a clear message rather than
+    silently mis-scaling. Tier 1.5-O8 in the audit.
+    """
+    arr = np.atleast_1d(np.asarray(data, dtype=np.float64))
+    if arr.size != 1:
+        raise NotImplementedError(
+            f"Normal-Normal sandbox is single-observation (n=1); got "
+            f"data.size={arr.size}. For n>1, use sigma_eff=sigma/sqrt(n) "
+            f"and pass data.mean() with a model whose sigma is sigma_eff."
+        )
+    return float(arr[0])
+
+
 @register_tilting(name="ot", brief="docs/methods/ot.md")
 @dataclass(frozen=True)
 class OTTilting:
@@ -407,7 +427,7 @@ class OTTilting:
 
         model = cast(NormalNormalModel, model)
         prior = cast(NormalDistribution, prior)
-        D = float(np.atleast_1d(np.asarray(data, dtype=np.float64)).mean())
+        D = _data_to_scalar_D(data)
         sigma = float(model.sigma)
         sigma0 = float(prior.scale)
         w = sigma0**2 / (sigma**2 + sigma0**2)
@@ -474,7 +494,7 @@ class OTTilting:
         from .eta_selectors import _NamedStatistic
 
         alpha = float(Config.default().alpha)
-        D = float(np.atleast_1d(np.asarray(data, dtype=np.float64)).mean())
+        D = _data_to_scalar_D(data)
         theta_arr = np.atleast_1d(np.asarray(theta, dtype=np.float64))
         sigma = float(model.sigma)
         sigma0 = float(prior.scale)

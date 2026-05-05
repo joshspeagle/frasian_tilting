@@ -38,6 +38,8 @@ from typing import Any, Callable
 import numpy as np
 from scipy import optimize
 
+from .._errors import BracketingFailed
+
 
 def dynamic_ci_scan(
     *,
@@ -104,6 +106,83 @@ def dynamic_ci_scan(
         `total_width` is `sum(hi - lo)` (union semantics, NOT convex hull).
     """
     from .eta_selectors import _NamedStatistic
+
+    # First attempt at the requested search width; on boundary-hit we
+    # auto-widen once before raising BracketingFailed (Tier 1.5-O6).
+    regions, total, n_regions, hit_boundary = _run_dynamic_scan(
+        tilted_pvalue_fn=tilted_pvalue_fn,
+        tilted_pvalue_vec_fn=tilted_pvalue_vec_fn,
+        alpha=alpha,
+        D=D,
+        w=w,
+        mu0=mu0,
+        sigma=sigma,
+        eta_selector=eta_selector,
+        scheme=scheme,
+        statistic_name=statistic_name,
+        n_grid=n_grid,
+        coarse_n=coarse_n,
+        search_mult=search_mult,
+        model_fingerprint=model_fingerprint,
+        prior_fingerprint=prior_fingerprint,
+        named_statistic_cls=_NamedStatistic,
+    )
+    if hit_boundary:
+        # Retry once at 2x search width. If the boundary is still hit,
+        # something is genuinely off (unbounded CI region) — raise rather
+        # than silently truncate.
+        regions, total, n_regions, hit_boundary = _run_dynamic_scan(
+            tilted_pvalue_fn=tilted_pvalue_fn,
+            tilted_pvalue_vec_fn=tilted_pvalue_vec_fn,
+            alpha=alpha,
+            D=D,
+            w=w,
+            mu0=mu0,
+            sigma=sigma,
+            eta_selector=eta_selector,
+            scheme=scheme,
+            statistic_name=statistic_name,
+            n_grid=n_grid,
+            coarse_n=coarse_n,
+            search_mult=2.0 * search_mult,
+            model_fingerprint=model_fingerprint,
+            prior_fingerprint=prior_fingerprint,
+            named_statistic_cls=_NamedStatistic,
+        )
+        if hit_boundary:
+            raise BracketingFailed(
+                f"dynamic_ci_scan: CI extends past search box (±{2.0 * search_mult}·σ "
+                f"around D={D!r}; sigma={sigma!r}). Increase search_mult or "
+                f"check for an unbounded p-value tail at this θ."
+            )
+    return regions, total, n_regions
+
+
+def _run_dynamic_scan(
+    *,
+    tilted_pvalue_fn: Callable[[float, float], float],
+    tilted_pvalue_vec_fn: Callable[[np.ndarray, np.ndarray], np.ndarray] | None,
+    alpha: float,
+    D: float,
+    w: float,
+    mu0: float,
+    sigma: float,
+    eta_selector: Any,
+    scheme: Any,
+    statistic_name: str,
+    n_grid: int,
+    coarse_n: int,
+    search_mult: float,
+    model_fingerprint: tuple | None,
+    prior_fingerprint: tuple | None,
+    named_statistic_cls: Any,
+) -> tuple[list[tuple[float, float]], float, int, bool]:
+    """Single scan pass; returns ``(regions, total, n_regions, hit_boundary)``.
+
+    ``hit_boundary`` is True iff the lower or upper search edge has
+    p-value ≥ alpha (i.e. the accept-region extends past the box).
+    """
+    _NamedStatistic = named_statistic_cls
 
     search_half = search_mult * sigma
     theta_lo = D - search_half
@@ -188,17 +267,22 @@ def dynamic_ci_scan(
                 crossings.append(float(theta_grid[i] + t * (theta_grid[i + 1] - theta_grid[i])))
 
     regions: list[tuple[float, float]] = []
+    hit_boundary = False
     if not crossings:
         if p_theta[len(p_theta) // 2] >= alpha:
             regions = [(float(theta_lo), float(theta_hi))]
+            # Whole window is the accept region — unambiguous truncation.
+            hit_boundary = True
     else:
         entries = list(crossings)
         if p_theta[0] >= alpha:
             entries = [float(theta_lo)] + entries
+            hit_boundary = True
         if p_theta[-1] >= alpha:
             entries = entries + [float(theta_hi)]
+            hit_boundary = True
         for i in range(0, len(entries) - 1, 2):
             regions.append((entries[i], entries[i + 1]))
 
     total = float(sum(hi - lo for lo, hi in regions))
-    return regions, total, len(regions)
+    return regions, total, len(regions), hit_boundary

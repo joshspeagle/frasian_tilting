@@ -16,8 +16,9 @@ This module contains:
   closed-form admissibility, then issues one bulk ``tilted_pvalue``
   call per ``D`` value across the surviving (θ, η) pairs (D varies
   per sample so the call is grouped by unique D). Catches
-  ``TiltingDomainError`` / ``ValueError`` / ``RuntimeError`` and
-  yields NaN in any slot that escapes the pre-mask, so downstream
+  ``TiltingDomainError`` / ``ValueError`` / ``RuntimeError`` /
+  ``NotImplementedError`` / ``ArithmeticError`` and yields NaN in
+  any slot that escapes the pre-mask, so downstream
   ``validity_mask`` still marks it invalid.
 """
 

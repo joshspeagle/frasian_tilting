@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import traceback
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -161,15 +162,34 @@ def run_experiment(
             )
             continue
 
-        result = experiment.run_cell(ctx, tilting, statistic)
-        raw_fp = str(result.metadata.get("raw_fingerprint", ""))
-        path = persist_cell(
-            raw_result=result,
-            config=config,
-            cache_root=cache_root,
-            raw_fingerprint=raw_fp,
-            tilting=tilting,
-        )
+        # Per-cell resilience (Tier 1.7-C3): a single bad cell must NOT
+        # take the whole experiment with it. Catch broad Exception (but
+        # NOT KeyboardInterrupt / SystemExit), record the failure in the
+        # manifest with status="error" + a truncated traceback, and
+        # continue. The manifest is still written at the end.
+        try:
+            result = experiment.run_cell(ctx, tilting, statistic)
+            raw_fp = str(result.metadata.get("raw_fingerprint", ""))
+            path = persist_cell(
+                raw_result=result,
+                config=config,
+                cache_root=cache_root,
+                raw_fingerprint=raw_fp,
+                tilting=tilting,
+            )
+        except Exception as exc:  # noqa: BLE001 — see comment above.
+            tb = traceback.format_exc(limit=8)
+            summary.cells.append(
+                CellSummary(
+                    tilting=cell_tilting_name,
+                    statistic=cell_statistic_name,
+                    cache_path="",
+                    status="error",
+                    reason=f"{type(exc).__name__}: {exc!s}\n{tb}",
+                )
+            )
+            continue
+
         raw_results.append(result)
         # Record path *relative to out_dir* so the manifest is byte-reproducible
         # across machines / temp dirs.

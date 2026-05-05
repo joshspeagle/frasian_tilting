@@ -139,7 +139,7 @@ cookbook.
 ## Tests
 
 ```bash
-python -m pytest                    # 541 tests + 32 stub-skips, ~1.5 min
+python -m pytest                    # ~830 tests across L0-L4 (37 stub-skips), ~2 min
 python -m pytest -m "L0 or L1"      # math primitives + invariants
 python -m pytest -m L4              # end-to-end experiments only
 python tools/check_method_completeness.py    # gate every PR runs

@@ -50,6 +50,14 @@ class Config:
     brentq_maxiter: int = 200
     bracket_doubling_max: int = 16
 
+    # --- dynamic CI scan params (consumed by tilting._dynamic.dynamic_ci_scan) ---
+    # Live in Config so Config.fingerprint() invalidates the cache when
+    # they change (Tier 1.7-C2 in the audit). Function-default fall-backs
+    # in dynamic_ci_scan match these values for backward compatibility.
+    dynamic_n_grid: int = 401
+    dynamic_coarse_n: int = 25
+    dynamic_search_mult: float = 8.0
+
     # --- grids (defaults; experiments override) ---
     delta_grid: GridSpec = field(default_factory=lambda: GridSpec("abs_delta", 0.0, 5.0, 51))
     w_grid: GridSpec = field(default_factory=lambda: GridSpec("w", 0.05, 0.95, 19))
@@ -105,6 +113,9 @@ class Config:
             "brentq_rtol": self.brentq_rtol,
             "brentq_maxiter": self.brentq_maxiter,
             "bracket_doubling_max": self.bracket_doubling_max,
+            "dynamic_n_grid": self.dynamic_n_grid,
+            "dynamic_coarse_n": self.dynamic_coarse_n,
+            "dynamic_search_mult": self.dynamic_search_mult,
             "delta_grid": self.delta_grid.__dict__,
             "w_grid": self.w_grid.__dict__,
             "theta_grid": self.theta_grid.__dict__,

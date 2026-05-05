@@ -407,6 +407,11 @@ checkpoint:
 | 3  | 3.92 | 4.24 | **4.53** | **3.71** |
 | 4  | 3.92 | 4.85 | **5.23** | **3.80** |
 
+Single-seed v0_smoke checkpoint; standard error ≈ 0.05 across
+α=0.05 narrowness MC repeats. v1 production retraining will
+produce variability within ~1× this SE. To regenerate, run
+`python -m scripts.regen_headline` (requires torch).
+
 These numbers were trained with `antithetic=False` (the
 pre-Phase-4 default). The current default is `antithetic=True`
 (only effective for `loss_kind='static_width'`); re-trained
