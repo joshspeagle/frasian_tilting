@@ -1,6 +1,6 @@
 # mixture
 
-> Status: `implemented`
+> Status: `stub`
 
 ## Summary
 
@@ -66,104 +66,36 @@ Z_L = N(D, sigma^2)` on the Normal-Normal sandbox. So `eta = 0`
 recovers the WALDO posterior (identity element) and `eta = 1`
 recovers the likelihood-as-Gaussian.
 
-**Closed-form on Normal-Normal.** With `mu_n = w*D + (1-w)*mu0`,
-`sigma_n = sqrt(w)*sigma`, and `(m_1, s_1) = (mu_n, sigma_n)`,
-`(m_2, s_2) = (D, sigma)`:
-
-```
-p_eta(theta) = (1 - eta) * N(theta; m_1, s_1^2) + eta * N(theta; m_2, s_2^2)
-mean(p_eta)  = (1 - eta) * m_1 + eta * m_2
-var(p_eta)   = (1 - eta) * s_1^2 + eta * s_2^2 + eta * (1 - eta) * (m_1 - m_2)^2
-```
-
-For Gaussian endpoints the output is a **two-component Gaussian
-mixture**, not Gaussian itself; the framework's
-`MixtureDistribution` (in `frasian/models/distributions.py`) wraps
-this object and exposes the `Distribution` protocol surface
-(pdf / logpdf / cdf / quantile / mean / var / sample / fingerprint).
+For Gaussian endpoints `q` is a **two-component Gaussian mixture**,
+not Gaussian itself. The framework needs a `Distribution`
+implementation for two-component Gaussian mixtures (mean, var, cdf,
+quantile) — this is the principal piece of plumbing required.
 
 ## Derivation
 
-Full step-by-step derivation lives at
-`audit/tier2/mixture_derivation.md` (499 lines, MC-verified at
-N=2e6 and quadrature-verified at atol < 1e-15). Summary:
+The m-connection on a statistical manifold is the affine connection
+whose geodesics are linear in the *expectation* parameters
+(`m-coordinates`); equivalently, on a mixture family the geodesic is
+the linear interpolation of densities (Amari 1982 §3; Amari & Nagaoka
+2000 Theorem 3.4). For the mixture family `{(1-eta)p + eta·q : eta in
+[0, 1]}` the m-coordinates are exactly the mixing weights, so the
+m-geodesic is `(1-eta)p + eta·q`.
 
-**Step 1 — m-geodesic density.** The m-connection on a statistical
-manifold is the affine connection whose geodesics are linear in the
-*expectation* parameters (`m-coordinates`); equivalently, on a
-mixture family the geodesic is the linear interpolation of
-densities (Amari 1982 §3; Amari & Nagaoka 2000 Theorem 3.4). For the
-mixture family `{(1-eta)p + eta·q : eta in [0, 1]}` the
-m-coordinates are exactly the mixing weights, so the m-geodesic is
-`(1-eta)p + eta·q`. Convex combination is automatically normalised:
-`integral p_eta = (1-eta)*1 + eta*1 = 1` for every eta.
-
-**Step 2 — Bimodality threshold.** Behboodian 1970: a 2-Gaussian
-mixture is *guaranteed unimodal* iff `|m_1 - m_2| <= 2 min(s_1, s_2)`.
-Substituting `(m_1, s_1) = (mu_n, sigma_n)` and `(m_2, s_2) = (D, sigma)`
-with `sigma_n = sqrt(w)*sigma <= sigma`, the threshold reduces to
-`|Delta| <= 2*sqrt(w)` in the framework's normalised conflict
-coordinate. Numerical verification (Tier 2.1, w=0.5, eta=0.5):
-empirically bimodal beyond `|Delta| ~ 2`; the Behboodian sufficient
-bound at `1.414` is conservative as expected.
-
-**Step 3 — Moments.** Sympy-verified (and quadrature-verified at
-atol < 1e-15):
-
-```
-mean(p_eta) = (1 - eta) * mu_n + eta * D
-var(p_eta)  = (1 - eta) * sigma_n^2 + eta * sigma^2
-            + eta * (1 - eta) * (mu_n - D)^2
-```
-
-The cross-term `eta(1-eta)(mu_n - D)^2 <= (mu_n - D)^2 / 4` (max at
-eta=1/2), so `var(p_eta) <= max(sigma_n^2, sigma^2) + (mu_n - D)^2 / 4`.
-
-**Step 4a — Tilted Wald.** Wald uses the MLE `D` and the model
-`sigma`; the m-geodesic changes neither. So
-`p_Wald^{tilted}(theta; eta) = p_Wald^{bare}(theta) = 2(1 - Phi(|theta - D|/sigma))`.
-
-**Step 4b — Tilted WALDO.** WALDO standardises by the posterior
-mean `mu_post = mean(p_eta)` and sd `sigma_post = sd(p_eta)`. The
-acceptance region `{theta' : |theta' - mu_eta| >= z}` (with
-`z = |theta - mu_eta|`) has probability under `p_eta` equal to a
-weighted sum of two component-tail probabilities, each a Phi-pair:
-
-```
-P_k = Phi((m_k - mu_eta - z) / s_k) + Phi((mu_eta - m_k - z) / s_k)
-p(theta; eta) = (1 - eta) * P_1 + eta * P_2
-```
-
-with `(m_1, s_1) = (mu_n, sigma_n)` and `(m_2, s_2) = (D, sigma)`.
-**Two Phi-pairs**, contrast: the e-geodesic (`power_law`) has a
-single Phi-pair because the tilted posterior is Gaussian. MC-verified
-at N=2e6 to within MC SE.
-
-**Step 5 — Dynamic-eta inversion.** No closed form for `eta*` under
-the mixture (variance is quadratic in eta, not rational-of-eta).
-Numerical scan via `_dynamic.dynamic_ci_scan` — only the
-`tilted_pvalue_fn` closure changes versus `power_law` / `ot`.
-
-**Step 6 — Admissible range.** `eta in [0, 1]` always; convex
-combination of two valid densities is itself a valid density.
-Qualitatively *simpler* than `power_law`'s admissible range, which
-depends on `w` through `denom = 1 - eta(1 - w)`.
-
-**Dually-flat connection.** The dually-flat duality with `power_law`
-is via the Legendre transform between e-coordinates (natural
-parameters; log-linear interpolation = e-geodesic) and
-m-coordinates (expectation parameters; linear-density interpolation
-= m-geodesic). On a conjugate exponential family these two
-coordinate systems are related by the cumulant function; under the
-Fisher metric, e- and m-geodesics are mutually orthogonal in the
+The dually-flat duality with `power_law` is via the Legendre transform
+between e-coordinates (natural parameters; log-linear interpolation =
+e-geodesic) and m-coordinates (expectation parameters; linear-density
+interpolation = m-geodesic). On a conjugate exponential family these
+two coordinate systems are related by the cumulant function; under
+the Fisher metric, e- and m-geodesics are mutually orthogonal in the
 Pythagorean sense (Amari 1982 Theorem 1; Amari & Nagaoka 2000
-Theorem 3.8). This is the natural-coordinate framing of Bayesian
-**tempering** (`q^t = q^t / Z(t)` with `q = post^(1-t) · L^t`) as
-the e-geodesic; the corresponding m-geodesic is exactly the linear
-mixture above. Neal (2001) introduces the geometric (e-geodesic)
-path in annealed importance sampling and explicitly contrasts it
-with the linear/m-geodesic path; the latter is what this scheme
-implements.
+Theorem 3.8).
+
+Note: this is the natural-coordinate framing of Bayesian
+**tempering** (`q^t = q^t / Z(t)` with `q = post^(1-t) · L^t`) as the
+e-geodesic. The corresponding m-geodesic is exactly the linear
+mixture above. Neal (2001) introduces the geometric (e-geodesic) path
+in annealed importance sampling and explicitly contrasts it with the
+linear/m-geodesic path; the latter is what this scheme implements.
 
 ## Predicted behavior
 
@@ -275,18 +207,18 @@ implements.
 
 ## Links
 
-- Implementation: `src/frasian/tilting/mixture.py`
-- Distribution wrapper: `MixtureDistribution` in `src/frasian/models/distributions.py`
-- Property tests: `tests/properties/test_mixture_invariants.py`
-- Illustration: `src/frasian/experiments/illustrations/mixture_demo.py`
-- Generated figure: `output/illustrations/mixture_demo.png`
-- Derivation: `audit/tier2/mixture_derivation.md`
+- Implementation: `src/frasian/tilting/mixture.py` (stub)
+- Property tests: `tests/properties/test_mixture_invariants.py` (skipped)
+- Illustration:   TBD
 
 ## Status notes
 
-Implemented. The framework's `(mixture, waldo)` cell produces the
-m-geodesic counterpart to `power_law`'s Dynamic-WALDO. Coverage is
-expected to drop in the bimodal regime even with
-`DynamicNumericalEtaSelector`, since WALDO is misspecified against
-a non-Gaussian sampling distribution; this is the load-bearing
-research observation the cell is designed to make visible.
+Stub — implementation requires (a) a two-component mixture
+`Distribution` wrapper, (b) the bimodal-quantile branch in WALDO
+acceptance-region inversion (or the explicit fall-back to NaN), and
+(c) registration of the `Distribution` protocol for non-unimodal
+outputs. The framework's `(mixture, waldo)` cell will produce
+genuinely novel behaviour: the m-geodesic counterpart to `power_law`'s
+Dynamic-WALDO. Coverage is expected to drop in the bimodal regime
+even with `DynamicNumericalEtaSelector`, since WALDO is misspecified
+against a non-Gaussian sampling distribution.

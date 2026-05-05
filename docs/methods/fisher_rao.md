@@ -1,6 +1,6 @@
 # fisher_rao
 
-> Status: `implemented`
+> Status: `stub`
 
 ## Summary
 
@@ -82,107 +82,12 @@ likelihood-induced Gaussian `N(D, sigma^2)`.
 
 ## Derivation
 
-Full step-by-step derivation lives at
-`audit/tier2/fisher_rao_derivation.md` (438 lines, ODE-cross-checked
-at atol 7.6e-14). Summary:
-
-**Step 1 — Fisher metric on `N(mu, sigma^2)`.** The Fisher
-information matrix in coordinates `(mu, sigma)` is
-`diag(1/sigma^2, 2/sigma^2)`, giving the line element
-`ds^2 = dmu^2/sigma^2 + 2 dsigma^2/sigma^2`.
-
-**Step 2 — Conformal rescaling to the Poincaré half-plane.**
-Substituting `u = mu/sqrt(2)` gives
-`ds^2 = (2/sigma^2) (du^2 + dsigma^2) = 2 ds_P^2`,
-where `ds_P^2 := (du^2 + dsigma^2)/sigma^2` is the standard
-Poincaré half-plane metric of constant Gaussian curvature `K_P = -1`.
-Geodesics in `(u, sigma)` are geodesics in the original `(mu, sigma)`
-coordinates (the rescaling is a homothety; geodesic equations are
-invariant under constant rescaling of the metric).
-
-**Step 3 — Closed-form geodesic.** Standard result (Beltrami; see
-Amari & Nagaoka 2000 §3.4). Two cases:
-
-*Case A — Vertical (mu_p = mu_q).* The geodesic stays at fixed mu
-and the sigma path is the geometric mean:
-
-```
-mu(eta)    = mu_p
-sigma(eta) = sigma_p * (sigma_q / sigma_p) ** eta
-```
-
-The Poincaré arc-length is `|log(sigma_q / sigma_p)|`, so the
-Fisher distance is `d_FR = sqrt(2) |log(sigma_q / sigma_p)|`.
-
-*Case B — Semicircle (mu_p != mu_q).* The unique geodesic is the
-Euclidean semicircle in `(u, sigma)` centred at `(u_c, 0)` with
-radius `R`:
-
-```
-u_c = (u_q^2 - u_p^2 + sigma_q^2 - sigma_p^2) / (2 (u_q - u_p))
-R   = sqrt((u_p - u_c)^2 + sigma_p^2)
-```
-
-Parametrise the polar angle `t in (0, pi)`:
-`u(t) = u_c + R cos(t)`, `sigma(t) = R sin(t)`. The Poincaré speed
-along this curve is `ds_P/dt = 1/sin(t)`, with antiderivative
-`log tan(t/2)`. The arc-length-normalised parametrisation in eta is
-
-```
-log tan(t(eta)/2) = (1 - eta) log tan(t_p/2) + eta log tan(t_q/2)
-t(eta)            = 2 arctan(exp((1-eta) log tan(t_p/2) + eta log tan(t_q/2)))
-u(eta)            = u_c + R cos(t(eta))
-sigma(eta)        = R sin(t(eta))
-mu(eta)           = sqrt(2) u(eta)
-```
-
-with `t_p = atan2(sigma_p, u_p - u_c)`, `t_q = atan2(sigma_q, u_q - u_c)`.
-
-**Step 4 — Tilted distribution.** The geodesic stays in the
-Gaussian family because the manifold *is* the Gaussian family:
-`Q_eta = N(mu(eta), sigma(eta)^2)`. Contrast with `mixture`
-(leaves the Gaussian family) and matches `power_law` / `ot`
-(stay Gaussian on this sandbox).
-
-**Step 5 — Tilted p-value.**
-
-*Wald.* eta-independent (the MLE-based statistic ignores the
-prior). Same closed form as `power_law` / `ot` Wald branches:
-`p_Wald(theta) = 2(1 - Phi(|D - theta|/sigma))`.
-
-*WALDO.* `Q_eta` is Gaussian with explicit `(mu(eta), sigma(eta))`,
-so the standard Phi-pair formula applies:
-
-```
-a_FR(theta) = |mu(eta) - theta| / sigma(eta)
-b_FR(theta) = (mu_0 - theta) / sigma_0       (prior z-score)
-p(theta; eta) = Phi(b_FR - a_FR) + Phi(-a_FR - b_FR)
-```
-
-Note: WALDO's `b` retains its bare-WALDO meaning (the prior is
-fixed); the FR tilting only re-parametrises the posterior along
-the geodesic. Contrast with `power_law`, where both `a` and `b`
-pick up eta-dependent factors because the e-geodesic re-weights
-the prior log-density.
-
-**Step 6 — Admissible range.** `eta in [0, 1]` is always valid:
-the half-plane is geodesically complete in `sigma > 0` and both
-endpoints lie in the open region. No analogue of `power_law`'s
-`denom > 0` clamp.
-
-**Branch threshold.** The vertical case is selected for
-`|u_p - u_q| < 1e-12` in the implementation. The semicircle branch
-divides by `(u_q - u_p)` and so loses precision below this
-threshold; the vertical formula is exact in the limit.
-
-**Geometric-mean signature.** The vertical case gives
-`sigma(0.5) = sqrt(sigma_p * sigma_q)` (geometric mean) — the
-Fisher-Rao fingerprint that distinguishes it from `ot` (which
-gives the *arithmetic* mean `(sigma_p + sigma_q)/2`). For the
-fixed-variance sub-family (`sigma_p = sigma_q`) FR and OT
-coincide; on the full 2D manifold they differ globally
-(Takatsu 2011: W2 has *non-negative* sectional curvature, FR has
-constant *negative* curvature).
+To be filled in by `/derive fisher_rao` once the Gaussian-only
+implementation lands. Should cover (a) the Fisher metric on the
+Gaussian family and the rescaling to the unit-curvature half-plane,
+(b) the closed-form half-plane geodesic, (c) the constant-speed
+arc-length parameterisation, and (d) the contrast with the W2
+geodesic on the same endpoints.
 
 ## Predicted behavior
 
@@ -296,18 +201,18 @@ constant *negative* curvature).
 
 ## Links
 
-- Implementation: `src/frasian/tilting/fisher_rao.py`
+- Implementation: `src/frasian/tilting/fisher_rao.py` (stub)
 - Property tests: `tests/properties/test_fisher_rao_invariants.py`
-- Illustration: `src/frasian/experiments/illustrations/fisher_rao_demo.py`
-- Generated figure: `output/illustrations/fisher_rao_demo.png`
-- Derivation: `audit/tier2/fisher_rao_derivation.md`
+                  (skipped)
+- Illustration: TBD
 
 ## Status notes
 
-Implemented (Gaussian-only). Compare empirically against `ot` on
-the smoothness diagnostic to see whether the curvature-aware
-Fisher-Rao path beats the straight-in-`(mu, sigma)` W2 path on
-Lipschitz / TV / discontinuity metrics.
+Stub — Gaussian-only implementation lands first via `/propose-method
+fisher_rao`. Compare empirically against `ot` on the smoothness
+diagnostic to see whether the curvature-aware Fisher-Rao path beats
+the straight-in-`(mu, sigma)` W2 path on Lipschitz / TV /
+discontinuity metrics.
 
 A general `ParametricFamily` interface — required for Fisher-Rao on
 non-Gaussian families like Beta / Bernoulli — is deferred to a
