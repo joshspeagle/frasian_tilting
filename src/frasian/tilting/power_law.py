@@ -89,7 +89,12 @@ def _data_to_scalar_D(data: NDArray[np.float64]) -> float:
             f"data.size={arr.size}. For n>1, use sigma_eff=sigma/sqrt(n) "
             f"and pass data.mean() with a model whose sigma is sigma_eff."
         )
-    return float(arr[0])
+    # Use ``arr.item()`` so shape-(1,1) and other non-flat single-element
+    # inputs reduce cleanly. ``float(arr[0])`` would crash with
+    # ``TypeError: only 0-dimensional arrays can be converted to Python
+    # scalars`` on a shape-(1,1) input where ``arr[0]`` is a shape-(1,)
+    # array. Phase 5 skeptic vector #3.
+    return float(arr.item())
 
 
 @register_tilting(name="power_law", brief="docs/methods/power_law.md")
@@ -417,10 +422,22 @@ class PowerLawTilting:
         model: Model,
         prior: Prior,
         statistic: TestStatistic,
+        *,
+        config: Config | None = None,
     ) -> list[tuple[float, float]]:
         """Selector-aware region list. Single-element for static selectors;
         multi-element for dynamic selectors at conflict-band D where the
-        dynamic p-value is multimodal."""
+        dynamic p-value is multimodal.
+
+        ``config`` (optional, kw-only): when supplied, the dynamic-CI
+        scan reads ``n_grid`` / ``coarse_n`` / ``search_mult`` from
+        ``Config.dynamic_*``. When ``None`` (default), falls back to
+        the selector's own attributes (or the function-default
+        constants when the selector lacks them) for backward
+        compatibility. Skeptic Phase 5 vector #2: previously the
+        Config fields fed only the cache fingerprint, never the
+        runtime path; ``config`` plumbing closes that gap.
+        """
         self._require_normal_sandbox(model, prior)
         # Narrow types after the dispatch check (mypy can't infer through it).
         # `cast` is `-O`-safe; the runtime gate is `_require_normal_sandbox` above.
@@ -436,6 +453,17 @@ class PowerLawTilting:
         ctx = TiltingContext(w=w, abs_delta=abs_delta, alpha=alpha)
 
         if getattr(self.selector, "is_dynamic", False):
+            # Config wins when supplied; selector attrs are the legacy
+            # fallback (preserves existing behaviour for callers that
+            # don't yet thread Config through).
+            if config is not None:
+                n_grid = int(config.dynamic_n_grid)
+                coarse_n = int(config.dynamic_coarse_n)
+                search_mult = float(config.dynamic_search_mult)
+            else:
+                n_grid = int(getattr(self.selector, "n_grid", 401))
+                coarse_n = int(getattr(self.selector, "coarse_n", 25))
+                search_mult = float(getattr(self.selector, "search_mult", 8.0))
             regions, _, _ = self.dynamic_tilted_confidence_interval(
                 alpha,
                 D,
@@ -443,9 +471,9 @@ class PowerLawTilting:
                 prior,
                 statistic.name,
                 self.selector,
-                n_grid=getattr(self.selector, "n_grid", 401),
-                coarse_n=getattr(self.selector, "coarse_n", 25),
-                search_mult=getattr(self.selector, "search_mult", 8.0),
+                n_grid=n_grid,
+                coarse_n=coarse_n,
+                search_mult=search_mult,
             )
             if not regions:
                 raise RuntimeError(f"dynamic CI inversion produced no regions at D={D!r}")
@@ -470,14 +498,21 @@ class PowerLawTilting:
         model: Model,
         prior: Prior,
         statistic: TestStatistic,
+        *,
+        config: Config | None = None,
     ) -> tuple[float, float]:
         """Convex hull of `confidence_regions` — single (lo, hi) summary.
 
         Multi-region cells (e.g. dynamic-η Dyn-WALDO at low |Δ|) collapse
         to `(min lo, max hi)` here; consumers that need union semantics
         should call `confidence_regions` directly.
+
+        ``config`` is forwarded to `confidence_regions`; see that method
+        for the dynamic-CI scan semantics.
         """
-        regions = self.confidence_regions(alpha, data, model, prior, statistic)
+        regions = self.confidence_regions(
+            alpha, data, model, prior, statistic, config=config
+        )
         lo = float(min(r[0] for r in regions))
         hi = float(max(r[1] for r in regions))
         return (lo, hi)

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -26,6 +26,9 @@ from ..models.base import Likelihood, Model, Posterior, Prior
 from ..statistics.base import TestStatistic
 from .base import ParamSpec, TiltingContext
 from .eta_selectors import FixedEtaSelector
+
+if TYPE_CHECKING:
+    from ..config import Config
 
 
 @register_tilting(name="identity", brief="docs/methods/identity.md")
@@ -69,8 +72,17 @@ class IdentityTilting:
         model: Model,
         prior: Prior,
         statistic: TestStatistic,
+        *,
+        config: Config | None = None,  # accepted for protocol parity; unused
     ) -> tuple[float, float]:
-        """Delegate to the bare statistic — no tilting applied."""
+        """Delegate to the bare statistic — no tilting applied.
+
+        ``config`` is accepted (kw-only) for parity with the dynamic
+        schemes (``power_law`` / ``ot``) so callers can pass it
+        unconditionally; identity has no dynamic-CI path so the
+        argument is unused. Skeptic Phase 5 vector #2 plumbing.
+        """
+        del config  # silence unused-argument lints
         return statistic.confidence_interval(alpha, data, model, prior)
 
     def confidence_regions(
@@ -80,8 +92,15 @@ class IdentityTilting:
         model: Model,
         prior: Prior,
         statistic: TestStatistic,
+        *,
+        config: Config | None = None,  # accepted for protocol parity; unused
     ) -> list[tuple[float, float]]:
-        """Single-element list around the bare-statistic CI."""
+        """Single-element list around the bare-statistic CI.
+
+        ``config`` is accepted (kw-only) for parity with the dynamic
+        schemes; unused here.
+        """
+        del config
         return [self.confidence_interval(alpha, data, model, prior, statistic)]
 
     def pvalue(

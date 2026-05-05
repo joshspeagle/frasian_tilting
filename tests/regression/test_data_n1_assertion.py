@@ -45,12 +45,25 @@ def test_pvalue_rejects_n_gt_1(scheme) -> None:
 
 @pytest.mark.L2
 @pytest.mark.parametrize("scheme", [PowerLawTilting(), OTTilting()])
-def test_n_eq_1_still_works(scheme) -> None:
-    """n=1 is the supported contract; verify it still functions."""
+@pytest.mark.parametrize(
+    "single_obs",
+    [
+        np.array([0.5]),  # shape (1,)
+        np.array([[0.5]]),  # shape (1, 1) — Phase 5 skeptic vector #3
+        np.array(0.5),  # 0-d ndarray
+        np.float64(0.5),  # numpy scalar
+    ],
+    ids=["shape_1", "shape_1_1", "shape_0d", "np_scalar"],
+)
+def test_n_eq_1_still_works(scheme, single_obs) -> None:
+    """n=1 is the supported contract; verify it still functions across
+    every single-element input shape (flat 1-D, 2-D shape (1,1), 0-D
+    ndarray, numpy scalar). Phase 5 skeptic vector #3 specifically
+    flagged shape (1,1) crashing in ``_data_to_scalar_D``.
+    """
     model = NormalNormalModel(sigma=1.0)
     prior = NormalDistribution(loc=0.0, scale=1.0)
     statistic = WaldoStatistic()
-    single_obs = np.array([0.5])
 
     regions = scheme.confidence_regions(0.05, single_obs, model, prior, statistic)
     assert len(regions) >= 1

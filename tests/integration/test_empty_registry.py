@@ -69,6 +69,18 @@ class TestEmptyRegistry:
         assert set(groups) == {"models", "tiltings", "statistics", "experiments", "diagnostics"}
         assert all(len(v) == 0 for v in groups.values())
 
+    def test_bracketing_failed_is_public(self):
+        """``BracketingFailed`` must be importable from the package surface.
+
+        It is the sole operational error a dynamic-CI cell can raise that
+        isn't a programming bug, so user code wants to ``except`` it by
+        name (skeptic vector #4). Reaching into ``frasian._errors`` is a
+        stability commitment the framework explicitly avoids.
+        """
+        from frasian import BracketingFailed, FrasianError
+
+        assert issubclass(BracketingFailed, FrasianError)
+
     def test_protocols_are_importable_without_concrete_impls(self):
         """Importing the protocol modules must not require any registered class."""
         from frasian.cd.base import ConfidenceDistribution

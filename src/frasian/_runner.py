@@ -11,6 +11,7 @@ from __future__ import annotations
 import itertools
 import json
 import traceback
+import warnings
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -179,6 +180,17 @@ def run_experiment(
             )
         except Exception as exc:  # noqa: BLE001 — see comment above.
             tb = traceback.format_exc(limit=8)
+            # Surface the failure at runtime in addition to the manifest
+            # record. A long sweep with N silent failures otherwise looks
+            # "successful" from the caller's POV; a RuntimeWarning makes
+            # the failure visible without aborting (Tier 1.7-C3 follow-
+            # up; skeptic Phase 5 vector #6).
+            warnings.warn(
+                f"cell {cell_tilting_name}/{cell_statistic_name} raised "
+                f"{type(exc).__name__}: {exc}; recorded as status=error",
+                RuntimeWarning,
+                stacklevel=2,
+            )
             summary.cells.append(
                 CellSummary(
                     tilting=cell_tilting_name,

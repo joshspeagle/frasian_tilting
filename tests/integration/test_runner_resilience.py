@@ -108,15 +108,18 @@ def test_runner_persists_manifest_when_a_cell_raises(tmp_path: Path) -> None:
 
     Verifies (a) no exception propagates out of run_experiment, (b) the
     manifest is still written, (c) the failing cell has status="error"
-    with a non-empty reason, and (d) the OK cell has status="ok".
+    with a non-empty reason, (d) the OK cell has status="ok", and (e)
+    a ``RuntimeWarning`` fires so the failure is visible at runtime
+    (skeptic Phase 5 vector #6).
     """
-    summary = run_experiment(
-        experiment=_FlakyExperiment(),  # type: ignore[arg-type]
-        tiltings=[IdentityTilting()],
-        statistics=[WaldStatistic(), _BoomStatistic()],  # type: ignore[list-item]
-        config=Config.fast(),
-        out_dir=tmp_path,
-    )
+    with pytest.warns(RuntimeWarning, match=r"cell .*/boom raised RuntimeError"):
+        summary = run_experiment(
+            experiment=_FlakyExperiment(),  # type: ignore[arg-type]
+            tiltings=[IdentityTilting()],
+            statistics=[WaldStatistic(), _BoomStatistic()],  # type: ignore[list-item]
+            config=Config.fast(),
+            out_dir=tmp_path,
+        )
 
     manifest = json.loads((tmp_path / "manifest.json").read_text())
     assert manifest["experiment"] == "flaky"

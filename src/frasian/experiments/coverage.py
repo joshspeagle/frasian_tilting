@@ -47,6 +47,27 @@ def _sigma0_from_w(w: float, sigma: float) -> float:
     return float(np.sqrt(w / (1.0 - w)) * sigma)
 
 
+def _call_with_config(fn, *args: Any, config: Config, **kwargs: Any) -> Any:
+    """Invoke ``fn`` passing ``config=config`` only if its signature accepts it.
+
+    All in-tree TiltingScheme `confidence_regions` methods adopt the
+    ``config`` kw-only arg so the Config-derived dynamic-CI scan
+    parameters drive computation. Third-party plugin schemes that
+    haven't yet adopted the kwarg are tolerated by introspection here:
+    they fall back to the pre-fix selector-derived defaults. Skeptic
+    Phase 5 vector #2.
+    """
+    import inspect
+
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return fn(*args, **kwargs)
+    if "config" in sig.parameters:
+        kwargs["config"] = config
+    return fn(*args, **kwargs)
+
+
 @register_experiment(name="coverage", brief="docs/methods/coverage_experiment.md")
 @dataclass(frozen=True)
 class CoverageExperiment:
@@ -106,12 +127,18 @@ class CoverageExperiment:
                 for k in range(n_reps):
                     D = raw.D[i, k]
                     try:
-                        regions = tilting.confidence_regions(
+                        # Pass ctx.config so the dynamic-CI scan reads
+                        # `dynamic_n_grid/coarse_n/search_mult` from
+                        # Config, not from the selector defaults.
+                        # Skeptic Phase 5 vector #2.
+                        regions = _call_with_config(
+                            tilting.confidence_regions,
                             alpha,
                             np.asarray([D]),
                             model,
                             prior,
                             statistic,
+                            config=ctx.config,
                         )
                     except NotImplementedError:
                         # Cell that does not support CI inversion: record NaN.

@@ -10,6 +10,10 @@ Tier 1.7-C11 in the audit.
 
 from __future__ import annotations
 
+import subprocess
+import sys
+import textwrap
+
 import pytest
 
 from frasian.models.distributions import BetaDistribution, NormalDistribution
@@ -67,3 +71,61 @@ def test_fingerprint_is_deterministic_across_constructions() -> None:
     da = NormalDistribution(loc=0.5, scale=1.0).fingerprint()
     db = NormalDistribution(loc=0.5, scale=1.0).fingerprint()
     assert da == db
+
+
+@pytest.mark.L1
+def test_model_fingerprint_stable_across_processes() -> None:
+    """Tier 1.7-C11: ``Model.fingerprint()`` must be stable across
+    independent Python processes — not just within one interpreter.
+
+    Mirrors ``test_digest_stable_across_processes`` in
+    ``test_cache_invariants.py``: spawn a child via ``sys.executable``
+    (no ``PYTHONHASHSEED`` inherited; child gets a fresh random seed),
+    construct the same model, print its fingerprint. Catches
+    regressions where the fingerprint embeds e.g. ``id(self)``,
+    process-local hash randomisation, or ``json.dumps`` without
+    ``sort_keys=True``.
+
+    The cache layer relies on this property; without it, two machines
+    or two CI runs could compute incompatible cache keys for the same
+    Config.
+    """
+    parent_fp = NormalNormalModel(sigma=1.5).fingerprint()
+    code = textwrap.dedent(
+        """
+        from frasian.models.normal_normal import NormalNormalModel
+        print(NormalNormalModel(sigma=1.5).fingerprint())
+        """
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    child_fp = proc.stdout.strip()
+    # Compare via str() to avoid the tuple/str ambiguity if a future
+    # fingerprint impl returns tuples.
+    assert str(child_fp) == str(parent_fp), (child_fp, parent_fp)
+
+
+@pytest.mark.L1
+def test_prior_fingerprint_stable_across_processes() -> None:
+    """Same cross-process property as the Model test, for
+    ``NormalDistribution`` (used as Prior).
+    """
+    parent_fp = NormalDistribution(loc=0.25, scale=1.5).fingerprint()
+    code = textwrap.dedent(
+        """
+        from frasian.models.distributions import NormalDistribution
+        print(NormalDistribution(loc=0.25, scale=1.5).fingerprint())
+        """
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    child_fp = proc.stdout.strip()
+    assert str(child_fp) == str(parent_fp), (child_fp, parent_fp)

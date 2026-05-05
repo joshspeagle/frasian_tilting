@@ -131,32 +131,51 @@ def _compute_table(theta_grid: list[float], n_reps: int) -> dict[str, list[float
         "power_law[learned]": [],
     }
 
+    # Abort if more than this fraction of reps fail at any θ for any cell.
+    # Silent NaN in headline regen defeats the script's purpose; a small
+    # number of failures (<5%) at the conflict band can be tolerated, but
+    # any larger fraction means the cell is broken or the data are
+    # outside the calibrated regime — surface, don't silently emit NaN.
+    max_fail_fraction = 0.05
+
     for theta_true in theta_grid:
         D_samples = rng.normal(loc=theta_true, scale=sigma, size=cfg.n_reps)
 
-        widths = {k: [] for k in out}
+        widths: dict[str, list[float]] = {k: [] for k in out}
+        fails: dict[str, int] = {k: 0 for k in out}
         for D in D_samples:
             data = np.array([D])
             try:
-                lo, hi = identity.confidence_interval(cfg.alpha, data, model, wald)
+                lo, hi = identity.confidence_interval(cfg.alpha, data, model, prior, wald)
                 widths["Wald"].append(hi - lo)
             except Exception:
-                pass
+                fails["Wald"] += 1
             try:
-                lo, hi = identity.confidence_interval(cfg.alpha, data, model, waldo)
+                lo, hi = identity.confidence_interval(cfg.alpha, data, model, prior, waldo)
                 widths["bare WALDO"].append(hi - lo)
             except Exception:
-                pass
+                fails["bare WALDO"] += 1
             try:
                 lo, hi = pl_numerical.confidence_interval(cfg.alpha, data, model, prior, waldo)
                 widths["power_law[numerical]"].append(hi - lo)
             except Exception:
-                pass
+                fails["power_law[numerical]"] += 1
             try:
                 lo, hi = pl_learned.confidence_interval(cfg.alpha, data, model, prior, waldo)
                 widths["power_law[learned]"].append(hi - lo)
             except Exception:
-                pass
+                fails["power_law[learned]"] += 1
+
+        for cell, n_fail in fails.items():
+            frac = n_fail / max(cfg.n_reps, 1)
+            if frac > max_fail_fraction:
+                raise RuntimeError(
+                    f"Headline regen aborting: cell {cell!r} at θ={theta_true} "
+                    f"failed {n_fail}/{cfg.n_reps} reps "
+                    f"({100*frac:.1f}% > {100*max_fail_fraction:.0f}% threshold). "
+                    f"Silent NaN in the headline table is not acceptable; "
+                    f"investigate the cell's exception path."
+                )
 
         for cell, ws in widths.items():
             out[cell].append(float(np.mean(ws)) if ws else float("nan"))

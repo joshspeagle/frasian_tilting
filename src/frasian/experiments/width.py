@@ -32,7 +32,7 @@ from ..simulation.raw import generate_normal_D_samples
 from ..statistics.base import TestStatistic
 from ..tilting.base import TiltingScheme
 from .base import ExperimentContext, RawResult
-from .coverage import _sigma0_from_w
+from .coverage import _call_with_config, _sigma0_from_w
 
 
 @register_experiment(name="width", brief="docs/methods/width_experiment.md")
@@ -96,12 +96,17 @@ class WidthExperiment:
                 for k in range(n_reps):
                     D = raw.D[i, k]
                     try:
-                        regions = tilting.confidence_regions(
+                        # Pass ctx.config so the dynamic-CI scan reads
+                        # `dynamic_n_grid/coarse_n/search_mult` from
+                        # Config. Skeptic Phase 5 vector #2.
+                        regions = _call_with_config(
+                            tilting.confidence_regions,
                             alpha,
                             np.asarray([D]),
                             model,
                             prior,
                             statistic,
+                            config=ctx.config,
                         )
                     except NotImplementedError:
                         supported = False
