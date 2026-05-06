@@ -46,13 +46,17 @@ Lecture Notes — Monograph Series* 54: 132–150.
 
 from __future__ import annotations
 
+import jax.numpy as jnp
 import numpy as np
 from numpy.typing import NDArray
 
+from .. import _jax_setup as _x64  # noqa: F401  — ensure float64 active
 from ..models.base import Model, Prior
 from ..statistics.base import TestStatistic
 from ..tilting.base import TiltingScheme
 from .grid import GridConfidenceDistribution
+
+_FORCE_X64 = _x64  # keep static-analysis from stripping the import
 
 
 def _default_theta_grid(
@@ -147,24 +151,25 @@ def build_cd_from_pvalue(
     # average the absolute *one-sided* differences, which agrees with
     # central diffs on smooth regions but recovers the correct |dp/dθ|
     # at kinks.
-    forward = np.empty_like(pvals)
-    backward = np.empty_like(pvals)
-    forward[:-1] = np.abs(np.diff(pvals)) / np.diff(theta_grid)
-    forward[-1] = forward[-2]
-    backward[1:] = forward[:-1]
-    backward[0] = backward[1]
+    pvals_j = jnp.asarray(pvals, dtype=jnp.float64)
+    theta_j = jnp.asarray(theta_grid, dtype=jnp.float64)
+    forward_inner = jnp.abs(jnp.diff(pvals_j)) / jnp.diff(theta_j)
+    # Replicate the legacy boundary handling exactly: forward[-1] = forward[-2],
+    # backward[0] = backward[1] (which equals forward[0]).
+    forward = jnp.concatenate([forward_inner, forward_inner[-1:]])
+    backward = jnp.concatenate([forward_inner[:1], forward_inner])
     abs_dp_dtheta = 0.5 * (forward + backward)
     c_unnorm = 0.5 * abs_dp_dtheta
 
     # 3. Z-normalise so pdf integrates to 1 exactly.
-    Z = float(np.trapezoid(c_unnorm, theta_grid))
+    Z = float(jnp.trapezoid(c_unnorm, theta_j))
     if Z <= 0.0:
         raise ValueError(
             f"density normalisation Z = {Z:.3e} is non-positive; "
             f"likely the p-value is constant on the grid (no support). "
             f"Try a wider θ-grid or check the tilting/statistic cell."
         )
-    pdf_values = c_unnorm / Z
+    pdf_values = np.asarray(c_unnorm / Z, dtype=np.float64)
 
     # 4. Inversion-based C(θ) — preserved verbatim as auxiliary diagnostic.
     signed = _signed_confidence_curve(theta_grid, pvals)
