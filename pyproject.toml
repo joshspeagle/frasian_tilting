@@ -27,6 +27,10 @@ classifiers = [
 dependencies = [
     "numpy>=1.24",
     "scipy>=1.10",
+    "jax>=0.4.30",
+    "jaxlib>=0.4.30",
+    "equinox>=0.11",
+    "optax>=0.2",
     "matplotlib>=3.7",
     "pandas>=2.0",
     "tqdm>=4.65",
@@ -41,9 +45,11 @@ dev = [
     "jupyter",
 ]
 ml = [
-    "torch>=2.0",
     "h5py>=3.8",
     "pyyaml>=6.0",
+]
+torch = [
+    "torch>=2.0",
 ]
 
 [tool.setuptools.packages.find]
@@ -121,6 +127,10 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["torch", "torch.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["jax", "jax.*", "jaxlib", "jaxlib.*", "equinox", "equinox.*", "optax", "optax.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

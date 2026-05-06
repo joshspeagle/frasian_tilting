@@ -16,6 +16,7 @@ or `list_methods`.
 
 from __future__ import annotations
 
+from . import _jax_setup  # noqa: F401  — enables x64 before any JAX use
 from ._default_cells import (
     default_cells,
     default_smoothness_tiltings,
