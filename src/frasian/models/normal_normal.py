@@ -21,13 +21,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 from numpy.random import Generator
 from numpy.typing import ArrayLike, NDArray
 
+from .. import _jax_setup as _x64  # noqa: F401  — ensure float64 active
 from .._registry import register_model
 from .base import Prior
 from .distributions import GaussianLikelihood, NormalDistribution
+
+_FORCE_X64 = _x64
 
 
 def weight(sigma: float, sigma0: float) -> float:
@@ -37,34 +42,34 @@ def weight(sigma: float, sigma0: float) -> float:
 
 def posterior_params(
     D: ArrayLike, mu0: float, sigma: float, sigma0: float
-) -> tuple[NDArray[np.float64], float, float]:
+) -> tuple[jax.Array, float, float]:
     """Return (mu_n, sigma_n, w). Verbatim port from legacy core.py."""
     w = weight(sigma, sigma0)
-    mu_n = np.asarray(w * np.asarray(D, dtype=np.float64) + (1.0 - w) * mu0, dtype=np.float64)
+    mu_n = w * jnp.asarray(D) + (1.0 - w) * mu0
     sigma_n = float(np.sqrt(w) * sigma)
     return mu_n, sigma_n, w
 
 
-def scaled_conflict(D: ArrayLike, mu0: float, w: float, sigma: float) -> NDArray[np.float64]:
+def scaled_conflict(D: ArrayLike, mu0: float, w: float, sigma: float) -> jax.Array:
     """Delta = (1 - w) * (mu0 - D) / sigma. Port from legacy core.py."""
-    return np.asarray((1.0 - w) * (mu0 - np.asarray(D, dtype=np.float64)) / sigma, dtype=np.float64)
+    return (1.0 - w) * (mu0 - jnp.asarray(D)) / sigma
 
 
-def prior_residual(theta: ArrayLike, mu0: float, sigma0: float) -> NDArray[np.float64]:
+def prior_residual(theta: ArrayLike, mu0: float, sigma0: float) -> jax.Array:
     """delta(theta) = (theta - mu0) / sigma0. Port from legacy core.py."""
-    return np.asarray((np.asarray(theta, dtype=np.float64) - mu0) / sigma0, dtype=np.float64)
+    return (jnp.asarray(theta) - mu0) / sigma0
 
 
-def noncentrality(theta: ArrayLike, mu0: float, w: float, sigma: float) -> NDArray[np.float64]:
+def noncentrality(theta: ArrayLike, mu0: float, w: float, sigma: float) -> jax.Array:
     """lambda(theta) = (1-w)^2 * (mu0 - theta)^2 / (w^2 * sigma^2).
 
     From Theorem 2 in the legacy derivations: lambda(theta) = delta^2 / w
     where delta = (1-w)(mu0 - theta) / (sqrt(w) * sigma).
     """
-    delta_num = (1.0 - w) * (mu0 - np.asarray(theta, dtype=np.float64))
-    delta_den = np.sqrt(w) * sigma
+    delta_num = (1.0 - w) * (mu0 - jnp.asarray(theta))
+    delta_den = jnp.sqrt(w) * sigma
     delta = delta_num / delta_den
-    return np.asarray(delta * delta / w, dtype=np.float64)
+    return delta * delta / w
 
 
 @register_model(name="normal_normal", brief="docs/methods/normal_normal.md")
@@ -114,15 +119,12 @@ class NormalNormalModel:
         mu_n, sigma_n, _ = posterior_params(D, prior.loc, self.sigma, prior.scale)
         return NormalDistribution(loc=float(mu_n), scale=sigma_n)
 
-    def mle(self, data: NDArray[np.float64]) -> NDArray[np.float64]:
-        return np.asarray(
-            np.atleast_1d(np.asarray(data, dtype=np.float64)).mean(), dtype=np.float64
-        )
+    def mle(self, data: NDArray[np.float64]) -> jax.Array:
+        return jnp.asarray(np.atleast_1d(np.asarray(data, dtype=np.float64)).mean())
 
-    def fisher_information(self, theta: ArrayLike) -> NDArray[np.float64]:
+    def fisher_information(self, theta: ArrayLike) -> jax.Array:
         # I(theta) = 1 / sigma^2 for a Normal location family.
-        out = np.full_like(np.asarray(theta, dtype=np.float64), 1.0 / self.sigma**2)
-        return out
+        return jnp.full_like(jnp.asarray(theta, dtype=jnp.float64), 1.0 / self.sigma**2)
 
     def support(self) -> tuple[float, float]:
         return (-np.inf, np.inf)

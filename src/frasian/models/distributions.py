@@ -1,18 +1,29 @@
-"""Concrete distributions used by `NormalNormalModel`.
+"""Concrete distributions used by the framework's models.
 
 `NormalDistribution` is the working horse for prior, posterior, and tilted
-posterior. `GaussianLikelihood` is the model's likelihood-of-data view.
-Both are dataclasses and conform to the protocols in `models.base`.
+posterior under `NormalNormalModel`. `BetaDistribution` plays the same
+role for `BernoulliModel`. Both are dataclasses and conform to the
+protocols in `models.base`. All density/log-density/cdf paths return
+`jax.Array` so they remain JAX-traceable for autodiff (Fisher info,
+learned-η training, etc.); random sampling still consumes a numpy
+`Generator` to keep RNG state at the I/O boundary.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
+import jax
+import jax.numpy as jnp
+import jax.scipy.stats as jsp_stats
 import numpy as np
 from numpy.random import Generator
 from numpy.typing import ArrayLike, NDArray
-from scipy import stats
+from scipy import stats as _sp_stats
+
+from .. import _jax_setup as _x64  # noqa: F401  — ensure float64 active
+
+_FORCE_X64 = _x64  # keep static-analysis from stripping the import
 
 
 @dataclass(frozen=True)
@@ -28,17 +39,17 @@ class NormalDistribution:
         if not (np.isfinite(self.scale) and self.scale > 0):
             raise ValueError(f"scale must be positive and finite, got {self.scale!r}")
 
-    def pdf(self, x: ArrayLike) -> NDArray[np.float64]:
-        return np.asarray(stats.norm.pdf(x, loc=self.loc, scale=self.scale), dtype=np.float64)
+    def pdf(self, x: ArrayLike) -> jax.Array:
+        return jsp_stats.norm.pdf(jnp.asarray(x), loc=self.loc, scale=self.scale)
 
-    def logpdf(self, x: ArrayLike) -> NDArray[np.float64]:
-        return np.asarray(stats.norm.logpdf(x, loc=self.loc, scale=self.scale), dtype=np.float64)
+    def logpdf(self, x: ArrayLike) -> jax.Array:
+        return jsp_stats.norm.logpdf(jnp.asarray(x), loc=self.loc, scale=self.scale)
 
-    def cdf(self, x: ArrayLike) -> NDArray[np.float64]:
-        return np.asarray(stats.norm.cdf(x, loc=self.loc, scale=self.scale), dtype=np.float64)
+    def cdf(self, x: ArrayLike) -> jax.Array:
+        return jsp_stats.norm.cdf(jnp.asarray(x), loc=self.loc, scale=self.scale)
 
-    def quantile(self, q: ArrayLike) -> NDArray[np.float64]:
-        return np.asarray(stats.norm.ppf(q, loc=self.loc, scale=self.scale), dtype=np.float64)
+    def quantile(self, q: ArrayLike) -> jax.Array:
+        return jsp_stats.norm.ppf(jnp.asarray(q), loc=self.loc, scale=self.scale)
 
     def mean(self) -> float:
         return float(self.loc)
@@ -71,17 +82,21 @@ class BetaDistribution:
         if not (np.isfinite(self.beta) and self.beta > 0):
             raise ValueError(f"beta must be positive, got {self.beta!r}")
 
-    def pdf(self, x: ArrayLike) -> NDArray[np.float64]:
-        return np.asarray(stats.beta.pdf(x, self.alpha, self.beta), dtype=np.float64)
+    def pdf(self, x: ArrayLike) -> jax.Array:
+        return jsp_stats.beta.pdf(jnp.asarray(x), self.alpha, self.beta)
 
-    def logpdf(self, x: ArrayLike) -> NDArray[np.float64]:
-        return np.asarray(stats.beta.logpdf(x, self.alpha, self.beta), dtype=np.float64)
+    def logpdf(self, x: ArrayLike) -> jax.Array:
+        return jsp_stats.beta.logpdf(jnp.asarray(x), self.alpha, self.beta)
 
-    def cdf(self, x: ArrayLike) -> NDArray[np.float64]:
-        return np.asarray(stats.beta.cdf(x, self.alpha, self.beta), dtype=np.float64)
+    def cdf(self, x: ArrayLike) -> jax.Array:
+        return jsp_stats.beta.cdf(jnp.asarray(x), self.alpha, self.beta)
 
-    def quantile(self, q: ArrayLike) -> NDArray[np.float64]:
-        return np.asarray(stats.beta.ppf(q, self.alpha, self.beta), dtype=np.float64)
+    def quantile(self, q: ArrayLike) -> jax.Array:
+        # scipy: jax.scipy.stats.beta has no `ppf`; fall back to numpy/scipy.
+        # This is non-differentiable, but quantile only appears at the
+        # CI-inversion / sampling boundary, never on a learned-η loss path.
+        result = _sp_stats.beta.ppf(np.asarray(q, dtype=np.float64), self.alpha, self.beta)
+        return jnp.asarray(result)
 
     def mean(self) -> float:
         return float(self.alpha / (self.alpha + self.beta))
@@ -114,18 +129,16 @@ class BernoulliLikelihood:
         if not (0 <= self.n_success <= self.n_total):
             raise ValueError(f"n_success ({self.n_success}) outside [0, {self.n_total}]")
 
-    def __call__(self, theta: ArrayLike) -> NDArray[np.float64]:
-        return np.exp(self.loglik(theta))
+    def __call__(self, theta: ArrayLike) -> jax.Array:
+        return jnp.exp(self.loglik(theta))
 
-    def loglik(self, theta: ArrayLike) -> NDArray[np.float64]:
-        theta_arr = np.asarray(theta, dtype=np.float64)
+    def loglik(self, theta: ArrayLike) -> jax.Array:
+        theta_arr = jnp.asarray(theta)
         # Guard against log(0) at the support boundary by clipping.
         eps = 1e-300
-        return np.asarray(
-            self.n_success * np.log(np.clip(theta_arr, eps, 1.0))
-            + (self.n_total - self.n_success) * np.log(np.clip(1.0 - theta_arr, eps, 1.0)),
-            dtype=np.float64,
-        )
+        return self.n_success * jnp.log(jnp.clip(theta_arr, eps, 1.0)) + (
+            self.n_total - self.n_success
+        ) * jnp.log(jnp.clip(1.0 - theta_arr, eps, 1.0))
 
 
 @dataclass(frozen=True)
@@ -146,9 +159,9 @@ class GaussianLikelihood:
         if not (np.isfinite(self.sigma) and self.sigma > 0):
             raise ValueError(f"sigma must be positive and finite, got {self.sigma!r}")
 
-    def __call__(self, theta: ArrayLike) -> NDArray[np.float64]:
-        return np.exp(self.loglik(theta))
+    def __call__(self, theta: ArrayLike) -> jax.Array:
+        return jnp.exp(self.loglik(theta))
 
-    def loglik(self, theta: ArrayLike) -> NDArray[np.float64]:
-        z = (np.asarray(theta, dtype=np.float64) - self.D) / self.sigma
-        return -0.5 * z * z - 0.5 * np.log(2.0 * np.pi * self.sigma**2)
+    def loglik(self, theta: ArrayLike) -> jax.Array:
+        z = (jnp.asarray(theta) - self.D) / self.sigma
+        return -0.5 * z * z - 0.5 * jnp.log(2.0 * jnp.pi * self.sigma**2)
