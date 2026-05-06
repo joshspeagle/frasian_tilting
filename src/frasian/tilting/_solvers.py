@@ -10,6 +10,11 @@ from __future__ import annotations
 from typing import Callable
 
 import numpy as np
+
+# scipy: brentq has no JAX equivalent we want yet; this module is the
+# public CI-inversion boundary. Per `docs/jax_style.md`, scipy lives
+# here and callers convert via `float(...)` before invoking the
+# closure (see `tilting/power_law.py::tilted_confidence_interval`).
 from scipy import optimize
 
 
