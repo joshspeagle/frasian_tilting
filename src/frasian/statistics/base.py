@@ -11,6 +11,11 @@ Statistics also declare which `TiltingScheme`s they accept via
 that ignore the prior (e.g. Wald) override to accept only `IdentityTilting`,
 so the runner can gate non-identity cells out of the cross-product instead
 of producing numerically-degenerate duplicates.
+
+`evaluate` / `pvalue` return `jax.Array` (the framework runs in
+`jax_enable_x64` mode so the default dtype is `float64`); `acceptance_region`
+returns a pair of `jax.Array` to keep tracing-friendly behaviour at the
+public boundary.
 """
 
 from __future__ import annotations
@@ -18,6 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
+import jax
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
@@ -57,15 +63,15 @@ class TestStatistic(Protocol):
 
     def evaluate(
         self, theta0: ArrayLike, data: NDArray[np.float64], model: Model, prior: Prior | None = None
-    ) -> NDArray[np.float64]: ...
+    ) -> jax.Array: ...
 
     def pvalue(
         self, theta0: ArrayLike, data: NDArray[np.float64], model: Model, prior: Prior | None = None
-    ) -> NDArray[np.float64]: ...
+    ) -> jax.Array: ...
 
     def acceptance_region(
         self, alpha: float, theta0: ArrayLike, model: Model, prior: Prior | None = None
-    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]: ...
+    ) -> tuple[jax.Array, jax.Array]: ...
 
     def confidence_interval(
         self, alpha: float, data: NDArray[np.float64], model: Model, prior: Prior | None = None

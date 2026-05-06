@@ -15,10 +15,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
 
+import jax
+import jax.numpy as jnp
+import jax.scipy.stats as jsp_stats
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
-from scipy import stats
 
+from .. import _jax_setup as _x64  # noqa: F401  — ensure float64 active
 from .._registry import register_statistic
 from ..models._dispatch import require_model, require_prior
 from ..models.base import Model, Prior
@@ -28,6 +31,8 @@ from .base import AsymptoticDistribution
 
 if TYPE_CHECKING:
     from ..tilting.base import TiltingScheme
+
+_FORCE_X64 = _x64  # keep static-analysis from stripping the import
 
 
 def _require_normal_normal(
@@ -39,10 +44,10 @@ def _require_normal_normal(
 
 
 def _pvalue_components(
-    theta: NDArray[np.float64], mu_n: float, mu0: float, w: float, sigma: float
-) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    theta: jax.Array, mu_n: float, mu0: float, w: float, sigma: float
+) -> tuple[jax.Array, jax.Array]:
     """a(theta), b(theta) from the WALDO p-value formula."""
-    a = np.abs(mu_n - theta) / (w * sigma)
+    a = jnp.abs(mu_n - theta) / (w * sigma)
     b = (1.0 - w) * (mu0 - theta) / (w * sigma)
     return a, b
 
@@ -62,26 +67,26 @@ class WaldoStatistic:
 
     def evaluate(
         self, theta0: ArrayLike, data: NDArray[np.float64], model: Model, prior: Prior | None = None
-    ) -> NDArray[np.float64]:
+    ) -> jax.Array:
         m, pi = _require_normal_normal(model, prior)
         D = float(np.atleast_1d(np.asarray(data, dtype=np.float64)).mean())
         mu_n, sigma_n, _ = posterior_params(D, pi.loc, m.sigma, pi.scale)
-        diff = np.asarray(mu_n - np.asarray(theta0, dtype=np.float64), dtype=np.float64)
-        return np.asarray(diff * diff / (sigma_n**2), dtype=np.float64)
+        diff = mu_n - jnp.asarray(theta0, dtype=jnp.float64)
+        return diff * diff / (sigma_n**2)
 
     def pvalue(
         self, theta0: ArrayLike, data: NDArray[np.float64], model: Model, prior: Prior | None = None
-    ) -> NDArray[np.float64]:
+    ) -> jax.Array:
         m, pi = _require_normal_normal(model, prior)
         D = float(np.atleast_1d(np.asarray(data, dtype=np.float64)).mean())
         mu_n, _, w = posterior_params(D, pi.loc, m.sigma, pi.scale)
-        theta_arr = np.asarray(theta0, dtype=np.float64)
+        theta_arr = jnp.asarray(theta0, dtype=jnp.float64)
         a, b = _pvalue_components(theta_arr, float(mu_n), pi.loc, w, m.sigma)
-        return np.asarray(stats.norm.cdf(b - a) + stats.norm.cdf(-a - b), dtype=np.float64)
+        return jsp_stats.norm.cdf(b - a) + jsp_stats.norm.cdf(-a - b)
 
     def acceptance_region(
         self, alpha: float, theta0: ArrayLike, model: Model, prior: Prior | None = None
-    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    ) -> tuple[jax.Array, jax.Array]:
         """Acceptance region in `D`-space at fixed theta0.
 
         Numerical inversion of the WALDO p-value: find D values for which
@@ -91,6 +96,8 @@ class WaldoStatistic:
         m, pi = _require_normal_normal(model, prior)
         theta_arr = np.atleast_1d(np.asarray(theta0, dtype=np.float64))
 
+        # scipy: brentq-based root-finding stays on numpy/scipy at the public
+        # CI-inversion boundary; no JAX equivalent wanted yet.
         from ..tilting._solvers import brentq_with_doubling
 
         D_lo = np.empty_like(theta_arr)
@@ -116,8 +123,8 @@ class WaldoStatistic:
                 direction=+1,
             )
         return (
-            D_lo if D_lo.size > 1 else D_lo.reshape(()),
-            D_hi if D_hi.size > 1 else D_hi.reshape(()),
+            jnp.asarray(D_lo if D_lo.size > 1 else D_lo.reshape(())),
+            jnp.asarray(D_hi if D_hi.size > 1 else D_hi.reshape(())),
         )
 
     def confidence_interval(
@@ -133,6 +140,8 @@ class WaldoStatistic:
         D = float(np.atleast_1d(np.asarray(data, dtype=np.float64)).mean())
         mu_n, _, _ = posterior_params(D, pi.loc, m.sigma, pi.scale)
 
+        # scipy: brentq-based root-finding stays on numpy/scipy at the public
+        # CI-inversion boundary; no JAX equivalent wanted yet.
         from ..tilting._solvers import brentq_with_doubling
 
         def f(theta: float) -> float:
