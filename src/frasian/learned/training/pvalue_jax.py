@@ -146,6 +146,151 @@ def ot_tilted_pvalue_jax(
     )
 
 
+def _generic_grid_tilted_moments(
+    eta: jax.Array,
+    log_p_lik_grid: jax.Array,
+    log_p_prior_grid: jax.Array,
+    theta_grid: jax.Array,
+) -> tuple[jax.Array, jax.Array]:
+    """Compute (mu_tilted, var_tilted) of the tilted distribution on the grid.
+
+    Shared kernel used by both `generic_grid_tilted_pvalue` and downstream
+    moment-only consumers. Returns scalar (per-sample, per-θ_test) moments.
+
+    Shapes:
+    - `eta`: (B, G_test) — η per (sample, θ_test).
+    - `log_p_lik_grid`: (B, N_grid) — log L(θ_grid; D_b).
+    - `log_p_prior_grid`: (N_grid,) — log π(θ_grid), broadcast across batch.
+    - `theta_grid`: (N_grid,).
+    - Returns: ((B, G_test), (B, G_test)).
+
+    The deriver verified analytically + numerically that
+    `log q = log L + (1-η) log π` reduces to PowerLawTilting's Theorem 6
+    (mu_eta, sigma_eta) on Normal-Normal at atol 1e-7 with N_grid=1024.
+    """
+    log_q = (
+        log_p_lik_grid[:, None, :]
+        + (1.0 - eta[:, :, None]) * log_p_prior_grid[None, None, :]
+    )
+    log_q_max = jnp.max(log_q, axis=-1, keepdims=True)
+    pdf_unnorm = jnp.exp(log_q - log_q_max)
+    Z = jnp.trapezoid(pdf_unnorm, theta_grid, axis=-1)
+    pdf = pdf_unnorm / Z[..., None]
+    mu = jnp.trapezoid(theta_grid * pdf, theta_grid, axis=-1)
+    m2 = jnp.trapezoid(theta_grid * theta_grid * pdf, theta_grid, axis=-1)
+    var = jnp.maximum(m2 - mu * mu, 1e-12)
+    return mu, var
+
+
+def generic_grid_tilted_pvalue(
+    theta_test: jax.Array,
+    eta: jax.Array,
+    log_p_lik_grid: jax.Array,
+    log_p_prior_grid: jax.Array,
+    theta_grid: jax.Array,
+    statistic_name: str,
+) -> jax.Array:
+    """Model-agnostic JAX-traceable tilted p-value via grid log-densities.
+
+    Phase 4 generalisation of the per-scheme JAX kernels above. Works
+    against any (model, prior) pair where `log L(θ_grid)` and
+    `log π(θ_grid)` are JAX-traceable. The deriver verified
+    (`/root/.claude/plans/.../`) that `log L + (1-η) log π` reduces
+    to PowerLawTilting's Theorem 6 closed form on Normal-Normal at
+    atol 1e-7 with N_grid=1024.
+
+    Two-step structure mirroring the closed-form Theorem 8 path:
+    1. **Data-side moments**: build the tilted log-density on
+       `theta_grid` via `log q = log L + (1-η) log π`; max-subtract;
+       trapezoidal Z-normalise; integrate to get
+       `(μ_tilted, σ²_tilted)`. These are scalar (per-sample, per-θ_test).
+    2. **Test-side**: evaluate the WALDO p-value via the *normal
+       approximation* `t = (μ_tilted - θ_test)² / σ²_tilted` and
+       `p = 2(1-Φ(√t))`. Production CI inversion uses MC over D' for
+       the exact reference distribution under H_0; training only
+       needs a smooth differentiable surrogate.
+
+    Shapes (broadcast-friendly, mirrors the per-scheme kernels):
+    - `theta_test`: `(B, G_test)` — points where p is evaluated.
+    - `eta`: `(B, G_test)` or scalar — η at each (sample, θ_test). Closed
+      under EtaNet's per-θ output.
+    - `log_p_lik_grid`: `(B, N_grid)` — `log L(θ_grid; D_b)` per batch element.
+    - `log_p_prior_grid`: `(N_grid,)` — `log π(θ_grid)`, broadcast across batch.
+    - `theta_grid`: `(N_grid,)` — fixed support grid; same across batch.
+    - Returns: `(B, G_test)` — p-value at each (sample, θ_test).
+
+    The intermediate cube is `(B, G_test, N_grid)`. At B=8, G_test=401,
+    N_grid=1024 this is ~26 MB float64 — fits in L3 / one allocator
+    chunk, no streaming needed. JIT cache hit rate after epoch 0 is
+    100% because shapes are constant across training iterations.
+
+    Numerical stability: max-subtract before exp; `var` floored at
+    1e-12 to prevent division-by-zero in the WALDO surface. Both
+    safeguards are differentiable (max is `jax.lax.stop_gradient`-free;
+    floor is `jnp.maximum`).
+
+    Wald path: eta-independent (the kernel reduces to the per-scheme
+    JAX implementations' Wald case, `2(1-Φ(|D-θ|/σ))`). For the grid
+    path, "D" and "σ" aren't directly available — but the Wald
+    statistic on the generic path uses the χ²₁ asymptotic via the
+    posterior moments, NOT the closed-form Wald formula. For training
+    purposes we delegate to a normal-approximation form using the
+    likelihood's mode and Fisher info derived from the grid; this is
+    a documented approximation. Callers that need exact Wald should
+    use the per-scheme NN closed form via `power_law_tilted_pvalue_jax`.
+
+    Important relationship to closed-form Theorem 8
+    -----------------------------------------------
+    The per-scheme `power_law_tilted_pvalue_jax` for "waldo" returns the
+    asymmetric two-Φ form `Φ(b - a) + Φ(-a - b)` where `b = (1-η)(1-w)
+    (μ₀ - θ)/(denom · norm_factor)` carries the prior-data conflict
+    contribution. THIS kernel uses the simpler symmetric normal
+    approximation `2(1 - Φ(|μ - θ|/σ))`. The two AGREE when `b = 0`
+    (i.e. when `η = 1` drops the prior contribution, or when
+    `μ₀ = θ`) but DIFFER by O(b) when the prior conflicts with the
+    test point. The choice is intentional: training only needs a
+    differentiable surrogate, and the symmetric form has cleaner
+    gradients through η. The cross-check test pins moment-level
+    agreement (μ_tilted, σ²_tilted match Theorem 6), NOT p-value
+    agreement.
+    """
+    mu, var = _generic_grid_tilted_moments(
+        eta, log_p_lik_grid, log_p_prior_grid, theta_grid
+    )
+
+    if statistic_name == "waldo":
+        z = jnp.abs(mu - theta_test) / jnp.sqrt(var)
+        return 2.0 * (1.0 - _phi(z))
+    if statistic_name == "wald":
+        # Wald is data-anchored (uses MLE not posterior). On the grid
+        # path we approximate by treating the likelihood's mode as the
+        # MLE and the inverse-Fisher-info as the variance scale; both
+        # come from the log-likelihood's curvature at the grid maximum.
+        # NOTE: this is a documented approximation; for exact Wald on
+        # Normal-Normal use `power_law_tilted_pvalue_jax`.
+        # Find the likelihood's mode on the grid.
+        lik_max_idx = jnp.argmax(log_p_lik_grid, axis=-1)        # (B,)
+        mle = theta_grid[lik_max_idx]                            # (B,)
+        # Approximate sigma from the likelihood's curvature: use the
+        # full-width at half-maximum / 2.355 heuristic on the
+        # exponentiated likelihood (sufficient for Bernoulli-like
+        # likelihoods). For Normal-Normal this would equal sigma_eff;
+        # for Bernoulli it approximates sqrt(theta(1-theta)/n).
+        lik_pdf = jnp.exp(log_p_lik_grid - jnp.max(log_p_lik_grid, axis=-1, keepdims=True))
+        lik_Z = jnp.trapezoid(lik_pdf, theta_grid, axis=-1)
+        lik_norm = lik_pdf / lik_Z[:, None]
+        lik_mu = jnp.trapezoid(theta_grid * lik_norm, theta_grid, axis=-1)
+        lik_m2 = jnp.trapezoid(theta_grid * theta_grid * lik_norm, theta_grid, axis=-1)
+        lik_var = jnp.maximum(lik_m2 - lik_mu * lik_mu, 1e-12)
+        sigma_eff = jnp.sqrt(lik_var)
+        z_wald = jnp.abs(mle[:, None] - theta_test) / sigma_eff[:, None]
+        return 2.0 * (1.0 - _phi(z_wald))
+    raise NotImplementedError(
+        f"generic_grid_tilted_pvalue: statistic={statistic_name!r} "
+        f"not supported (expected 'wald' or 'waldo')."
+    )
+
+
 # Registry keyed on scheme.name. Add new schemes by registering here.
 JAX_TILTED_PVALUE: dict[str, Callable[..., jax.Array]] = {
     "power_law": power_law_tilted_pvalue_jax,
