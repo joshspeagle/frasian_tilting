@@ -174,13 +174,30 @@ def test_generic_tilted_pvalue_obs_moments_hoist_is_consistent():
 
 
 @pytest.mark.L0
-def test_collapse_warning_fires_on_pathological_mc():
-    """When >50% of MC samples collapse, a RuntimeWarning fires.
+def test_numerical_eta_selector_raises_clearly_on_non_normal_normal():
+    """`NumericalEtaSelector` is Normal-Normal-only by construction.
 
-    Construct a setting where collapse is frequent: small Bernoulli n
-    + extreme theta + Beta prior with very small shape parameters
-    (so Beta posterior collapses on all-zeros / all-ones MC draws).
+    Skeptic Phase 3 review (finding #9 / MEDIUM) hypothesised that
+    `NumericalEtaSelector + Bernoulli` would silently return garbage
+    via the bare-except in `_make_static_width_objective`. Verify
+    that's NOT the case: `_normal_normal_w` raises immediately via
+    isinstance check BEFORE any objective is constructed; the bare-
+    except path is unreachable from this entry point.
     """
+    from frasian.statistics.waldo import WaldoStatistic
+    from frasian.tilting.eta_selectors import NumericalEtaSelector
+
+    scheme = PowerLawTilting(selector=NumericalEtaSelector())
+    model = BernoulliModel()
+    prior = BetaDistribution(alpha=2.0, beta=2.0)
+    data = np.asarray([1.0, 0.0, 1.0])
+
+    with pytest.raises(NotImplementedError, match="NormalNormalModel"):
+        scheme.confidence_regions(0.10, data, model, prior, WaldoStatistic())
+
+
+@pytest.mark.L0
+def test_collapse_warning_fires_on_pathological_mc():
     model = BernoulliModel()
     prior = BetaDistribution(alpha=0.5, beta=0.5)  # Jeffreys prior, U-shape
     data = np.asarray([1.0])  # n=1

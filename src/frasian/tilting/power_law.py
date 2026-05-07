@@ -332,32 +332,24 @@ _GENERIC_TILTED_PVALUE_BASE_SEED: int = 0xC0FFEE
 _GENERIC_TILTED_PVALUE_N_GRID_MC: int = 256
 
 
-def _stable_tilted_pvalue_seed(
-    data: NDArray[np.float64],
-    model: object,
-    prior: Prior,
-    eta: float,
-    alpha: float,
-    base_seed: int,
-) -> int:
-    """Cross-process-stable 32-bit seed for MC reference draws.
+def _stable_tilted_pvalue_seed(*args, **kwargs) -> int:
+    """Backwards-compatible alias for the module-level helper.
 
-    Mirrors ``WaldoStatistic._stable_seed`` (commit 0a0bad2): hashlib.blake2b
-    over a deterministic byte encoding so the seed is reproducible across
-    Python processes regardless of PYTHONHASHSEED. Critically the seed
-    is INDEPENDENT of theta — that's what makes common random numbers
-    across brentq probes possible (skeptic finding #1+#13 from Phase 2).
+    The implementation moved to `_generic_pvalue.py` in Phase 3d so
+    OTTilting can share it. This wrapper preserves the import path
+    that existing code uses (and keeps the in-file docstring nearby
+    for readability).
     """
-    import hashlib
+    from ._generic_pvalue import _stable_tilted_pvalue_seed as _impl
 
-    h = hashlib.blake2b(digest_size=8)
-    h.update(np.ascontiguousarray(data, dtype=np.float64).tobytes())
-    h.update(repr(model.fingerprint()).encode("utf-8"))
-    h.update(repr(prior.fingerprint()).encode("utf-8"))
-    h.update(np.float64(eta).tobytes())
-    h.update(np.float64(alpha).tobytes())
-    h.update(np.int64(base_seed).tobytes())
-    return int.from_bytes(h.digest()[:4], "little", signed=False)
+    return _impl(*args, **kwargs)
+
+
+def _resolve_support(*args, **kwargs) -> tuple[float, float]:
+    """Backwards-compatible alias; impl in `_generic_pvalue.py`."""
+    from ._generic_pvalue import _resolve_support as _impl
+
+    return _impl(*args, **kwargs)
 
 
 def _generic_tilted_moments(
@@ -424,32 +416,6 @@ def _generic_tilted_t_statistic(
     var_safe = max(var, 1e-300)
     diff = mu - theta_f
     return diff * diff / var_safe
-
-
-def _resolve_support(
-    model: object, data: NDArray[np.float64]
-) -> tuple[float, float]:
-    """Resolve `(support_lo, support_hi)` from a `Model` (preferred) or by
-    falling back to inspecting the likelihood's class.
-
-    The `Model` protocol declares `support()` so the `hasattr` guard is
-    defensive; the likelihood-class fallback is retained for the rare
-    `Model`-protocol partial conformer (test fixtures that mock just
-    enough). Centralised here to avoid the same dispatch tree being
-    inlined in `_generic_tilt`, `_generic_tilted_pvalue`, and
-    `_generic_tilted_confidence_interval`.
-    """
-    from ..models.distributions import BernoulliLikelihood, GaussianLikelihood
-
-    if hasattr(model, "support"):
-        lo, hi = tuple(model.support())
-        return float(lo), float(hi)
-    likelihood = model.likelihood(data)
-    if isinstance(likelihood, BernoulliLikelihood):
-        return (0.0, 1.0)
-    if isinstance(likelihood, GaussianLikelihood):
-        return (-float("inf"), float("inf"))
-    return (-float("inf"), float("inf"))
 
 
 def _generic_tilted_pvalue(
