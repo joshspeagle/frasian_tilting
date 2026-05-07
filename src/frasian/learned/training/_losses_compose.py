@@ -3,15 +3,18 @@
 Extracted from ``train.py`` (Tier 1.2 §7 split). Three concerns:
 
 1. Width-loss adapter (``compose_width_loss``): wraps the
-   torch tilted-pvalue port + the chosen functional in
+   JAX tilted-pvalue port + the chosen functional in
    ``losses.py`` (``integrated_pvalue_loss`` / ``cd_variance_loss`` /
    ``static_width_loss``). Currently Normal-Normal only because
-   the torch ports are; the wrapper is the single place that
+   the JAX ports are; the wrapper is the single place that
    adapts ``(model, prior)`` → ``(w, mu0, sigma)``.
 
 2. Boundary penalty (``compose_boundary_penalty``): forwards
    ``(θ, η)`` through a parameter-detached ``ValidityNet`` so
    gradient flows back into Head A but not Head B's weights.
+   Implemented via ``eqx.partition`` + ``jax.lax.stop_gradient`` +
+   ``eqx.combine`` (the Equinox idiom that replaces the legacy
+   ``torch.func.functional_call(detached_params)``).
 
 3. λ schedule (``lambda_schedule``) and β schedule
    (``beta_schedule``) for the Head A loss components.
@@ -27,8 +30,11 @@ from __future__ import annotations
 import warnings
 from typing import Any
 
-import torch
+import equinox as eqx
+import jax
+import jax.numpy as jnp
 
+from ... import _jax_setup as _x64  # noqa: F401  — ensure float64 active
 from ...models.distributions import NormalDistribution
 from ...models.normal_normal import NormalNormalModel
 from .architecture import EtaNet, ValidityNet
@@ -38,8 +44,10 @@ from .losses import (
     integrated_pvalue_loss,
     static_width_loss,
 )
-from .pvalue_torch import get_torch_tilted_pvalue
+from .pvalue_jax import get_jax_tilted_pvalue
 from .sampling import ExperimentConfig
+
+_FORCE_X64 = _x64  # keep static-analysis from stripping the import
 
 # Default β-anneal endpoints. Per `audit/tier1/skeptic_learned_eta.md` S2
 # and `audit/tier1/nn_training.md` §1, β=200 → +0.4% bias at α=0.05;
@@ -54,12 +62,13 @@ def extract_normal_normal_params(
     model: Any,
     prior: Any,
 ) -> tuple[float, float, float]:
-    """Extract (w, mu0, sigma) for the existing torch tilted-pvalue ports.
+    """Extract (w, mu0, sigma) for the JAX tilted-pvalue ports.
 
-    The torch ports in ``pvalue_torch.py`` were written before Phase E
-    and take Normal-Normal coordinates ``(w, mu0, sigma)`` directly.
-    We adapt by deriving them from ``(model, prior)`` exactly here —
-    the rest of the training loop stays model-agnostic.
+    The JAX ports in ``pvalue_jax.py`` are direct equivalents of the
+    legacy torch ports and take Normal-Normal coordinates
+    ``(w, mu0, sigma)`` directly. We adapt by deriving them from
+    ``(model, prior)`` exactly here — the rest of the training loop
+    stays model-agnostic.
 
     Raises ``NotImplementedError`` for non-Normal-Normal experiments,
     consistent with the documented "model-agnostic in principle,
@@ -69,7 +78,7 @@ def extract_normal_normal_params(
         raise NotImplementedError(
             "Phase E training currently requires a NormalNormalModel; "
             f"got {type(model).__name__}. Extending to non-Normal-Normal "
-            f"requires registering a generic torch tilted_pvalue."
+            f"requires registering a generic JAX tilted_pvalue."
         )
     if not isinstance(prior, NormalDistribution):
         raise NotImplementedError(
@@ -82,7 +91,7 @@ def extract_normal_normal_params(
     w = sigma0**2 / (sigma**2 + sigma0**2)
     # Skeptic block #4: w → 0 (delta prior) and w → 1 (improper) put
     # the WALDO admissible range into degenerate territory and the
-    # torch-side `clamp(denom, min=1e-6)` silently distorts. Refuse.
+    # JAX-side `jnp.maximum(denom, 1e-6)` silently distorts. Refuse.
     _W_EPS = 1e-3
     if not (_W_EPS < w < 1.0 - _W_EPS):
         raise ValueError(
@@ -97,20 +106,20 @@ def extract_normal_normal_params(
 def compose_width_loss(
     *,
     eta_net: EtaNet,
-    theta_grid_t: torch.Tensor,
-    D_batch_t: torch.Tensor,
+    theta_grid_t: jax.Array,
+    D_batch_t: jax.Array,
     config: ExperimentConfig,
     loss_kind: str,
     alpha: float | None,
     beta: float | None = None,
-) -> torch.Tensor:
+) -> jax.Array:
     """Integrated-p (or variant) width loss averaged over a D batch.
 
     Skeptic block #1: a single-D Monte Carlo estimator has too much
     variance for both training and validation signal — val_width
     oscillates with the per-step D draw. Vectorise over a (B,) D
-    tensor and average; gives an unbiased estimator with variance
-    ~1/B. The torch tilted-pvalue port broadcasts naturally so this
+    array and average; gives an unbiased estimator with variance
+    ~1/B. The JAX tilted-pvalue port broadcasts naturally so this
     is one tensor call, not a Python loop.
 
     The ``beta`` argument is forwarded to ``static_width_loss`` only
@@ -120,44 +129,47 @@ def compose_width_loss(
     (passing a value emits no warning, but is dead code).
     """
     w, mu0, sigma = extract_normal_normal_params(config.model, config.prior)
-    w_t = torch.tensor(w, dtype=theta_grid_t.dtype, device=theta_grid_t.device)
-    mu0_t = torch.tensor(mu0, dtype=theta_grid_t.dtype, device=theta_grid_t.device)
-    sigma_t = torch.tensor(sigma, dtype=theta_grid_t.dtype, device=theta_grid_t.device)
+    w_t = jnp.asarray(w)
+    mu0_t = jnp.asarray(mu0)
+    sigma_t = jnp.asarray(sigma)
 
-    if D_batch_t.dim() == 0:
-        D_batch_t = D_batch_t.unsqueeze(0)  # (1,)
-    if D_batch_t.dim() != 1:
+    if D_batch_t.ndim == 0:
+        D_batch_t = D_batch_t[None]  # (1,)
+    if D_batch_t.ndim != 1:
         raise ValueError(f"D_batch_t must be 0D or 1D; got shape {tuple(D_batch_t.shape)}.")
 
     eta_grid = eta_net(theta_grid_t)  # (G,)
-    tilted_pvalue = get_torch_tilted_pvalue(config.scheme_name)
+    tilted_pvalue = get_jax_tilted_pvalue(config.scheme_name)
     # Broadcast: theta=(1, G), D=(B, 1), eta=(1, G) → p=(B, G).
     G = theta_grid_t.shape[0]
     B = D_batch_t.shape[0]
     p_grid = tilted_pvalue(
-        theta_grid_t.unsqueeze(0).expand(B, G),  # (B, G)
-        D_batch_t.unsqueeze(-1).expand(B, G),  # (B, G)
+        jnp.broadcast_to(theta_grid_t[None, :], (B, G)),  # (B, G)
+        jnp.broadcast_to(D_batch_t[:, None], (B, G)),  # (B, G)
         w_t,
         mu0_t,
         sigma_t,
-        eta_grid.unsqueeze(0).expand(B, G),  # (B, G)
+        jnp.broadcast_to(eta_grid[None, :], (B, G)),  # (B, G)
         config.statistic_name,
     )  # (B, G)
-    # Skeptic caveat #12: float32 round-off in `_phi(b-a) + _phi(-a-b)`
+    # Skeptic caveat #12: float64 round-off in `_phi(b-a) + _phi(-a-b)`
     # can drift slightly outside [0, 1]. Warn (without breaking the
     # gradient) when drift exceeds tolerance — clamp would zero the
-    # gradient at the boundary. Mirrors the legacy guard.
-    if not torch.is_grad_enabled():
-        out_of_range = ((p_grid < -1e-5) | (p_grid > 1.0 + 1e-5)).any().item()
+    # gradient at the boundary. The legacy guard keyed on
+    # ``torch.is_grad_enabled``; in JAX we issue the check
+    # eagerly if the input is concrete (i.e., not tracer-backed),
+    # and skip the diagnostic during tracing.
+    if not isinstance(p_grid, jax.core.Tracer):
+        out_of_range = bool(((p_grid < -1e-5) | (p_grid > 1.0 + 1e-5)).any())
         if out_of_range:
             warnings.warn(
                 f"width-loss p-values drifted outside [0, 1] in "
                 f"{config.scheme_name}/{config.statistic_name}; "
-                f"consider float64 or tighter η bounds.",
+                f"consider tighter η bounds.",
                 RuntimeWarning,
                 stacklevel=2,
             )
-    theta_grid_b = theta_grid_t.unsqueeze(0).expand(B, G)  # (B, G)
+    theta_grid_b = jnp.broadcast_to(theta_grid_t[None, :], (B, G))  # (B, G)
 
     if loss_kind == "integrated_p":
         return integrated_pvalue_loss(p_grid, theta_grid_b)
@@ -180,21 +192,29 @@ def compose_width_loss(
 def compose_boundary_penalty(
     *,
     val_net: ValidityNet,
-    theta_batch_t: torch.Tensor,
-    eta_pred: torch.Tensor,
-) -> torch.Tensor:
+    theta_batch_t: jax.Array,
+    eta_pred: jax.Array,
+) -> jax.Array:
     """``-log P(valid | θ_batch, η_pred)`` with ValidityNet detached.
 
-    Uses ``torch.func.functional_call`` with detached params + buffers
-    so gradient flows from η_pred through the (θ, η) input into
-    EtaNet, but not into ValidityNet.
+    The legacy torch idiom ``torch.func.functional_call(val_net,
+    detached_params, inputs)`` is replaced by Equinox's
+    ``eqx.partition`` + ``jax.lax.stop_gradient`` + ``eqx.combine``
+    pattern. The detached module forwards the same logits but blocks
+    gradient flow into ValidityNet's parameters; gradient still flows
+    back through the (θ, η) input into EtaNet via ``eta_pred``.
     """
     from ._validity_data import validity_net_inputs
 
     inputs = validity_net_inputs(theta_batch_t, eta_pred)
-    v_p = {k: v.detach() for k, v in val_net.named_parameters()}
-    v_b = {k: v.detach() for k, v in val_net.named_buffers()}
-    logits = torch.func.functional_call(val_net, (v_p, v_b), (inputs,))
+    # Split the module into its array leaves vs static metadata, stop
+    # gradients on the array leaves, and recombine. The recombined
+    # module is a forward-equivalent ValidityNet whose parameters do
+    # not contribute to the autodiff graph.
+    params, static = eqx.partition(val_net, eqx.is_array)
+    params_detached = jax.tree.map(jax.lax.stop_gradient, params)
+    val_net_detached = eqx.combine(params_detached, static)
+    logits = val_net_detached(inputs)
     return boundary_penalty_from_validity(logits)
 
 

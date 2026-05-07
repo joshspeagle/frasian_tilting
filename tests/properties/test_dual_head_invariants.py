@@ -1,16 +1,34 @@
-"""Phase E dual-head architecture invariants.
+"""Phase E dual-head architecture invariants (JAX / Equinox port).
 
-Covers:
+Phase F port commit 2 rewrites these invariants for the
+``equinox.Module``-based ``EtaNet`` / ``ValidityNet``. Skeptic-driven
+invariants stay; the torch-specific assertions become Equinox /
+JAX equivalents:
+
 - ``EtaNet`` / ``ValidityNet`` forward shapes for theta_dim ∈ {1, 3}.
-- ``boundary_penalty_from_validity`` gradcheck and clamping bounds.
+- ``boundary_penalty_from_validity`` value + gradient behaviour.
 - Detachment: Head B's params do *not* receive gradient from Head A's
-  loss, but Head A's params *do* (gradient flows through the input).
+  loss (via ``eqx.partition`` + ``stop_gradient``), but Head A's
+  params *do* (gradient flows through the input).
 - Detachment: Head A's params do *not* receive gradient from Head B's
   BCE loss when ``eta_pred`` is detached at the input.
 - ``is_pair_valid`` / ``validity_mask`` / ``compute_pvalues_per_sample``
-  per-point semantics + NaN-on-failure handling.
+  per-point semantics + NaN-on-failure handling (numpy-side, unchanged).
 - ``ExperimentConfig`` round-trip through dict + YAML.
 - ``Prior.fingerprint`` / ``Model.fingerprint`` hashability.
+
+The legacy torch-specific tests (``torch.func.functional_call``,
+``torch.autograd.gradcheck``, ``ot_torch_pvalue_smooth_*``,
+``test_width_loss_averages_over_d_batch`` against the torch path) are
+either rewritten in JAX terms or migrated to commit 3's orchestrator
+re-port. The handful of orchestrator-touching tests
+(``test_phase_e_selector_rejects_cross_experiment_use``,
+``test_alpha_required_to_be_none_for_marginalised_loss``,
+``test_extract_normal_normal_params_rejects_degenerate_w``,
+``test_width_loss_averages_over_d_batch``) reach into ``train.py``
+which still imports torch — they are expected to error at runtime
+during commit 2 and are restored in commit 3 as part of the
+orchestrator port.
 """
 
 from __future__ import annotations
@@ -22,10 +40,14 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-torch = pytest.importorskip("torch")
-import torch.nn.functional as F
+# Equinox + JAX are framework dependencies; no importorskip needed.
+import equinox as eqx
+import jax
+import jax.numpy as jnp
+import jax.tree_util as jtu
 
 from frasian.learned.training.architecture import EtaNet, ValidityNet
+from frasian.learned.training._losses_compose import compose_boundary_penalty
 from frasian.learned.training.losses import boundary_penalty_from_validity
 from frasian.learned.training.sampling import ExperimentConfig, UniformThetaDistribution, lhs_1d
 from frasian.learned.training.validity import (
@@ -38,6 +60,12 @@ from frasian.models.distributions import BetaDistribution, NormalDistribution
 from frasian.models.normal_normal import NormalNormalModel
 from frasian.tilting.power_law import PowerLawTilting
 
+
+def _make_keys(n: int = 2, seed: int = 0) -> list[jax.Array]:
+    """Convenience: split PRNGKey(seed) into ``n`` subkeys."""
+    return list(jax.random.split(jax.random.PRNGKey(seed), n))
+
+
 # ---------------------------------------------------------------------------
 # Architecture forward shapes
 # ---------------------------------------------------------------------------
@@ -46,21 +74,23 @@ from frasian.tilting.power_law import PowerLawTilting
 @pytest.mark.L1
 @pytest.mark.properties
 def test_eta_net_forward_1d():
-    net = EtaNet(theta_dim=1)
-    theta = torch.linspace(-3.0, 3.0, 11)
+    key = jax.random.PRNGKey(0)
+    net = EtaNet(theta_dim=1, key=key)
+    theta = jnp.linspace(-3.0, 3.0, 11)
     out = net(theta)
     assert out.shape == (11,)
     # 1D-input convenience: also accept (N, 1).
-    out2 = net(theta.unsqueeze(-1))
+    out2 = net(theta[..., None])
     assert out2.shape == (11,)
-    torch.testing.assert_close(out, out2)
+    np.testing.assert_allclose(np.asarray(out), np.asarray(out2), atol=0.0)
 
 
 @pytest.mark.L1
 @pytest.mark.properties
 def test_eta_net_forward_vector_theta():
-    net = EtaNet(theta_dim=3)
-    theta = torch.randn(7, 3)
+    key = jax.random.PRNGKey(1)
+    net = EtaNet(theta_dim=3, key=key)
+    theta = jax.random.normal(jax.random.PRNGKey(2), (7, 3))
     out = net(theta)
     assert out.shape == (7,)
 
@@ -68,19 +98,21 @@ def test_eta_net_forward_vector_theta():
 @pytest.mark.L1
 @pytest.mark.properties
 def test_eta_net_rejects_wrong_dim():
-    net = EtaNet(theta_dim=2)
+    key = jax.random.PRNGKey(0)
+    net = EtaNet(theta_dim=2, key=key)
     with pytest.raises(ValueError, match="theta_dim=2"):
-        net(torch.randn(5, 3))
+        net(jax.random.normal(jax.random.PRNGKey(1), (5, 3)))
     # 1D input on theta_dim=2 net is also rejected.
     with pytest.raises(ValueError, match="theta_dim=2"):
-        net(torch.randn(5))
+        net(jax.random.normal(jax.random.PRNGKey(2), (5,)))
 
 
 @pytest.mark.L1
 @pytest.mark.properties
 def test_validity_net_forward():
-    net = ValidityNet(theta_dim=1)
-    inputs = torch.randn(13, 2)
+    key = jax.random.PRNGKey(0)
+    net = ValidityNet(theta_dim=1, key=key)
+    inputs = jax.random.normal(jax.random.PRNGKey(1), (13, 2))
     out = net(inputs)
     assert out.shape == (13,)
 
@@ -88,8 +120,9 @@ def test_validity_net_forward():
 @pytest.mark.L1
 @pytest.mark.properties
 def test_validity_net_forward_vector():
-    net = ValidityNet(theta_dim=4)
-    inputs = torch.randn(8, 5)  # theta_dim + 1
+    key = jax.random.PRNGKey(0)
+    net = ValidityNet(theta_dim=4, key=key)
+    inputs = jax.random.normal(jax.random.PRNGKey(1), (8, 5))  # theta_dim + 1
     out = net(inputs)
     assert out.shape == (8,)
 
@@ -97,9 +130,10 @@ def test_validity_net_forward_vector():
 @pytest.mark.L1
 @pytest.mark.properties
 def test_validity_net_rejects_wrong_input_shape():
-    net = ValidityNet(theta_dim=1)
+    key = jax.random.PRNGKey(0)
+    net = ValidityNet(theta_dim=1, key=key)
     with pytest.raises(ValueError, match="theta_dim=1"):
-        net(torch.randn(5, 3))
+        net(jax.random.normal(jax.random.PRNGKey(1), (5, 3)))
 
 
 # ---------------------------------------------------------------------------
@@ -111,10 +145,10 @@ def test_validity_net_rejects_wrong_input_shape():
 @pytest.mark.properties
 def test_boundary_penalty_value_behavior():
     """Penalty is ~|logit| for very negative (linear), ~0 for very positive."""
-    very_invalid = torch.tensor([-100.0])
-    very_valid = torch.tensor([+100.0])
-    p_inv = boundary_penalty_from_validity(very_invalid).item()
-    p_val = boundary_penalty_from_validity(very_valid).item()
+    very_invalid = jnp.array([-100.0])
+    very_valid = jnp.array([+100.0])
+    p_inv = float(boundary_penalty_from_validity(very_invalid))
+    p_val = float(boundary_penalty_from_validity(very_valid))
     assert 99.0 < p_inv < 101.0, f"penalty for very-invalid logit should be ~100, got {p_inv}"
     assert p_val < 1e-6, f"penalty for very-valid logit should be ~0, got {p_val}"
 
@@ -125,53 +159,64 @@ def test_boundary_penalty_gradient_alive_at_extremes():
     """Gradient must NOT vanish for very negative logits.
 
     The wrong-side gradient saturates at -1 (since
-    ``d(-logsigmoid(x))/dx = -sigmoid(-x) → -1`` as x → -∞), so
+    ``d(-log_sigmoid(x))/dx = -sigmoid(-x) → -1`` as x → -∞), so
     the boundary signal stays alive even when ValidityNet is
     extremely confident the point is invalid.
     """
+    grad_fn = jax.grad(boundary_penalty_from_validity)
     # Single-element batch so the mean derivative equals the per-element one.
-    very_neg = torch.tensor([-50.0], requires_grad=True)
-    boundary_penalty_from_validity(very_neg).backward()
-    assert very_neg.grad is not None
-    # Expected: -sigmoid(50) ≈ -1.0
-    assert torch.allclose(
-        very_neg.grad,
-        torch.tensor([-1.0]),
-        atol=1e-6,
-    ), f"wrong-side gradient should saturate at -1, got {very_neg.grad}"
-
+    g_neg = grad_fn(jnp.array([-50.0]))
+    np.testing.assert_allclose(np.asarray(g_neg), [-1.0], atol=1e-6)
     # Right side: gradient → 0 as logit → +∞ (no penalty to apply).
-    very_pos = torch.tensor([+50.0], requires_grad=True)
-    boundary_penalty_from_validity(very_pos).backward()
-    assert very_pos.grad is not None
-    assert torch.allclose(
-        very_pos.grad,
-        torch.tensor([0.0]),
-        atol=1e-6,
-    ), f"right-side gradient should saturate at 0, got {very_pos.grad}"
+    g_pos = grad_fn(jnp.array([+50.0]))
+    np.testing.assert_allclose(np.asarray(g_pos), [0.0], atol=1e-6)
 
 
 @pytest.mark.L1
 @pytest.mark.properties
-def test_boundary_penalty_gradcheck():
-    """gradcheck against torch.autograd.gradcheck on small input."""
-    x = torch.randn(5, dtype=torch.float64, requires_grad=True)
-    assert torch.autograd.gradcheck(boundary_penalty_from_validity, (x,), eps=1e-6, atol=1e-5)
+def test_boundary_penalty_finite_difference_check():
+    """Finite-difference gradient agrees with autodiff on small input.
+
+    JAX equivalent of the legacy ``torch.autograd.gradcheck``: compare
+    the analytic ``jax.grad`` to a centred finite-difference estimate.
+    """
+    x = jax.random.normal(jax.random.PRNGKey(0), (5,))
+    g_auto = jax.grad(boundary_penalty_from_validity)(x)
+    eps = 1e-6
+    g_fd = np.zeros_like(np.asarray(x))
+    for i in range(x.shape[0]):
+        xp = x.at[i].add(eps)
+        xm = x.at[i].add(-eps)
+        g_fd[i] = (
+            float(boundary_penalty_from_validity(xp))
+            - float(boundary_penalty_from_validity(xm))
+        ) / (2.0 * eps)
+    np.testing.assert_allclose(np.asarray(g_auto), g_fd, atol=1e-5)
 
 
 @pytest.mark.L1
 @pytest.mark.properties
-def test_boundary_penalty_gradcheck_at_large_logits():
-    """gradcheck at logits well outside the previously-clamped range.
+def test_boundary_penalty_finite_difference_at_large_logits():
+    """Finite-difference gradient agreement at logits well outside the
+    previously-clamped range.
 
     Catches a regression where a clamp was reintroduced and gradient
-    silently zeroed at extreme inputs. Uses larger atol since
-    logsigmoid is asymptotically linear with finite-difference
+    silently zeroed at extreme inputs. Larger atol since
+    log_sigmoid is asymptotically linear with finite-difference
     truncation error growing with |x|.
     """
-    x = torch.linspace(-30.0, 30.0, 7, dtype=torch.float64)
-    x.requires_grad_(True)
-    assert torch.autograd.gradcheck(boundary_penalty_from_validity, (x,), eps=1e-5, atol=1e-3)
+    x = jnp.linspace(-30.0, 30.0, 7)
+    g_auto = jax.grad(boundary_penalty_from_validity)(x)
+    eps = 1e-5
+    g_fd = np.zeros_like(np.asarray(x))
+    for i in range(x.shape[0]):
+        xp = x.at[i].add(eps)
+        xm = x.at[i].add(-eps)
+        g_fd[i] = (
+            float(boundary_penalty_from_validity(xp))
+            - float(boundary_penalty_from_validity(xm))
+        ) / (2.0 * eps)
+    np.testing.assert_allclose(np.asarray(g_auto), g_fd, atol=1e-3)
 
 
 # ---------------------------------------------------------------------------
@@ -182,51 +227,91 @@ def test_boundary_penalty_gradcheck_at_large_logits():
 @pytest.mark.L1
 @pytest.mark.properties
 def test_head_b_params_no_grad_from_head_a_loss():
-    """Boundary penalty via functional_call must not gradient Head B."""
-    eta_net = EtaNet(theta_dim=1)
-    val_net = ValidityNet(theta_dim=1)
-    # Forward Head A, then evaluate Head B with detached params.
-    theta = torch.linspace(-2.0, 2.0, 11)
-    eta_pred = eta_net(theta)
-    v_p = {k: v.detach() for k, v in val_net.named_parameters()}
-    v_b = {k: v.detach() for k, v in val_net.named_buffers()}
-    inputs = torch.stack([theta, eta_pred], dim=-1)
-    logits = torch.func.functional_call(val_net, (v_p, v_b), (inputs,))
-    penalty = boundary_penalty_from_validity(logits)
-    penalty.backward()
-    # EtaNet params should have grad (Head A is what we're training).
-    assert any(
-        p.grad is not None and p.grad.abs().sum().item() > 0 for p in eta_net.parameters()
-    ), "EtaNet did not receive boundary-penalty gradient"
-    # ValidityNet params should NOT have grad — functional_call detach.
-    assert all(
-        p.grad is None or p.grad.abs().sum().item() == 0 for p in val_net.parameters()
-    ), "ValidityNet erroneously received gradient through detached call"
+    """Boundary penalty via eqx.partition + stop_gradient must not gradient Head B."""
+    k1, k2 = _make_keys(2, seed=0)
+    eta_net = EtaNet(theta_dim=1, key=k1)
+    val_net = ValidityNet(theta_dim=1, key=k2)
+    theta = jnp.linspace(-2.0, 2.0, 11)
+
+    en_params, en_static = eqx.partition(eta_net, eqx.is_array)
+    vn_params, vn_static = eqx.partition(val_net, eqx.is_array)
+
+    def loss_only_eta(en_p):
+        en2 = eqx.combine(en_p, en_static)
+        eta_pred = en2(theta)
+        return compose_boundary_penalty(
+            val_net=val_net, theta_batch_t=theta, eta_pred=eta_pred
+        )
+
+    g_en = jax.grad(loss_only_eta)(en_params)
+    en_norms = [jnp.abs(g).sum() for g in jtu.tree_leaves(g_en)]
+    assert any(float(n) > 0 for n in en_norms), (
+        "EtaNet did not receive boundary-penalty gradient"
+    )
+
+    def loss_only_val(vn_p):
+        vn2 = eqx.combine(vn_p, vn_static)
+        eta_pred = eta_net(theta)
+        return compose_boundary_penalty(
+            val_net=vn2, theta_batch_t=theta, eta_pred=eta_pred
+        )
+
+    g_vn = jax.grad(loss_only_val)(vn_params)
+    vn_norms = [jnp.abs(g).sum() for g in jtu.tree_leaves(g_vn)]
+    assert all(float(n) == 0.0 for n in vn_norms), (
+        "ValidityNet erroneously received gradient through detached call"
+    )
 
 
 @pytest.mark.L1
 @pytest.mark.properties
 def test_head_a_params_no_grad_from_head_b_loss():
-    """When eta_pred is detached, Head B's BCE must not gradient EtaNet."""
-    eta_net = EtaNet(theta_dim=1)
-    val_net = ValidityNet(theta_dim=1)
-    theta = torch.linspace(-2.0, 2.0, 11)
-    eta_pred = eta_net(theta)
-    inputs = torch.stack([theta, eta_pred.detach()], dim=-1)
-    logits = val_net(inputs)
-    target = torch.zeros_like(logits)  # arbitrary BCE target
-    loss = F.binary_cross_entropy_with_logits(logits, target)
-    loss.backward()
-    assert all(
-        p.grad is None or p.grad.abs().sum().item() == 0 for p in eta_net.parameters()
-    ), "EtaNet erroneously received gradient via Head B loss"
-    assert any(
-        p.grad is not None and p.grad.abs().sum().item() > 0 for p in val_net.parameters()
-    ), "ValidityNet did not receive BCE gradient"
+    """When eta_pred is stopped at the input, Head B's BCE must not
+    flow gradient back into EtaNet.
+    """
+    k1, k2 = _make_keys(2, seed=1)
+    eta_net = EtaNet(theta_dim=1, key=k1)
+    val_net = ValidityNet(theta_dim=1, key=k2)
+    theta = jnp.linspace(-2.0, 2.0, 11)
+    target = jnp.zeros((11,))  # arbitrary BCE target
+
+    en_params, en_static = eqx.partition(eta_net, eqx.is_array)
+    vn_params, vn_static = eqx.partition(val_net, eqx.is_array)
+
+    def bce_loss_through_eta(en_p):
+        en2 = eqx.combine(en_p, en_static)
+        eta_pred = jax.lax.stop_gradient(en2(theta))
+        inputs = jnp.stack([theta, eta_pred], axis=-1)
+        logits = val_net(inputs)
+        # BCE with logits, mean reduction.
+        return -(
+            target * jax.nn.log_sigmoid(logits)
+            + (1.0 - target) * jax.nn.log_sigmoid(-logits)
+        ).mean()
+
+    g_en = jax.grad(bce_loss_through_eta)(en_params)
+    en_norms = [jnp.abs(g).sum() for g in jtu.tree_leaves(g_en)]
+    assert all(float(n) == 0.0 for n in en_norms), (
+        "EtaNet erroneously received gradient via Head B loss"
+    )
+
+    def bce_loss_through_val(vn_p):
+        vn2 = eqx.combine(vn_p, vn_static)
+        eta_pred = jax.lax.stop_gradient(eta_net(theta))
+        inputs = jnp.stack([theta, eta_pred], axis=-1)
+        logits = vn2(inputs)
+        return -(
+            target * jax.nn.log_sigmoid(logits)
+            + (1.0 - target) * jax.nn.log_sigmoid(-logits)
+        ).mean()
+
+    g_vn = jax.grad(bce_loss_through_val)(vn_params)
+    vn_norms = [jnp.abs(g).sum() for g in jtu.tree_leaves(g_vn)]
+    assert any(float(n) > 0 for n in vn_norms), "ValidityNet did not receive BCE gradient"
 
 
 # ---------------------------------------------------------------------------
-# Validity helpers
+# Validity helpers (numpy-side, unchanged)
 # ---------------------------------------------------------------------------
 
 
@@ -529,7 +614,8 @@ def test_ot_tilted_pvalue_rejects_eta_out_of_admissible_range(
     prior = NormalDistribution(0.0, 1.0)
     # Admissible: [0, 1]; valid call works.
     p = scheme.tilted_pvalue(np.array([0.0]), 0.0, model, prior, 0.5, "waldo")
-    assert np.isfinite(p[0]) and 0.0 <= p[0] <= 1.0
+    p_scalar = float(np.asarray(p).reshape(-1)[0])
+    assert np.isfinite(p_scalar) and 0.0 <= p_scalar <= 1.0
     # Reject η < 0 and η > 1.
     for bad_eta in (-2.0, -1e-6, 1.0 + 1e-6, 5.0):
         with pytest.raises(TiltingDomainError, match="eta in"):
@@ -629,35 +715,35 @@ def test_experiment_config_rejects_unknown_top_level_keys(bootstrapped_registry)
 
 
 # ---------------------------------------------------------------------------
-# Skeptic block #13: tighten "no grad to ValidityNet" check
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# E.2 round-2 invariants
+# E.2 round-2 invariants — width-loss + extract-NN params
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.L1
 @pytest.mark.properties
 def test_extract_normal_normal_params_rejects_degenerate_w(bootstrapped_registry):
-    """w → 0 (delta prior) and w → 1 (improper) raise."""
-    from frasian.learned.training.train import _extract_normal_normal_params
+    """w → 0 (delta prior) and w → 1 (improper) raise.
+
+    Validates the JAX-side compose-layer entry point. The
+    legacy back-compat alias ``train._extract_normal_normal_params``
+    still exists but ``train.py`` itself is rewired in commit 3.
+    """
+    from frasian.learned.training._losses_compose import extract_normal_normal_params
 
     # w very close to 0: prior.scale << model.sigma
     bad_prior_tight = NormalDistribution(0.0, 0.001)
     model = NormalNormalModel(sigma=1.0)
     with pytest.raises(ValueError, match="data weight"):
-        _extract_normal_normal_params(model, bad_prior_tight)
+        extract_normal_normal_params(model, bad_prior_tight)
 
     # w very close to 1: prior.scale >> model.sigma
     bad_prior_wide = NormalDistribution(0.0, 1000.0)
     with pytest.raises(ValueError, match="data weight"):
-        _extract_normal_normal_params(model, bad_prior_wide)
+        extract_normal_normal_params(model, bad_prior_wide)
 
     # Reasonable case still works.
     ok_prior = NormalDistribution(0.0, 1.0)
-    w, mu0, sigma = _extract_normal_normal_params(model, ok_prior)
+    w, mu0, sigma = extract_normal_normal_params(model, ok_prior)
     assert abs(w - 0.5) < 1e-9
     assert mu0 == 0.0
     assert sigma == 1.0
@@ -665,69 +751,60 @@ def test_extract_normal_normal_params_rejects_degenerate_w(bootstrapped_registry
 
 @pytest.mark.L1
 @pytest.mark.properties
-def test_ot_torch_pvalue_smooth_and_finite_inside_admissible_range():
-    """OT torch port returns finite values across the admissible range.
+def test_ot_jax_pvalue_smooth_and_finite_inside_admissible_range():
+    """OT JAX port returns finite values across the admissible range,
+    plus a clamped surface for slightly-invalid η.
 
     The numpy ``OTTilting.tilted_pvalue`` raises ``TiltingDomainError``
     for η outside [0, 1] (driving the validity helper's labelling);
-    the torch port instead clamps ``s_t`` so the width-loss surface
+    the JAX port instead clamps ``s_t`` so the width-loss surface
     stays smooth and gradient-bearing even at slightly-invalid η.
     The boundary penalty (Head B) is what enforces admissibility on
-    the trained EtaNet, not the torch port.
+    the trained EtaNet, not the JAX port.
     """
-    from frasian.learned.training.pvalue_torch import ot_tilted_pvalue_torch
+    from frasian.learned.training.pvalue_jax import ot_tilted_pvalue_jax
 
-    theta = torch.tensor([[0.0]])
-    D = torch.tensor([[0.0]])
-    w = torch.tensor(0.5)
-    mu0 = torch.tensor(0.0)
-    sigma = torch.tensor(1.0)
+    theta = jnp.array([[0.0]])
+    D = jnp.array([[0.0]])
+    w = jnp.asarray(0.5)
+    mu0 = jnp.asarray(0.0)
+    sigma = jnp.asarray(1.0)
 
     # Inside admissible range: finite, in [0, 1].
     for good_eta in (0.0, 0.25, 0.5, 0.75, 1.0):
-        p = ot_tilted_pvalue_torch(
-            theta,
-            D,
-            w,
-            mu0,
-            sigma,
-            torch.tensor([[good_eta]]),
-            "waldo",
+        p = ot_tilted_pvalue_jax(
+            theta, D, w, mu0, sigma, jnp.array([[good_eta]]), "waldo"
         )
-        assert torch.isfinite(p).all()
-        assert -1e-6 <= p.item() <= 1.0 + 1e-6
+        p_val = float(p.reshape(-1)[0])
+        assert bool(jnp.isfinite(p).all())
+        assert -1e-6 <= p_val <= 1.0 + 1e-6
 
-    # Outside (slightly): the torch port produces a finite gradient-
+    # Outside (slightly): the JAX port produces a finite gradient-
     # bearing surface (no NaN), so Head A's width loss can descend.
     # The validity helper raises in numpy-land; that's what gates
     # Head B's labels.
     for bad_eta in (-0.1, 1.1):
-        p = ot_tilted_pvalue_torch(
-            theta,
-            D,
-            w,
-            mu0,
-            sigma,
-            torch.tensor([[bad_eta]]),
-            "waldo",
+        p = ot_tilted_pvalue_jax(
+            theta, D, w, mu0, sigma, jnp.array([[bad_eta]]), "waldo"
         )
-        assert torch.isfinite(p).all(), (
-            f"OT torch port at η={bad_eta} returned non-finite p="
-            f"{p.item()}; the clamp was supposed to keep it finite."
+        p_val = float(p.reshape(-1)[0])
+        assert bool(jnp.isfinite(p).all()), (
+            f"OT JAX port at η={bad_eta} returned non-finite p={p_val}; "
+            "the clamp was supposed to keep it finite."
         )
 
 
 @pytest.mark.L1
 @pytest.mark.properties
 def test_width_loss_averages_over_d_batch(bootstrapped_registry):
-    """_width_loss takes a (B,) D tensor and returns a scalar average.
+    """compose_width_loss takes a (B,) D array and returns a scalar.
 
     Skeptic block #1: the previous single-D estimator had high
     per-step variance, causing val_width to oscillate. Verify the
-    new code accepts batched D and that its variance scales as 1/B.
+    new code accepts batched D and that gradient flows back into
+    EtaNet's parameters.
     """
-    from frasian.learned.training.architecture import EtaNet
-    from frasian.learned.training.train import _width_loss
+    from frasian.learned.training._losses_compose import compose_width_loss
 
     cfg = ExperimentConfig(
         scheme_name="power_law",
@@ -739,176 +816,80 @@ def test_width_loss_averages_over_d_batch(bootstrapped_registry):
         n_lhs=20,
         eta_explore_box=(-2.0, 2.0),
     )
-    eta_net = EtaNet(theta_dim=1)
-    theta_grid_t = torch.as_tensor(cfg.theta_grid, dtype=torch.float32)
+    eta_net = EtaNet(theta_dim=1, key=jax.random.PRNGKey(0))
+    theta_grid_t = jnp.asarray(cfg.theta_grid)
 
     # Single D: 1-element loss.
-    loss_1 = _width_loss(
+    loss_1 = compose_width_loss(
         eta_net=eta_net,
         theta_grid_t=theta_grid_t,
-        D_batch_t=torch.tensor([0.0]),
+        D_batch_t=jnp.array([0.0]),
         config=cfg,
         loss_kind="integrated_p",
         alpha=None,
     )
+    assert loss_1.ndim == 0
     # Batch of 8 D: scalar (mean over batch).
-    loss_8 = _width_loss(
+    loss_8 = compose_width_loss(
         eta_net=eta_net,
         theta_grid_t=theta_grid_t,
-        D_batch_t=torch.linspace(-2.0, 2.0, 8),
+        D_batch_t=jnp.linspace(-2.0, 2.0, 8),
         config=cfg,
         loss_kind="integrated_p",
         alpha=None,
     )
-    assert loss_1.dim() == 0
-    assert loss_8.dim() == 0
-    # Both finite, gradient flows back.
-    loss_8.backward()
-    assert any(p.grad is not None and p.grad.abs().sum().item() > 0 for p in eta_net.parameters())
+    assert loss_8.ndim == 0
 
+    # Gradient flows back into EtaNet via the loss.
+    en_params, en_static = eqx.partition(eta_net, eqx.is_array)
 
-@pytest.mark.L3
-@pytest.mark.slow
-def test_phase_e_selector_rejects_cross_experiment_use(
-    bootstrapped_registry,
-    tmp_path,
-):
-    """A Phase E checkpoint trained at (σ₀, σ) is refused for inference
-    at any other (σ₀, σ) — even when the derived w matches.
-
-    Skeptic E.3 block #2: closes the silent-wrong-scale-lookup gap.
-    """
-    from frasian._errors import MissingArtifactError
-    from frasian.learned.eta_artifact import EtaArtifact
-    from frasian.learned.training.train import fit_eta_artifact
-    from frasian.statistics.waldo import WaldoStatistic
-    from frasian.tilting.eta_selectors import LearnedDynamicEtaSelector
-    from frasian.tilting.power_law import PowerLawTilting
-
-    # Train a tiny checkpoint at the canonical (μ₀=0, σ₀=σ=1, w=0.5).
-    cfg = ExperimentConfig(
-        scheme_name="power_law",
-        statistic_name="waldo",
-        prior=NormalDistribution(0.0, 1.0),
-        model=NormalNormalModel(sigma=1.0),
-        theta_distribution=UniformThetaDistribution(low=-3.0, high=3.0),
-        n_grid=21,
-        n_lhs=80,
-        eta_explore_box=(-2.0, 2.0),
-        seed=7,
-    )
-    out = tmp_path / "ckpt.pt"
-    fit_eta_artifact(
-        config=cfg,
-        out_path=out,
-        n_epochs=2,
-        batch_size=20,
-        n_aux=20,
-        lambda_max=1.0,
-        lambda_warmup_frac=0.5,
-        patience=5,
-        verbose=False,
-    )
-    art = EtaArtifact(artifact_path=out, name="phase_e_test")
-    sel = LearnedDynamicEtaSelector(artifact=art)
-    scheme = PowerLawTilting(selector=sel)
-
-    # Same fingerprints: works.
-    scheme.dynamic_tilted_confidence_interval(
-        alpha=0.05,
-        D=0.0,
-        model=NormalNormalModel(sigma=1.0),
-        prior=NormalDistribution(0.0, 1.0),
-        statistic_name="waldo",
-        eta_selector=sel,
-    )
-    # Same w (=0.5) but rescaled (σ₀=σ=2): rejected.
-    with pytest.raises(MissingArtifactError, match="trained on model"):
-        scheme.dynamic_tilted_confidence_interval(
-            alpha=0.05,
-            D=0.0,
-            model=NormalNormalModel(sigma=2.0),
-            prior=NormalDistribution(0.0, 2.0),
-            statistic_name="waldo",
-            eta_selector=sel,
-        )
-    # Same (σ, σ₀) but shifted prior (μ₀=1): rejected.
-    with pytest.raises(MissingArtifactError, match="trained with prior"):
-        scheme.dynamic_tilted_confidence_interval(
-            alpha=0.05,
-            D=0.0,
-            model=NormalNormalModel(sigma=1.0),
-            prior=NormalDistribution(1.0, 1.0),
-            statistic_name="waldo",
-            eta_selector=sel,
-        )
-
-
-@pytest.mark.L1
-@pytest.mark.properties
-def test_lambda_schedule_starts_at_zero():
-    """Skeptic E.3 block #4: λ(0) = 0 so Head A's boundary-penalty
-    signal is null while Head B trains on its first batch."""
-    from frasian.learned.training.train import _lambda_schedule
-
-    assert _lambda_schedule(0, n_epochs=10, lambda_max=10.0, warmup_frac=0.3) == 0.0
-    # At warmup_epochs, λ = λ_max.
-    warmup_epochs = max(1, int(round(0.3 * 10)))
-    assert _lambda_schedule(warmup_epochs, n_epochs=10, lambda_max=10.0, warmup_frac=0.3) == 10.0
-    # Post-warmup, constant at λ_max.
-    assert _lambda_schedule(8, n_epochs=10, lambda_max=10.0, warmup_frac=0.3) == 10.0
-
-
-@pytest.mark.L3
-@pytest.mark.slow
-def test_alpha_required_to_be_none_for_marginalised_loss(
-    bootstrapped_registry,
-    tmp_path,
-):
-    """Skeptic E.3 block #7: integrated_p / cd_variance reject non-None α."""
-    from frasian.learned.training.train import fit_eta_artifact
-
-    cfg = ExperimentConfig(
-        scheme_name="power_law",
-        statistic_name="waldo",
-        prior=NormalDistribution(0.0, 1.0),
-        model=NormalNormalModel(sigma=1.0),
-        theta_distribution=UniformThetaDistribution(low=-3.0, high=3.0),
-        n_grid=21,
-        n_lhs=20,
-        eta_explore_box=(-2.0, 2.0),
-        seed=7,
-    )
-    with pytest.raises(ValueError, match="α-marginalised"):
-        fit_eta_artifact(
+    def loss_fn(p):
+        en2 = eqx.combine(p, en_static)
+        return compose_width_loss(
+            eta_net=en2,
+            theta_grid_t=theta_grid_t,
+            D_batch_t=jnp.linspace(-2.0, 2.0, 8),
             config=cfg,
-            out_path=tmp_path / "x.pt",
             loss_kind="integrated_p",
-            alpha=0.05,  # invalid pairing
-            n_epochs=1,
-            batch_size=10,
-            verbose=False,
+            alpha=None,
         )
+
+    g = jax.grad(loss_fn)(en_params)
+    g_norms = [float(jnp.abs(x).sum()) for x in jtu.tree_leaves(g)]
+    assert any(n > 0 for n in g_norms)
+
+
+# ---------------------------------------------------------------------------
+# Skeptic block #13: tighten "no grad to ValidityNet" check (JAX flavour)
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.L1
 @pytest.mark.properties
-def test_validity_net_params_get_no_grad_attribute_at_all():
-    """After Head A's loss backward, ValidityNet.params should have
-    ``grad is None`` (no gradient even allocated), not zero gradient.
+def test_validity_net_params_get_zero_grad_from_head_a():
+    """After Head A's loss backward, ValidityNet params must receive
+    exactly zero gradient — not "small but nonzero" — under the
+    ``eqx.partition`` + ``stop_gradient`` boundary.
 
-    A `.grad == 0` could mean "leak that happens to vanish on this
-    input"; `.grad is None` means autograd never recorded a node
-    for these params — which is what `functional_call` with
-    detached params guarantees.
+    JAX has no `.grad is None` analogue (gradients are returned
+    structurally, not attached to leaves), so the Equinox-faithful
+    check is "every leaf is exactly zero". This is what
+    ``stop_gradient`` guarantees algebraically.
     """
-    eta_net = EtaNet(theta_dim=1)
-    val_net = ValidityNet(theta_dim=1)
-    theta = torch.linspace(-2.0, 2.0, 11)
+    k1, k2 = _make_keys(2, seed=2)
+    eta_net = EtaNet(theta_dim=1, key=k1)
+    val_net = ValidityNet(theta_dim=1, key=k2)
+    theta = jnp.linspace(-2.0, 2.0, 11)
     eta_pred = eta_net(theta)
-    v_p = {k: v.detach() for k, v in val_net.named_parameters()}
-    v_b = {k: v.detach() for k, v in val_net.named_buffers()}
-    inputs = torch.stack([theta, eta_pred], dim=-1)
-    logits = torch.func.functional_call(val_net, (v_p, v_b), (inputs,))
-    boundary_penalty_from_validity(logits).backward()
-    assert all(p.grad is None for p in val_net.parameters())
+
+    vn_params, vn_static = eqx.partition(val_net, eqx.is_array)
+
+    def loss_fn(vn_p):
+        vn2 = eqx.combine(vn_p, vn_static)
+        return compose_boundary_penalty(
+            val_net=vn2, theta_batch_t=theta, eta_pred=eta_pred
+        )
+
+    g_vn = jax.grad(loss_fn)(vn_params)
+    for leaf in jtu.tree_leaves(g_vn):
+        np.testing.assert_array_equal(np.asarray(leaf), np.zeros_like(np.asarray(leaf)))
