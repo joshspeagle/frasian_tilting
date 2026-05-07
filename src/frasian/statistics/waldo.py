@@ -17,10 +17,35 @@ any `Model` with `sample_data`, `posterior`, and any `Prior` that
 `model.posterior(data, prior)` accepts. Cross-check vs the closed
 form on Normal-Normal lives in
 `tests/regression/test_waldo_generic_matches_closed_form.py`.
+
+Reproducibility & MC discipline
+-------------------------------
+The generic-path Monte Carlo uses **common random numbers (CRN)**: a
+single seed is derived from the *call's* inputs (data + fingerprints
++ alpha + self.seed) — NOT from the candidate theta — via
+`hashlib.blake2b` for cross-process stability. A fresh
+`np.random.default_rng(seed)` is constructed at every brentq probe;
+same seed ⇒ same internal uniform stream ⇒ same Bernoulli/Normal
+inverse-CDF draws across theta. The result is that `f(theta)` is a
+piecewise-constant (Bernoulli) or smooth (Normal) function of theta
+— brentq actually converges instead of locking onto a re-randomised
+staircase.
+
+The empirical p-value uses the conservative `(k+1)/(n+1)` continuity
+correction. This biases coverage upward by O(1/n_mc) — explicitly a
+*conservative* CI, never anti-conservative — and bounds the p-value
+strictly inside (0, 1] so brentq can bracket cleanly even at the
+extreme tails.
+
+Cost note: each MC draw constructs `model.posterior(D', prior)`. For
+the conjugate Beta and Normal cases that's O(1); for hypothetical
+non-conjugate posteriors (NUTS / VI), the cost scales linearly in
+`n_mc` and the CI inversion cost is O(n_mc * brentq_iters).
 """
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, ClassVar
 
@@ -29,8 +54,10 @@ import jax.numpy as jnp
 import jax.scipy.stats as jsp_stats
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
+from scipy import stats as _scalar_scipy_stats
 
 from .. import _jax_setup as _x64  # noqa: F401  — ensure float64 active
+from .._errors import BracketingFailed
 from .._registry import register_statistic
 from ..models.base import Model, Prior
 from ..models.distributions import NormalDistribution
@@ -56,6 +83,26 @@ def _pvalue_components(
     return a, b
 
 
+def _closed_form_pvalue_scalar(
+    theta_f: float,
+    D_f: float,
+    mu_n_f: float,
+    w: float,
+    mu0: float,
+    sigma: float,
+) -> float:
+    """Numpy-eager scalar mirror of `_closed_form_pvalue`. Used inside
+    brentq closures (~10 us/call vs ~200 us through `jsp_stats.norm.cdf`).
+    See `tilting/power_law.py::_tilted_pvalue_numpy_scalar` for the
+    same-pattern motivation.
+    """
+    a = abs(mu_n_f - theta_f) / (w * sigma)
+    b = (1.0 - w) * (mu0 - theta_f) / (w * sigma)
+    return float(
+        _scalar_scipy_stats.norm.cdf(b - a) + _scalar_scipy_stats.norm.cdf(-a - b)
+    )
+
+
 @register_statistic(name="waldo", brief="docs/methods/waldo.md")
 @dataclass(frozen=True)
 class WaldoStatistic:
@@ -65,13 +112,11 @@ class WaldoStatistic:
     Generic path knobs (`n_mc`, `seed`) are dataclass fields with
     defaults; override at construction time:
 
-        WaldoStatistic(n_mc=2000, seed=12345)
+        WaldoStatistic(n_mc=4000, seed=12345)
 
-    The MC reference distribution at each candidate `theta` is sampled
-    deterministically — same `(theta, model.fingerprint(),
-    prior.fingerprint(), seed)` ⇒ same MC draws — so `confidence_interval`
-    is a deterministic function of its inputs and `brentq` converges
-    cleanly within MC tolerance.
+    The default `n_mc=2000` gives ~0.022 MC standard error on a
+    p-value near 0.5, dropping to ~0.005 at p=0.05. For accurate CI
+    inversion at small alpha, use n_mc>=2000.
     """
 
     name: ClassVar[str] = "waldo"
@@ -85,7 +130,7 @@ class WaldoStatistic:
         )
     )
 
-    n_mc: int = 500
+    n_mc: int = 2000
     seed: int = 0xC0FFEE
 
     # ---------- closed-form Normal-Normal+Normal path ----------
@@ -126,18 +171,20 @@ class WaldoStatistic:
         from ..tilting._solvers import brentq_with_doubling
 
         D = float(np.atleast_1d(np.asarray(data, dtype=np.float64)).mean())
-        mu_n, _, _ = posterior_params(D, prior.loc, model.sigma, prior.scale)
+        mu_n_arr, _, w = posterior_params(D, prior.loc, model.sigma, prior.scale)
+        mu_n_f = float(mu_n_arr)
+        sigma = model.sigma
+        mu0 = prior.loc
 
         def f(theta: float) -> float:
-            return float(self._closed_form_pvalue(theta, data, model, prior)) - alpha
+            # scipy: hot brentq inner loop — use the numpy-eager scalar
+            # mirror (~10 us) instead of routing through jsp_stats.norm
+            # (~200 us per call). See power_law.py::tilted_pvalue note.
+            return _closed_form_pvalue_scalar(theta, D, mu_n_f, w, mu0, sigma) - alpha
 
-        half = 4.0 * model.sigma
-        lower = brentq_with_doubling(
-            f, midpoint=float(mu_n), initial_half_width=half, direction=-1
-        )
-        upper = brentq_with_doubling(
-            f, midpoint=float(mu_n), initial_half_width=half, direction=+1
-        )
+        half = 4.0 * sigma
+        lower = brentq_with_doubling(f, midpoint=mu_n_f, initial_half_width=half, direction=-1)
+        upper = brentq_with_doubling(f, midpoint=mu_n_f, initial_half_width=half, direction=+1)
         return (lower, upper)
 
     def _closed_form_acceptance_region(
@@ -153,19 +200,25 @@ class WaldoStatistic:
         theta_arr = np.atleast_1d(np.asarray(theta0, dtype=np.float64))
         D_lo = np.empty_like(theta_arr)
         D_hi = np.empty_like(theta_arr)
+        sigma = model.sigma
+        mu0 = prior.loc
         for i, theta_val in enumerate(theta_arr):
+            theta_f = float(theta_val)
 
-            def f(D_val: float, _theta=theta_val) -> float:
-                return float(
-                    self._closed_form_pvalue(float(_theta), np.asarray([D_val]), model, prior)
+            def f(D_val: float, _theta_f: float = theta_f) -> float:
+                # mu_n depends on D, so recompute per call. Same numpy
+                # fast-path discipline as the CI-inversion brentq above.
+                mu_n_arr_i, _, w_i = posterior_params(D_val, mu0, sigma, prior.scale)
+                return _closed_form_pvalue_scalar(
+                    _theta_f, D_val, float(mu_n_arr_i), w_i, mu0, sigma
                 ) - alpha
 
             half = 4.0 * model.sigma
             D_lo[i] = brentq_with_doubling(
-                f, midpoint=float(theta_val), initial_half_width=half, direction=-1
+                f, midpoint=theta_f, initial_half_width=half, direction=-1
             )
             D_hi[i] = brentq_with_doubling(
-                f, midpoint=float(theta_val), initial_half_width=half, direction=+1
+                f, midpoint=theta_f, initial_half_width=half, direction=+1
             )
         return (
             jnp.asarray(D_lo if D_lo.size > 1 else D_lo.reshape(())),
@@ -190,6 +243,33 @@ class WaldoStatistic:
         diff = mu_post - theta_arr
         return diff * diff / jnp.maximum(var_post, 1e-300)
 
+    @staticmethod
+    def _stable_seed(
+        data: NDArray[np.float64],
+        model: Model,
+        prior: Prior,
+        alpha: float,
+        base_seed: int,
+    ) -> int:
+        """Cross-process-stable 32-bit seed for the MC reference.
+
+        Python's `hash()` is randomised per-process (`PYTHONHASHSEED`
+        defaults to a random value, randomising hashes of strings and
+        tuples containing strings). We hash a deterministic byte-
+        encoding via `hashlib.blake2b` so the same `(data, model,
+        prior, alpha, seed)` tuple always produces the same MC draws,
+        regardless of process. The seed is intentionally INDEPENDENT
+        of the candidate theta — that's what makes common random
+        numbers across brentq probes possible.
+        """
+        h = hashlib.blake2b(digest_size=8)
+        h.update(np.ascontiguousarray(data, dtype=np.float64).tobytes())
+        h.update(repr(model.fingerprint()).encode("utf-8"))
+        h.update(repr(prior.fingerprint()).encode("utf-8"))
+        h.update(np.float64(alpha).tobytes())
+        h.update(np.int64(base_seed).tobytes())
+        return int.from_bytes(h.digest()[:4], "little", signed=False)
+
     def _generic_mc_reference(
         self,
         theta0_f: float,
@@ -201,9 +281,15 @@ class WaldoStatistic:
     ) -> NDArray[np.float64]:
         """Sample n_mc t-values under H_0 ~ likelihood(.|theta0).
 
-        Each draw constructs the posterior under that synthetic data
-        and recomputes the WALDO statistic; this is what gives the
-        method its frequentist calibration.
+        Uses CRN: same `derived_seed` ⇒ same internal uniform stream ⇒
+        same inverse-CDF mappings to D' across different theta values.
+        On Bernoulli, `Generator.binomial(1, theta_f, ...)` draws
+        uniforms and compares to theta_f, so different theta_f produces
+        D' = (#{u_i < theta_f}) — a piecewise-constant function of theta
+        with the *same* uniforms. On Normal, `Generator.normal(loc=theta_f,
+        scale=sigma, ...)` shifts the same Z-draws — smooth in theta_f.
+        Either way, brentq sees a deterministic function of theta and
+        converges.
         """
         rng = np.random.default_rng(derived_seed)
         t_samples = np.empty(n_mc, dtype=np.float64)
@@ -219,32 +305,47 @@ class WaldoStatistic:
                 t_samples[i] = d * d / var
         return t_samples
 
-    def _generic_derived_seed(
-        self, theta0_f: float, model: Model, prior: Prior
-    ) -> int:
-        """Reproducible 32-bit seed derived from (theta, fingerprints, base seed)."""
-        h = hash((theta0_f, tuple(model.fingerprint()), tuple(prior.fingerprint())))
-        return (int(self.seed) ^ (h & 0xFFFFFFFF)) & 0xFFFFFFFF
-
     def _generic_pvalue(
         self,
         theta0: ArrayLike,
         data: NDArray[np.float64],
         model: Model,
         prior: Prior | None,
+        *,
+        derived_seed: int | None = None,
     ) -> jax.Array:
+        """MC empirical p-value with `(k+1)/(n+1)` continuity correction.
+
+        ``derived_seed``: when supplied, used as the MC seed (call this
+        path from `_generic_confidence_interval` to enable CRN across
+        brentq probes). When ``None``, a stable seed is computed from
+        (data, model, prior, alpha=0, self.seed) — the resulting
+        single-call p-value is reproducible across processes but does
+        NOT share random numbers with any companion call. Use the
+        explicit form whenever multiple p-values must agree under CRN.
+        """
         if prior is None:
             raise ValueError("WaldoStatistic.pvalue requires a prior (got None).")
         theta_f = float(np.asarray(theta0))
-        n_obs = int(np.atleast_1d(np.asarray(data, dtype=np.float64)).size)
+        data_arr = np.atleast_1d(np.asarray(data, dtype=np.float64))
+        if data_arr.ndim != 1:
+            raise NotImplementedError(
+                "WaldoStatistic.pvalue currently expects 1-D data (n=1 sandbox "
+                "or n trials of a single Bernoulli/Normal scalar); got "
+                f"data.ndim={data_arr.ndim}. Multi-dim data requires the model "
+                "to expose an `n_obs(data) -> int` accessor (latent skeptic vector #7)."
+            )
+        n_obs = int(data_arr.size)
         t_obs = float(np.asarray(self._generic_evaluate(theta_f, data, model, prior)))
-        derived_seed = self._generic_derived_seed(theta_f, model, prior)
+        if derived_seed is None:
+            derived_seed = self._stable_seed(data_arr, model, prior, 0.0, self.seed)
         t_ref = self._generic_mc_reference(
             theta_f, n_obs, model, prior, self.n_mc, derived_seed
         )
-        # +1 smoothing: empirical p-value with continuity correction; bounded
-        # away from 0 and 1 so brentq can bracket cleanly when the observed
-        # t lies in the extreme tails of the MC reference.
+        # +1 smoothing: empirical p-value with continuity correction. This
+        # is intentionally CONSERVATIVE — coverage is biased upward by
+        # O(1/n_mc), never downward. Bounded strictly in (0, 1] so brentq
+        # can bracket cleanly even at the extreme tails of the MC reference.
         p = (float(np.sum(t_ref >= t_obs)) + 1.0) / (float(self.n_mc) + 1.0)
         return jnp.asarray(p)
 
@@ -262,12 +363,39 @@ class WaldoStatistic:
         # scipy: brentq_with_doubling at the public CI-inversion boundary.
         from ..tilting._solvers import brentq_with_doubling
 
+        data_arr = np.atleast_1d(np.asarray(data, dtype=np.float64))
+        if data_arr.ndim != 1:
+            raise NotImplementedError(
+                "WaldoStatistic.confidence_interval expects 1-D data; got "
+                f"data.ndim={data_arr.ndim}."
+            )
+        # CRN seed: stable across processes, INDEPENDENT of theta. Threading
+        # this seed into every brentq probe makes the MC pvalue use the
+        # same internal uniform stream at each theta — `f(theta)` becomes
+        # a deterministic function of theta (piecewise-constant for
+        # Bernoulli, smooth for Normal) instead of a fresh stochastic
+        # process, so brentq actually converges (skeptic finding #1+#13).
+        derived_seed = self._stable_seed(data_arr, model, prior, alpha, self.seed)
+        support_lo, support_hi = model.support()
+
         posterior = model.posterior(data, prior)
         mu_post = float(np.asarray(posterior.mean()))
         sigma_post = float(np.sqrt(max(float(np.asarray(posterior.var())), 1e-300)))
 
         def f(theta: float) -> float:
-            return float(self._generic_pvalue(theta, data, model, prior)) - alpha
+            # Clamp to model support: brentq's bracket-doubling can
+            # probe values outside the parameter space (e.g. theta>1
+            # for Bernoulli), where `model.sample_data(theta, ...)`
+            # would raise. Clamping makes f flat outside support so
+            # brentq returns BracketingFailed cleanly when the CI
+            # truly extends to the boundary; the caller's
+            # `except BracketingFailed` then yields support_lo / hi.
+            theta_safe = max(float(support_lo), min(float(support_hi), theta))
+            return float(
+                self._generic_pvalue(
+                    theta_safe, data, model, prior, derived_seed=derived_seed
+                )
+            ) - alpha
 
         half = max(4.0 * sigma_post, 1e-3)
         support_lo, support_hi = model.support()
@@ -275,15 +403,22 @@ class WaldoStatistic:
             lower = brentq_with_doubling(
                 f, midpoint=mu_post, initial_half_width=half, direction=-1
             )
-        except Exception:
+        except BracketingFailed:
+            # Bracket exhausted at the support boundary — return the
+            # boundary explicitly so callers see an honest "open CI".
+            # We do NOT swallow other exceptions (silent CI=[support_lo,
+            # support_hi] would mask real bugs; skeptic finding #4).
             lower = float(support_lo)
         try:
             upper = brentq_with_doubling(
                 f, midpoint=mu_post, initial_half_width=half, direction=+1
             )
-        except Exception:
+        except BracketingFailed:
             upper = float(support_hi)
-        return (max(lower, float(support_lo)), min(upper, float(support_hi)))
+        return (
+            max(lower, float(support_lo)),
+            min(upper, float(support_hi)),
+        )
 
     # ---------- public protocol surface (dispatches) ----------
 

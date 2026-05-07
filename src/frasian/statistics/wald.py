@@ -109,27 +109,57 @@ class WaldStatistic:
         self, alpha: float, data: NDArray[np.float64], model: Model
     ) -> tuple[float, float]:
         # scipy: brentq lives at the public CI-inversion boundary; numpy/scipy.
+        from .._errors import BracketingFailed
         from ..tilting._solvers import brentq_with_doubling
 
         mle = float(np.asarray(model.mle(data)))
+        support_lo, support_hi = model.support()
 
         def f(theta: float) -> float:
-            return float(self._generic_pvalue(theta, data, model)) - alpha
+            # Clamp to model support: see WaldoStatistic._generic_confidence_interval
+            # for the same-pattern rationale.
+            theta_safe = max(float(support_lo), min(float(support_hi), theta))
+            return float(self._generic_pvalue(theta_safe, data, model)) - alpha
 
-        # Bracket outward from the MLE (where the p-value is 1).
-        # Use 1/sqrt(I(mle)) as a natural width scale.
+        # Bracket-width estimation. Three regimes:
+        # 1. I(mle) finite & > 0 & not absurd: 4 / sqrt(I(mle)) is the
+        #    natural Wald half-width.
+        # 2. I(mle) singular (Bernoulli at MLE in {0, 1}, where 1/(p(1-p))
+        #    blows up): fall back to a fraction of the model support
+        #    range. The previous version produced 4 / sqrt(1e300) = 4e-150,
+        #    which bracket-doubling couldn't expand fast enough; brentq
+        #    raised BracketingFailed and the CI crashed (skeptic finding #5).
+        # 3. Numerical pathologies (NaN, negative): use 1.0 as a sane
+        #    default that bracket-doubling will expand.
         info_at_mle = float(np.asarray(model.fisher_information(mle)))
-        if info_at_mle <= 0 or not np.isfinite(info_at_mle):
-            half = 1.0
+        if np.isfinite(support_lo) and np.isfinite(support_hi):
+            support_width = max(float(support_hi) - float(support_lo), 1e-6)
+            width_cap = support_width / 2.0
         else:
-            half = 4.0 / np.sqrt(info_at_mle)
-        lower = brentq_with_doubling(
-            f, midpoint=mle, initial_half_width=half, direction=-1
+            width_cap = float("inf")
+        if info_at_mle > 0 and np.isfinite(info_at_mle):
+            half_from_fisher = 4.0 / np.sqrt(info_at_mle)
+        else:
+            half_from_fisher = 1.0
+        # Floor the half-width so the bracket can actually expand on
+        # bounded supports; cap at half the support so we don't run off.
+        half = min(max(half_from_fisher, 1e-3), width_cap)
+        try:
+            lower = brentq_with_doubling(
+                f, midpoint=mle, initial_half_width=half, direction=-1
+            )
+        except BracketingFailed:
+            lower = float(support_lo)
+        try:
+            upper = brentq_with_doubling(
+                f, midpoint=mle, initial_half_width=half, direction=+1
+            )
+        except BracketingFailed:
+            upper = float(support_hi)
+        return (
+            max(lower, float(support_lo)),
+            min(upper, float(support_hi)),
         )
-        upper = brentq_with_doubling(
-            f, midpoint=mle, initial_half_width=half, direction=+1
-        )
-        return (lower, upper)
 
     # ---------- public protocol surface (dispatches) ----------
 
