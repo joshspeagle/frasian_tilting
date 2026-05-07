@@ -360,11 +360,42 @@ def test_compute_pvalues_per_sample_nan_on_invalid_eta():
 
 @pytest.mark.L1
 @pytest.mark.properties
+def test_compute_pvalues_per_sample_2d_D_routes_per_sample():
+    """``D.shape == (N, n_data)`` (Phase 4c-1) routes through the
+    per-sample loop; output shape stays ``(N,)`` and each row's D is
+    seen by ``scheme.tilted_pvalue`` as a 1-D dataset.
+
+    For Bernoulli + power_law (no closed-form), the loop catches the
+    ``NotImplementedError`` per sample and yields all-NaN — pinning
+    that the 2D plumbing reaches the loop without a shape error."""
+    from frasian.models.bernoulli import BernoulliModel
+    from frasian.models.distributions import BetaDistribution
+    from frasian.tilting.power_law import PowerLawTilting
+
+    scheme = PowerLawTilting()
+    model = BernoulliModel()
+    prior = BetaDistribution(alpha=2.0, beta=2.0)
+    theta = np.array([0.3, 0.5, 0.7])
+    eta = np.array([0.2, 0.2, 0.2])
+    # Each row is a 4-flip Bernoulli dataset.
+    D = np.array([[1.0, 0.0, 1.0, 0.0],
+                  [1.0, 1.0, 1.0, 0.0],
+                  [0.0, 0.0, 1.0, 1.0]])
+    p = compute_pvalues_per_sample(scheme, theta, D, model, prior, eta, "waldo")
+    assert p.shape == (3,)
+    # Bernoulli + power_law has no closed-form tilted_pvalue → loop
+    # catches NotImplementedError per row → all NaN. Phase 4c-2 will
+    # wire the generic path; for now, the shape contract is what we pin.
+    assert np.all(np.isnan(p))
+
+
+@pytest.mark.L1
+@pytest.mark.properties
 def test_compute_pvalues_per_sample_shape_mismatch():
     scheme = PowerLawTilting()
     model = NormalNormalModel(sigma=1.0)
     prior = NormalDistribution(loc=0.0, scale=1.0)
-    with pytest.raises(ValueError, match="share shape"):
+    with pytest.raises(ValueError, match="agree on first axis"):
         compute_pvalues_per_sample(
             scheme,
             np.array([0.0, 1.0]),
@@ -408,6 +439,7 @@ def test_experiment_config_dict_round_trip(bootstrapped_registry):
         theta_distribution=UniformThetaDistribution(low=-5.0, high=5.0),
         n_grid=101,
         n_lhs=200,
+        n_data=4,
         eta_explore_box=(-3.0, 3.0),
         seed=7,
         name="test",
@@ -421,6 +453,7 @@ def test_experiment_config_dict_round_trip(bootstrapped_registry):
     assert cfg2.theta_distribution.fingerprint() == cfg.theta_distribution.fingerprint()
     assert cfg2.n_grid == cfg.n_grid
     assert cfg2.n_lhs == cfg.n_lhs
+    assert cfg2.n_data == cfg.n_data
     assert cfg2.eta_explore_box == cfg.eta_explore_box
     assert cfg2.seed == cfg.seed
     assert cfg2.name == cfg.name

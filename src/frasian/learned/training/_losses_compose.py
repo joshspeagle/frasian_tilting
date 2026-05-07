@@ -135,6 +135,15 @@ def _call_normal_normal_pvalue(
     mu0_t = jnp.asarray(mu0)
     sigma_t = jnp.asarray(sigma)
 
+    if D_batch_t.ndim != 1:
+        raise NotImplementedError(
+            "Normal-Normal closed-form width-loss adapter expects scalar "
+            f"D per batch element (D.ndim == 1); got shape "
+            f"{tuple(D_batch_t.shape)}. n_data > 1 with a NormalNormalModel "
+            "must route through the generic grid path; route via "
+            "WIDTH_LOSS_DISPATCH[('<scheme>', 'generic')] instead."
+        )
+
     eta_grid = eta_net(theta_grid_t)  # (G,)
     tilted_pvalue = get_jax_tilted_pvalue(scheme_name, "normal_normal")
     G = theta_grid_t.shape[0]
@@ -274,8 +283,10 @@ def compose_width_loss(
     """
     if D_batch_t.ndim == 0:
         D_batch_t = D_batch_t[None]
-    if D_batch_t.ndim != 1:
-        raise ValueError(f"D_batch_t must be 0D or 1D; got shape {tuple(D_batch_t.shape)}.")
+    if D_batch_t.ndim not in (1, 2):
+        raise ValueError(
+            f"D_batch_t must be 0D, 1D, or 2D; got shape {tuple(D_batch_t.shape)}."
+        )
 
     model_kind = config.model.fingerprint()[0]
     adapter = _resolve_width_loss_adapter(config.scheme_name, model_kind)

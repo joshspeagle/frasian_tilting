@@ -130,7 +130,13 @@ def compute_pvalues_per_sample(
     to the per-sample loop so a single bad sample doesn't fail the
     whole batch — preserving the original "NaN per slot" semantics.
 
-    All arrays must share the same shape ``(N,)``.
+    Shape contract: ``theta.shape == eta.shape == (N,)``. ``D`` can
+    be either 1D ``(N,)`` (one observation per θ — Normal-Normal
+    historical contract) or 2D ``(N, n_data)`` (Phase 4c: a vector
+    of ``n_data`` observations per θ; required for Bernoulli where
+    a single Bernoulli flip carries no posterior signal). The 2D
+    path skips the bulk fast-path and routes per-sample so each
+    row's ``D[i]`` reaches ``scheme.tilted_pvalue`` as a 1-D dataset.
     """
     if not hasattr(scheme, "tilted_pvalue"):
         raise AttributeError(
@@ -143,10 +149,23 @@ def compute_pvalues_per_sample(
     theta_arr = np.atleast_1d(np.asarray(theta, dtype=np.float64))
     D_arr = np.atleast_1d(np.asarray(D, dtype=np.float64))
     eta_arr = np.atleast_1d(np.asarray(eta, dtype=np.float64))
-    if theta_arr.shape != D_arr.shape or theta_arr.shape != eta_arr.shape:
+
+    if theta_arr.ndim != 1 or eta_arr.ndim != 1:
         raise ValueError(
-            "theta, D, and eta must share shape; got "
-            f"{theta_arr.shape}, {D_arr.shape}, {eta_arr.shape}."
+            "theta and eta must be 1-D; got "
+            f"theta.shape={theta_arr.shape}, eta.shape={eta_arr.shape}."
+        )
+    if D_arr.ndim not in (1, 2):
+        raise ValueError(f"D must be 1-D or 2-D; got shape {D_arr.shape}.")
+    if D_arr.shape[0] != theta_arr.shape[0]:
+        raise ValueError(
+            "theta and D must agree on first axis; got "
+            f"theta.shape={theta_arr.shape}, D.shape={D_arr.shape}."
+        )
+    if eta_arr.shape != theta_arr.shape:
+        raise ValueError(
+            "theta and eta must share shape; got "
+            f"{theta_arr.shape}, {eta_arr.shape}."
         )
 
     out = np.full(theta_arr.shape, np.nan, dtype=np.float64)
@@ -154,10 +173,20 @@ def compute_pvalues_per_sample(
     if not np.any(admissible):
         return out
 
-    # Fast path: bulk vectorised call across the admissible subset.
-    # tilted_pvalue broadcasts over (theta, eta) of the same shape;
-    # D broadcasts naturally as another array of the same shape (it
-    # only enters the formula via element-wise arithmetic). On any
+    # 2D D path: each row is a length-``n_data`` dataset. The bulk
+    # call would have to broadcast a 2-D dataset across (theta, eta),
+    # which the closed-form NN kernel can't represent (it expects a
+    # scalar D). Drop to the per-sample loop, where each row's D is
+    # passed as the 1-D dataset of one tilted_pvalue call.
+    if D_arr.ndim == 2:
+        return _compute_pvalues_per_sample_loop(
+            scheme, theta_arr, D_arr, model, prior, eta_arr, statistic_name
+        )
+
+    # 1D D path: Fast-path bulk vectorised call across the admissible
+    # subset. tilted_pvalue broadcasts over (theta, eta) of the same
+    # shape; D broadcasts naturally as another array of the same shape
+    # (it only enters the formula via element-wise arithmetic). On any
     # exception we fall back to the legacy per-sample loop so a rare
     # bad-sample doesn't poison the whole batch.
     try:
@@ -198,13 +227,17 @@ def _compute_pvalues_per_sample_loop(
 
     Used when the closed-form admissibility mask is unavailable for
     a scheme (unknown ``scheme.name``) or when the bulk call raises.
+    Accepts either 1-D ``D_arr`` (scalar D per sample) or 2-D
+    ``D_arr`` (length-``n_data`` dataset per sample).
     """
     out = np.empty(theta_arr.shape, dtype=np.float64)
+    is_2d = D_arr.ndim == 2
     for i in range(theta_arr.size):
         try:
+            d_i = D_arr[i] if is_2d else float(D_arr[i])
             p = scheme.tilted_pvalue(
                 np.array([theta_arr[i]]),
-                float(D_arr[i]),
+                d_i,
                 model,
                 prior,
                 float(eta_arr[i]),

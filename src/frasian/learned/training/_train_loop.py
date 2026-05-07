@@ -298,7 +298,8 @@ def _training_step(
     # Step (3): Head A width + boundary step.
     n_mc = min(N_MC_TRAIN, len(theta_batch_np))
     D_batch_np = sample_data_per_theta(
-        args.config.model, theta_batch_np[:n_mc], args.rng_train, antithetic=args.antithetic
+        args.config.model, theta_batch_np[:n_mc], args.rng_train,
+        antithetic=args.antithetic, n_data=args.config.n_data,
     )
     D_batch_t = jnp.asarray(D_batch_np)
 

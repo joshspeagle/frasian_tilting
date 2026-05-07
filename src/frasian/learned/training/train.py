@@ -190,7 +190,9 @@ def fit_eta_artifact(
     # Frozen validation set sampled ONCE at training start.
     n_val_pairs = min(len(theta_held), 64)
     theta_val_np = theta_held[:n_val_pairs]
-    D_val_np = sample_data_per_theta(config.model, theta_val_np, rng_val_setup)
+    D_val_np = sample_data_per_theta(
+        config.model, theta_val_np, rng_val_setup, n_data=config.n_data
+    )
     D_val_t = jnp.asarray(D_val_np)
 
     eta_held_aux, D_held, valid_held = prepare_held_out_validity(
