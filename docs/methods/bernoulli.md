@@ -64,18 +64,35 @@ expected Hessian is `1 / (theta (1 - theta))` per observation.
 - `fisher_information(theta)` blows up as `theta -> 0` or `theta -> 1`
   (boundary effect) — clipping is necessary in practice.
 
+## Status notes — generic statistic paths
+
+After Phase 2, `WaldStatistic` and `WaldoStatistic` run **generically**
+on `BernoulliModel + BetaDistribution`:
+
+- `WaldStatistic.pvalue / confidence_interval`: τ = (mle − θ)² · I(θ)
+  with χ²₁ calibration. Uses the `BernoulliModel.fisher_information`
+  closed form `1 / (theta * (1 - theta))`. Asymptotic-only — small-n
+  coverage on Bernoulli is approximate (see `wald.md` Failure modes).
+- `WaldoStatistic.pvalue / confidence_interval`: t = (μ_post − θ)² /
+  σ²_post with an MC reference distribution under H_0 sampled via
+  `model.sample_data(theta, ...)`. Each draw constructs the Beta
+  posterior — O(1) per draw, so the full MC inversion is fast on
+  Bernoulli (millisecond-scale per CI at `n_mc=2000`).
+
+`acceptance_region` (data-space inversion) is closed-form-only on
+the Normal-Normal pair; calling it with Bernoulli raises
+`NotImplementedError` by design.
+
 ## Failure modes
 
-By design, all of the following raise `NotImplementedError` when
-paired with a `BernoulliModel`:
+`PowerLawTilting` (and `OTTilting`'s closed-form path) still raises
+`NotImplementedError` when paired with `BernoulliModel`:
 
-- `WaldStatistic` (Normal-location specific p-value formula).
-- `WaldoStatistic` (Normal-Normal Theorem 3 closed form).
 - `PowerLawTilting.tilt` (Normal-only Theorem 6 closed form).
 - `PowerLawTilting.tilted_pvalue` and
   `PowerLawTilting.tilted_confidence_interval`.
 
-The errors all flow through the `models/_dispatch.py` helper so the
+The errors flow through the `models/_dispatch.py` helper so the
 message format is uniform: "`<Class>` currently requires
 `NormalNormalModel`; got `BernoulliModel`. Generalising the
 implementation to other models is tracked as Phase-3 follow-up
@@ -86,6 +103,11 @@ Numerical hazards:
 - `theta` near 0 or 1: log-likelihood involves `log(1 - theta)` /
   `log(theta)` which underflow. `BernoulliLikelihood.loglik` clips
   to `eps = 1e-300`.
+- `mle ∈ {0, 1}` (data is all-zeros or all-ones): Fisher information
+  diverges; the generic Wald CI bracket-width estimator clips
+  `1/sqrt(I(mle))` and falls back to the support range, with brentq
+  raising `BracketingFailed` and the CI returning the support
+  boundary as an honest "open CI". Same discipline in WALDO.
 - Beta posterior with tiny shape parameters (e.g. `alpha_0 = 0.5,
   k = 0`) places significant mass at the boundary; downstream CI
   inversions need to be aware.

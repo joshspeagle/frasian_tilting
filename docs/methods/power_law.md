@@ -140,6 +140,20 @@ a follow-up cleanup task.
 `(identity, waldo)`; the runner ships only the latter to keep the
 matrix tight.
 
+### Phase 4 entry point: `_tilted_pvalue_kernel`
+
+The JAX port factored out a private autodiff-clean kernel
+(`src/frasian/tilting/power_law.py::_tilted_pvalue_kernel`) wrapped
+in `@jax.jit(static_argnames=("statistic_name",))`. It contains only
+the JAX arithmetic — no validation, no Python control flow except the
+static `statistic_name` dispatch — so Phase 4's learned-η loss can
+close over it directly inside `@jax.jit` and `jax.grad`. The public
+`PowerLawTilting.tilted_pvalue` runs validation in numpy (JAX cannot
+raise mid-trace) and shape-dispatches between this kernel (for bulk
+arrays) and a numpy-eager scalar fast path (`_tilted_pvalue_numpy_scalar`,
+for brentq inner loops). See `docs/jax_style.md` for the underlying
+principle.
+
 ### The static-vs-dynamic trade-off, in one paragraph
 
 The static η*-opt CI is genuinely narrower than WALDO at every D and

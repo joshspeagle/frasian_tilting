@@ -98,9 +98,13 @@ diagnostics, and writes a `manifest.json` with relative cache paths.
 | `normal_normal`| implemented   | 1D conjugate Gaussian; framework's sandbox |
 | `bernoulli`    | implemented   | Beta-conjugate; non-Normal protocol check  |
 
-Pairings of `bernoulli` with `Wald` / `WALDO` / `power_law` raise
-`NotImplementedError` (by design — the Normal-only methods name the
-restriction explicitly via `models/_dispatch.require_model`).
+Pairings of `bernoulli` with `Wald` and `WALDO` now run via the
+**generic numerical paths** added in Phase 2 (see `docs/methods/wald.md`
+and `waldo.md`): Wald uses `tau = (mle - theta)^2 * I(theta)` with
+chi^2_1 calibration; WALDO uses an MC reference distribution under
+H_0 sampled via `model.sample_data`. Pairings of `bernoulli` with
+`power_law` still raise `NotImplementedError` — generic tilting is
+Phase 3 work, separately tracked.
 
 ## Tilting Schemes (status)
 
@@ -214,8 +218,8 @@ checkpoint for production-grade OT). See
 
 | Name          | Status        | Notes                                          |
 |---------------|---------------|------------------------------------------------|
-| `wald`        | implemented   | Closed-form CI: D ± z·σ; identity-tilting only |
-| `waldo`       | implemented   | p(θ) = Φ(b−a) + Φ(−a−b); numerical CI inversion |
+| `wald`        | implemented   | Closed-form CI on Normal-Normal: D ± z·σ; identity-tilting only. Generic path on any Model: τ=(mle−θ)²·I(θ), χ²₁ calibration. |
+| `waldo`       | implemented   | Closed-form on Normal-Normal+Normal: p(θ)=Φ(b−a)+Φ(−a−b). Generic path on any (Model, Prior): MC reference under H_0 via model.sample_data, knobs n_mc/seed (CRN across brentq). |
 | `lrt`         | stub          | -2 log Λ; on Normal-location reduces to Wald   |
 | `signed_root` | stub          | sign·√LRT; on Normal-location equals Wald      |
 | `bartlett`    | stub          | LRT/E[LRT]; decorator over base LRT (planned)  |

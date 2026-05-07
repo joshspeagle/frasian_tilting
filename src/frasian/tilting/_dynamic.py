@@ -36,6 +36,11 @@ from __future__ import annotations
 from typing import Any, Callable
 
 import numpy as np
+
+# scipy: brentq has no JAX equivalent we want yet; this scan is the
+# CI-inversion-boundary algorithm and stays numpy/scipy by design.
+# See `docs/jax_style.md` for the principle (no `jnp` import in this
+# file is the load-bearing rule).
 from scipy import optimize
 
 from .._errors import BracketingFailed

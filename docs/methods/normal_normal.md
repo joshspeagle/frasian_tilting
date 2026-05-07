@@ -39,6 +39,10 @@ Auxiliary quantities used by downstream methods:
 - *Scaled prior-data conflict*: `Delta = (1 - w) * (mu0 - D) / sigma`.
 - *Prior residual*: `delta(theta) = (theta - mu0) / sigma0`.
 - *Non-centrality*: `lambda(theta) = (1 - w)^2 * (mu0 - theta)^2 / (w^2 * sigma^2)`.
+- *Fisher information*: `I(theta) = 1 / sigma^2` (constant on the
+  Normal location family). Exposed via `NormalNormalModel.fisher_information(theta)`
+  so the generic Wald path (`docs/methods/wald.md`) can use it as the
+  natural width scale for χ²₁ calibration.
 
 ## Derivation
 

@@ -47,6 +47,11 @@ from dataclasses import dataclass, field
 from typing import ClassVar
 
 import numpy as np
+
+# scipy: minimize_scalar / brentq used by NumericalEtaSelector;
+# objective evaluations consume `scheme.tilted_pvalue` output via
+# `np.asarray(...)` at the boundary so the JAX vs numpy seam is
+# explicit. See `docs/jax_style.md`.
 from scipy import optimize
 
 from ..learned.base import LearnedArtifact

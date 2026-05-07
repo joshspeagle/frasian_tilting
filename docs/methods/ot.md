@@ -278,3 +278,14 @@ The framework's calibrated default selector is
 `DynamicNumericalEtaSelector` (per-θ varying η), same as `power_law`.
 Cell name picks up the selector when non-default, e.g.
 `ot[dynamic_numerical]` is the OT-WALDO calibrated cell.
+
+### Phase 4 entry point: `_ot_tilted_pvalue_kernel`
+
+Mirrors `power_law`'s factoring (see `power_law.md`): a private
+autodiff-clean JAX kernel `src/frasian/tilting/ot.py::_ot_tilted_pvalue_kernel`
+wrapped in `@jax.jit(static_argnames=("statistic_name",))` is the
+contract Phase 4's learned-η loss closes over. The public
+`OTTilting.tilted_pvalue` validates `eta ∈ [0, 1]` in numpy and
+shape-dispatches between the bulk JAX kernel and a numpy-eager
+scalar fast path (`_ot_tilted_pvalue_numpy_scalar`, for brentq inner
+loops).
