@@ -35,6 +35,7 @@ Only the **v0_smoke** test fixtures are committed to git:
 |---|---|---|---|
 | `learned_eta_canonical_normal_normal_powerlaw_v0_smoke.eqx` | `canonical_normal_normal_powerlaw.yaml` | `power_law` | L2/L3/L4 test fixture |
 | `learned_eta_canonical_normal_normal_ot_v0_smoke.eqx` | `canonical_normal_normal_ot.yaml` (with widened θ-range) | `ot` | L2/L3/L4 test fixture |
+| `learned_eta_canonical_bernoulli_powerlaw_v0_smoke.eqx` | `canonical_bernoulli_powerlaw.yaml` | `power_law` | Phase 4 generic-grid kernel fixture; first non-Normal-Normal checkpoint |
 
 These are intentionally small (64×64 hidden, ~5–10K LHS, ~30–120
 epochs) — enough to pass calibration + narrowness regressions at
