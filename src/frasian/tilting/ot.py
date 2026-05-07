@@ -46,12 +46,21 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from functools import partial
 from typing import TYPE_CHECKING, ClassVar, cast
 
+import jax
+import jax.numpy as jnp
+import jax.scipy.stats as jsp_stats
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
-from scipy import stats
 
+# scipy: used by the numpy-eager scalar fast path inside tilted_pvalue.
+# Same boundary discipline as power_law.py — see that file's comments
+# for the rationale (~10 us scalar vs ~200 us under JAX dispatch).
+from scipy import stats as _scalar_scipy_stats
+
+from .. import _jax_setup as _x64  # noqa: F401  — ensure float64 active
 from .._errors import TiltingDomainError
 from .._registry import register_tilting
 from ..models.base import Likelihood, Model, Posterior, Prior
@@ -63,6 +72,73 @@ from .quantile_mixture import QuantileMixturePath
 
 if TYPE_CHECKING:
     from ..config import Config
+
+_FORCE_X64 = _x64  # keep static-analysis from stripping the import
+
+
+def _ot_tilted_pvalue_numpy_scalar(
+    theta_f: float,
+    eta_f: float,
+    D_f: float,
+    w: float,
+    mu0: float,
+    sigma: float,
+    statistic_name: str,
+) -> float:
+    """Numpy-eager scalar fast path. Mirrors `_ot_tilted_pvalue_kernel`
+    but runs on Python floats + scipy.stats.norm. Used when caller
+    passes scalar (theta, eta, D) — the brentq inner-loop pattern.
+    ~10 us/call.
+    """
+    if statistic_name == "wald":
+        z = abs(D_f - theta_f) / sigma
+        return float(2.0 * _scalar_scipy_stats.norm.sf(z))
+    if statistic_name == "waldo":
+        mu_n = w * D_f + (1.0 - w) * mu0
+        mu_t = (1.0 - eta_f) * mu_n + eta_f * D_f
+        s_t = (w + eta_f * (1.0 - w)) * sigma
+        a = abs(mu_t - theta_f) / s_t
+        b = (1.0 - eta_f) * (1.0 - w) * (mu0 - theta_f) / s_t
+        return float(
+            _scalar_scipy_stats.norm.cdf(b - a) + _scalar_scipy_stats.norm.cdf(-a - b)
+        )
+    raise NotImplementedError(
+        f"_ot_tilted_pvalue_numpy_scalar not implemented for statistic={statistic_name!r}; "
+        f"supported: 'wald', 'waldo'."
+    )
+
+
+@partial(jax.jit, static_argnames=("statistic_name",))
+def _ot_tilted_pvalue_kernel(
+    theta: jax.Array,
+    eta: jax.Array,
+    D: jax.Array,
+    w: float,
+    mu0: float,
+    sigma: float,
+    statistic_name: str,
+) -> jax.Array:
+    """Pure JAX arithmetic kernel for the OT-tilted p-value.
+
+    Same shape / discipline / jit rationale as
+    `power_law._tilted_pvalue_kernel`. Scalar inputs do NOT reach
+    this kernel — the public method's shape dispatch routes them to
+    the numpy fast path.
+    """
+    if statistic_name == "wald":
+        z = jnp.abs(D - theta) / sigma
+        return 2.0 * (1.0 - jsp_stats.norm.cdf(z))
+    if statistic_name == "waldo":
+        mu_n = w * D + (1.0 - w) * mu0
+        mu_t = (1.0 - eta) * mu_n + eta * D
+        s_t = (w + eta * (1.0 - w)) * sigma
+        a = jnp.abs(mu_t - theta) / s_t
+        b = (1.0 - eta) * (1.0 - w) * (mu0 - theta) / s_t
+        return jsp_stats.norm.cdf(b - a) + jsp_stats.norm.cdf(-a - b)
+    raise NotImplementedError(
+        f"_ot_tilted_pvalue_kernel not implemented for statistic={statistic_name!r}; "
+        f"supported: 'wald', 'waldo'."
+    )
 
 
 def _data_to_scalar_D(data: NDArray[np.float64]) -> float:
@@ -174,7 +250,7 @@ class OTTilting:
         prior: NormalDistribution,
         eta: ArrayLike,
         statistic_name: str,
-    ) -> NDArray[np.float64]:
+    ) -> jax.Array:
         """Tilted p-value evaluated against the W2-tilted Gaussian.
 
         Specialized for (ot, waldo) and (ot, wald) on Normal-Normal:
@@ -186,18 +262,11 @@ class OTTilting:
         Endpoint sanity: at eta=0 reduces to bare WALDO; at eta=1 reduces
         to bare Wald (s_t -> sigma, mu_t -> D, b -> 0, a -> |D-theta|/sigma).
 
-        ``eta`` accepts either a scalar (the historical contract) or an
-        array broadcastable to ``theta``; the array path lets
-        ``dynamic_ci_scan`` (and ``dynamic_tilted_pvalue``) evaluate a
-        per-θ varying η in one bulk numpy call (Tier 1.3 N1/N3).
-
-        ``D`` accepts either a scalar (the historical contract) or an
-        array broadcastable to ``theta_arr``. The array path is exercised
-        by ``compute_pvalues_per_sample`` in the Phase E training loop,
-        which packs per-sample ``D`` values alongside ``theta`` and
-        ``eta``. The closed-form formulas are pure numpy arithmetic so
-        they broadcast naturally; this annotation documents that
-        contract instead of relying on duck-typing.
+        Returns ``jax.Array`` for bulk inputs (length >= 2 in any of
+        theta/eta/D); returns Python float for the all-scalar fast
+        path. Same shape-dispatch + return-type discipline as
+        `PowerLawTilting.tilted_pvalue` — see that method's docstring
+        for the rationale.
         """
         from ..models.normal_normal import NormalNormalModel
 
@@ -215,47 +284,42 @@ class OTTilting:
         sigma0 = float(prior.scale)
         w = sigma0**2 / (sigma**2 + sigma0**2)
 
-        theta_arr = np.asarray(theta, dtype=np.float64)
-        eta_arr = np.asarray(eta, dtype=np.float64)
-
-        # Mirror the admissibility check in `tilt()` (line 101): η outside
-        # [0, 1] makes the W2 interpolation a non-distribution and yields
-        # a non-positive scale `s_t = (w + eta(1-w))*sigma`, producing a
-        # finite-but-mathematically-bogus p-value. Refuse explicitly.
-        # Vectorised: any out-of-range element raises with the offending
-        # index. Scalar eta still produces a clear scalar message.
-        invalid = ~(np.isfinite(eta_arr) & (eta_arr >= 0.0) & (eta_arr <= 1.0))
+        # Validation runs in numpy (JAX can't raise mid-trace). Convert
+        # eta to numpy exactly once for the [0, 1] + finiteness check.
+        eta_np = np.asarray(eta, dtype=np.float64)
+        invalid = ~(np.isfinite(eta_np) & (eta_np >= 0.0) & (eta_np <= 1.0))
         if np.any(invalid):
-            if eta_arr.ndim == 0:
+            if eta_np.ndim == 0:
                 raise TiltingDomainError(
                     f"OTTilting.tilted_pvalue requires eta in [0, 1], got "
-                    f"{float(eta_arr)!r}."
+                    f"{float(eta_np)!r}."
                 )
             bad = int(np.argmax(invalid))
             raise TiltingDomainError(
                 f"OTTilting.tilted_pvalue requires eta in [0, 1] and finite; "
-                f"offending index {bad} eta={float(eta_arr.flat[bad])!r}."
+                f"offending index {bad} eta={float(eta_np.flat[bad])!r}."
             )
 
-        if statistic_name == "wald":
-            z = np.abs(D - theta_arr) / sigma
-            return np.asarray(2.0 * stats.norm.sf(z), dtype=np.float64)
-
-        if statistic_name == "waldo":
-            mu_n = w * D + (1.0 - w) * mu0
-            mu_t = (1.0 - eta_arr) * mu_n + eta_arr * D
-            s_t = (w + eta_arr * (1.0 - w)) * sigma
-            a = np.abs(mu_t - theta_arr) / s_t
-            b = (1.0 - eta_arr) * (1.0 - w) * (mu0 - theta_arr) / s_t
-            return np.asarray(
-                stats.norm.cdf(b - a) + stats.norm.cdf(-a - b),
-                dtype=np.float64,
+        # Shape dispatch: scalar -> numpy fast path; bulk -> jit'd kernel.
+        theta_np = np.asarray(theta, dtype=np.float64)
+        D_np = np.asarray(D, dtype=np.float64)
+        if theta_np.size == 1 and eta_np.size == 1 and D_np.size == 1:
+            # Returns Python float, NOT jnp.asarray(float) — see the
+            # corresponding note in PowerLawTilting.tilted_pvalue.
+            return _ot_tilted_pvalue_numpy_scalar(  # type: ignore[return-value]
+                float(theta_np.item()),
+                float(eta_np.item()),
+                float(D_np.item()),
+                w,
+                mu0,
+                sigma,
+                statistic_name,
             )
-
-        raise NotImplementedError(
-            f"OTTilting.tilted_pvalue not implemented for "
-            f"statistic={statistic_name!r}; supported: 'wald', 'waldo'."
-        )
+        # Bulk JAX kernel — autodiff-clean, no Python control flow.
+        theta_arr = jnp.asarray(theta, dtype=jnp.float64)
+        eta_arr = jnp.asarray(eta, dtype=jnp.float64)
+        D_arr = jnp.asarray(D, dtype=jnp.float64)
+        return _ot_tilted_pvalue_kernel(theta_arr, eta_arr, D_arr, w, mu0, sigma, statistic_name)
 
     def tilted_confidence_interval(
         self,
