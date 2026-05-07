@@ -48,9 +48,6 @@ ml = [
     "h5py>=3.8",
     "pyyaml>=6.0",
 ]
-torch = [
-    "torch>=2.0",
-]
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -123,10 +120,6 @@ exclude = ["legacy/", "tests/properties/", "build/", "dist/"]
 
 [[tool.mypy.overrides]]
 module = ["scipy.*", "matplotlib.*", "h5py.*", "pandas.*", "yaml.*", "hypothesis.*", "tqdm.*"]
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = ["torch", "torch.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
