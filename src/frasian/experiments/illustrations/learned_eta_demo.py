@@ -26,6 +26,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
+from frasian.models.distributions import NormalDistribution
+from frasian.models.normal_normal import NormalNormalModel
 from frasian.tilting.eta_selectors import (
     DynamicNumericalEtaSelector,
     LearnedDynamicEtaSelector,
@@ -116,17 +118,19 @@ def main(smoke: bool = False, out: Path | None = None) -> Path:
 
     n_grid = 51 if smoke else 201
     theta_grid = np.linspace(theta_lo, theta_hi, n_grid)
-    abs_delta_grid = np.abs((1.0 - w_trained) * (mu0 - theta_grid) / sigma)
 
     fig, (ax_eta, ax_boundary) = plt.subplots(1, 2, figsize=(12.0, 4.5))
 
     # Panel A — η(θ) curves.
     eta_learned = artifact.predict_eta(theta_grid)
+    demo_model = NormalNormalModel(sigma=sigma)
+    demo_prior = NormalDistribution(loc=mu0, scale=sigma0)
     eta_legacy = legacy_selector.select_grid(
-        abs_delta_grid,
+        theta_grid,
         scheme,
         statistic=_NamedStatistic("waldo"),  # type: ignore[arg-type]
-        w=w_trained,
+        model=demo_model,
+        prior=demo_prior,
         alpha=alpha,
     )
     ax_eta.plot(

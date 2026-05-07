@@ -60,7 +60,7 @@ from ..models.distributions import NormalDistribution
 from ..models.normal_normal import NormalNormalModel
 from ..models.normal_normal import weight as _weight
 from ..statistics.base import TestStatistic
-from .base import TiltingContext, TiltingDomainError, TiltingScheme
+from .base import TiltingDomainError, TiltingScheme
 
 
 def _D_from_abs_delta(abs_delta: float, w: float, sigma: float, mu0: float) -> float:
@@ -104,8 +104,7 @@ class FixedEtaSelector:
 
     def select(
         self,
-        scheme_or_context=None,
-        scheme: TiltingScheme | None = None,
+        scheme: TiltingScheme,
         *,
         data: np.ndarray | None = None,
         model: Model | None = None,
@@ -113,10 +112,8 @@ class FixedEtaSelector:
         alpha: float | None = None,
         statistic: TestStatistic | None = None,
     ) -> float:
-        """Phase 3a-1: dual signature; both forms return the constant η.
-
-          - **New**: `select(scheme, *, data, model, prior, alpha, statistic)`.
-          - **Legacy**: `select(context, scheme, *, statistic)`.
+        """Return the constant η. All kwargs are accepted for protocol
+        parity but ignored — `FixedEtaSelector` is η-only.
         """
         return float(self.eta)
 
@@ -184,11 +181,11 @@ class NumericalEtaSelector:
     def _normal_normal_w(self, model: Model, prior: Prior) -> float:
         """Compute w from a NormalNormalModel + NormalDistribution prior.
 
-        Phase 3a-1: NumericalEtaSelector remains Normal-Normal-only by
-        construction; the static-width / integrated-p objectives use
-        the closed-form `w = sigma0**2 / (sigma**2 + sigma0**2)` to
-        derive the η bracket. Non-NormalNormal callers must use the
-        generic numerical selector planned for Phase 3 follow-ups.
+        NumericalEtaSelector remains Normal-Normal-only by construction;
+        the static-width / integrated-p objectives use the closed-form
+        `w = sigma0**2 / (sigma**2 + sigma0**2)` to derive the η bracket.
+        Non-NormalNormal callers must use the generic numerical selector
+        planned for Phase 3 follow-ups.
         """
         if not isinstance(model, NormalNormalModel):
             raise NotImplementedError(
@@ -203,10 +200,28 @@ class NumericalEtaSelector:
             )
         return float(_weight(model.sigma, prior.scale))
 
+    def _eta_bounds(self, model: Model, prior: Prior) -> tuple[float, float]:
+        """η search bracket for `scipy.optimize.minimize_scalar`.
+
+        Internal helper — selectors no longer consult a public
+        `scheme.admissible_range`. The bracket is the closed-form
+        Normal-Normal `power_law` admissible range
+        `(-w/(1-w) + buffer, 1/(1-w) - buffer)` (also valid for
+        `ot` since `(0, 1) ⊂ (-w/(1-w), 1/(1-w))` for any
+        `w ∈ (0, 1)`); `scheme.tilted_pvalue` will raise
+        `TiltingDomainError` for any η in the bracket that the
+        scheme actually rejects, and `_make_*_objective` returns
+        `+inf` on that exception, so over-broad brackets are
+        self-correcting at the optimizer.
+        """
+        w = self._normal_normal_w(model, prior)
+        eta_lo = -w / (1.0 - w) + self.eta_min_buffer
+        eta_hi = 1.0 / (1.0 - w) - self.eta_min_buffer
+        return (eta_lo, eta_hi)
+
     def select(
         self,
-        scheme_or_context,
-        scheme: TiltingScheme | None = None,
+        scheme: TiltingScheme,
         *,
         data: np.ndarray | None = None,
         model: Model | None = None,
@@ -214,39 +229,16 @@ class NumericalEtaSelector:
         alpha: float | None = None,
         statistic: TestStatistic | None = None,
     ) -> float:
-        """Phase 3a-1: dual signature during the transition.
+        """Pick η numerically per cell.
 
-          - **New**: `select(scheme, *, data, model, prior, alpha, statistic)`.
-          - **Legacy**: `select(context, scheme, *, statistic)` —
-            constructs Normal-Normal model/prior from `(self.sigma,
-            self.mu0, ctx.w)` and inverts `ctx.abs_delta` to D.
-            Removed in commit 3a-3.
+        See class docstring for the two `objective` modes
+        (`static_width` vs `integrated_p`).
         """
-        # Dispatch on first positional: TiltingContext (legacy) vs scheme (new).
-        if isinstance(scheme_or_context, TiltingContext):
-            ctx = scheme_or_context
-            assert scheme is not None, "legacy `select(ctx, scheme, ...)` requires scheme."
-            assert statistic is not None, "legacy `select(...)` requires statistic kwarg."
-            sigma0 = float(np.sqrt(ctx.w / max(1.0 - ctx.w, 1e-12)) * self.sigma)
-            legacy_prior = NormalDistribution(loc=self.mu0, scale=sigma0)
-            legacy_model = NormalNormalModel(sigma=self.sigma)
-            D = _D_from_abs_delta(ctx.abs_delta, ctx.w, self.sigma, self.mu0)
-            return self._select_inner(
-                scheme,
-                D=D,
-                model=legacy_model,
-                prior=legacy_prior,
-                alpha=ctx.alpha,
-                statistic=statistic,
-            )
-
-        # New signature.
-        scheme_obj = scheme_or_context
         assert data is not None and model is not None and prior is not None
         assert alpha is not None and statistic is not None
         D = float(np.atleast_1d(np.asarray(data, dtype=np.float64)).mean())
         return self._select_inner(
-            scheme_obj,
+            scheme,
             D=D,
             model=model,
             prior=prior,
@@ -255,9 +247,7 @@ class NumericalEtaSelector:
         )
 
     def _select_inner(self, scheme, *, D, model, prior, alpha, statistic):
-        w = self._normal_normal_w(model, prior)
-        ctx = TiltingContext(w=w, alpha=alpha)
-        eta_lo, eta_hi = scheme.admissible_range(ctx)
+        eta_lo, eta_hi = self._eta_bounds(model, prior)
         eta_hi = min(eta_hi, 1.0 - self.eta_min_buffer)
 
         if self.objective == "static_width":
@@ -339,64 +329,25 @@ class NumericalEtaSelector:
         scheme: TiltingScheme,
         *,
         statistic: TestStatistic,
-        model: Model | None = None,
-        prior: Prior | None = None,
-        alpha: float | None = None,
-        w: float | None = None,
+        model: Model,
+        prior: Prior,
+        alpha: float,
     ):
-        """Vectorised: η* at every θ in `grid` (Phase 3a-1 θ-keyed) or
-        every |Δ| in `grid` (legacy, pending 3a-2 cleanup).
+        """Vectorised: η* at every θ in `grid` (θ-keyed).
 
-        Phase 3a-1: dual signature during the transition.
-
-          - **New (preferred)**: `select_grid(theta_grid, scheme, *,
-            statistic, model=, prior=, alpha=)`. Each grid point is
-            treated as a "data sufficient statistic" — we call
-            `self.select(scheme, data=[theta], ...)` for each θ.
-            Preserves the "static-η optimum at each θ" semantics.
-
-          - **Legacy**: `select_grid(abs_delta_grid, scheme, *,
-            statistic, w=, alpha=)`. Inverts |Δ| → D via the legacy
-            `_D_from_abs_delta` helper using the selector's `sigma`/`mu0`
-            attributes. Will be removed in commit 3a-2 once
-            `_dynamic.py`'s interior is θ-refactored.
+        Each grid point is treated as a "data sufficient statistic" —
+        we call `self.select(scheme, data=[theta], ...)` for each θ.
+        This preserves the "static-η optimum at each θ" semantics
+        used by `DynamicNumericalEtaSelector`.
         """
-        if alpha is None:
-            raise ValueError("select_grid requires `alpha` keyword.")
-        # Dispatch: new-style (model/prior provided) vs legacy (w provided).
-        if model is not None and prior is not None:
-            theta_grid = np.asarray(grid, dtype=np.float64)
-            out = np.empty(len(theta_grid), dtype=np.float64)
-            for i, theta in enumerate(theta_grid):
-                out[i] = self.select(
-                    scheme,
-                    data=np.asarray([float(theta)]),
-                    model=model,
-                    prior=prior,
-                    alpha=alpha,
-                    statistic=statistic,
-                )
-            return out
-
-        # Legacy |Δ|-grid path: construct Normal-Normal model + prior
-        # from `(self.sigma, self.mu0, w)` and dispatch each |Δ| via
-        # `_D_from_abs_delta`. Dropped in commit 3a-2.
-        if w is None:
-            raise ValueError(
-                "select_grid (legacy path) requires `w` keyword. "
-                "Pass `model` and `prior` for the new θ-keyed path."
-            )
-        sigma0 = float(np.sqrt(w / max(1.0 - w, 1e-12)) * self.sigma)
-        legacy_prior = NormalDistribution(loc=self.mu0, scale=sigma0)
-        legacy_model = NormalNormalModel(sigma=self.sigma)
-        out = np.empty(len(grid), dtype=np.float64)
-        for i, ad in enumerate(grid):
-            D = _D_from_abs_delta(float(ad), w, self.sigma, self.mu0)
+        theta_grid = np.asarray(grid, dtype=np.float64)
+        out = np.empty(len(theta_grid), dtype=np.float64)
+        for i, theta in enumerate(theta_grid):
             out[i] = self.select(
                 scheme,
-                data=np.asarray([D]),
-                model=legacy_model,
-                prior=legacy_prior,
+                data=np.asarray([float(theta)]),
+                model=model,
+                prior=prior,
                 alpha=alpha,
                 statistic=statistic,
             )
@@ -465,8 +416,7 @@ class DynamicNumericalEtaSelector:
 
     def select(
         self,
-        scheme_or_context,
-        scheme: TiltingScheme | None = None,
+        scheme: TiltingScheme,
         *,
         data: np.ndarray | None = None,
         model: Model | None = None,
@@ -474,21 +424,13 @@ class DynamicNumericalEtaSelector:
         alpha: float | None = None,
         statistic: TestStatistic | None = None,
     ) -> float:
-        """Convenience: a single-context η* (delegates to the static inner).
-
-        Phase 3a-1: dual signature.
-          - **New**: `select(scheme, *, data, model, prior, alpha, statistic)`.
-          - **Legacy**: `select(context, scheme, *, statistic)`.
-        """
-        if isinstance(scheme_or_context, TiltingContext):
-            return self._inner().select(scheme_or_context, scheme, statistic=statistic)
-        scheme_obj = scheme_or_context
+        """Convenience: a single-context η* (delegates to the static inner)."""
         assert data is not None and model is not None and prior is not None
         assert alpha is not None and statistic is not None
         D = float(np.atleast_1d(np.asarray(data, dtype=np.float64)).mean())
         out = self.select_grid(
             np.asarray([D]),
-            scheme_obj,
+            scheme,
             statistic=statistic,
             model=model,
             prior=prior,
@@ -502,94 +444,50 @@ class DynamicNumericalEtaSelector:
         scheme: TiltingScheme,
         *,
         statistic: TestStatistic,
-        model: Model | None = None,
-        prior: Prior | None = None,
-        alpha: float | None = None,
-        w: float | None = None,
+        model: Model,
+        prior: Prior,
+        alpha: float,
     ):
         """Per-θ η* lookup with caching.
 
-        Phase 3a-1: dual signature during the transition.
-          - **New (preferred)**: `select_grid(theta_grid, scheme, *,
-            statistic, model=, prior=, alpha=)`. Cache key includes the
-            θ-grid hash and model/prior fingerprint.
-          - **Legacy**: `select_grid(abs_delta_grid, scheme, *,
-            statistic, w=, alpha=)`. Cache key includes the |Δ| bin.
-            Will be removed in commit 3a-2 once `_dynamic.py`'s
-            interior is θ-refactored.
+        Cache key includes the θ-grid endpoints (1e-6-binned to absorb
+        tiny numerical drift) and the model/prior fingerprints so
+        different experiments do not collide.
         """
-        if alpha is None:
-            raise ValueError("select_grid requires `alpha` keyword.")
         scheme_name = getattr(scheme, "name", type(scheme).__name__)
         coarse_n = len(grid)
 
-        # New θ-keyed path.
-        if model is not None and prior is not None:
-            theta_arr = np.asarray(grid, dtype=np.float64)
-            # Cache key absorbs tiny numerical drift via 1e-6 binning of
-            # the (theta_min, theta_max) endpoints — repeat calls with
-            # identical or near-identical bounds hit the cache. Includes
-            # the model + prior fingerprints so different experiments
-            # don't collide.
-            t_min_bin = float(np.round(theta_arr.min(), 6))
-            t_max_bin = float(np.round(theta_arr.max(), 6))
-            model_fp = getattr(model, "fingerprint", lambda: None)()
-            prior_fp = getattr(prior, "fingerprint", lambda: None)()
-            key = (
-                "theta",
-                alpha,
-                statistic.name,
-                scheme_name,
-                coarse_n,
-                t_min_bin,
-                t_max_bin,
-                tuple(model_fp) if model_fp is not None else None,
-                tuple(prior_fp) if prior_fp is not None else None,
-            )
-            cached = self._cache.get(key)
-            if cached is None:
-                eta_full = self._inner().select_grid(
-                    theta_arr,
-                    scheme,
-                    model=model,
-                    prior=prior,
-                    alpha=alpha,
-                    statistic=statistic,
-                )
-                # Store (grid, eta) for symmetry with the legacy path.
-                self._cache[key] = (theta_arr, eta_full)
-                cached_grid, cached_eta = theta_arr, eta_full
-            else:
-                cached_grid, cached_eta = cached
-            return np.interp(theta_arr, cached_grid, cached_eta)
-
-        # Legacy |Δ|-keyed path.
-        if w is None:
-            raise ValueError(
-                "select_grid (legacy path) requires `w` keyword. "
-                "Pass `model` and `prior` for the new θ-keyed path."
-            )
-        abs_delta_grid = np.asarray(grid, dtype=np.float64)
-        ad_max = float(abs_delta_grid.max())
-        ad_max_bin = float(
-            np.ceil(max(ad_max, self.cache_bin_width) / self.cache_bin_width) * self.cache_bin_width
+        theta_arr = np.asarray(grid, dtype=np.float64)
+        t_min_bin = float(np.round(theta_arr.min(), 6))
+        t_max_bin = float(np.round(theta_arr.max(), 6))
+        model_fp = getattr(model, "fingerprint", lambda: None)()
+        prior_fp = getattr(prior, "fingerprint", lambda: None)()
+        key = (
+            "theta",
+            alpha,
+            statistic.name,
+            scheme_name,
+            coarse_n,
+            t_min_bin,
+            t_max_bin,
+            tuple(model_fp) if model_fp is not None else None,
+            tuple(prior_fp) if prior_fp is not None else None,
         )
-        key = (w, alpha, statistic.name, scheme_name, coarse_n, ad_max_bin)
         cached = self._cache.get(key)
         if cached is None:
-            coarse_grid_full = np.linspace(0.0, ad_max_bin, coarse_n)
             eta_full = self._inner().select_grid(
-                coarse_grid_full,
+                theta_arr,
                 scheme,
-                statistic=statistic,
-                w=w,
+                model=model,
+                prior=prior,
                 alpha=alpha,
+                statistic=statistic,
             )
-            self._cache[key] = (coarse_grid_full, eta_full)
-            cached_grid, cached_eta = coarse_grid_full, eta_full
+            self._cache[key] = (theta_arr, eta_full)
+            cached_grid, cached_eta = theta_arr, eta_full
         else:
             cached_grid, cached_eta = cached
-        return np.interp(abs_delta_grid, cached_grid, cached_eta)
+        return np.interp(theta_arr, cached_grid, cached_eta)
 
 
 # Threshold for the runtime safety clamp in `LearnedDynamicEtaSelector`.
@@ -788,63 +686,24 @@ class LearnedDynamicEtaSelector:
 
     def select(
         self,
-        scheme_or_context,
-        scheme: TiltingScheme | None = None,
+        scheme: TiltingScheme,
         *,
         data: np.ndarray | None = None,
         model: Model | None = None,
         prior: Prior | None = None,
         alpha: float | None = None,
         statistic: TestStatistic | None = None,
-        model_fingerprint: tuple | None = None,
-        prior_fingerprint: tuple | None = None,
     ) -> float:
-        """Single-context η. Convenience for non-dynamic callers.
-
-        Phase 3a-1: dual signature during the transition.
-          - **New**: `select(scheme, *, data, model, prior, alpha, statistic)`.
-          - **Legacy**: `select(context, scheme, *, statistic,
-            model_fingerprint=, prior_fingerprint=)`.
-        """
-        # Dispatch on first positional: TiltingContext (legacy) vs scheme (new).
-        if isinstance(scheme_or_context, TiltingContext):
-            ctx = scheme_or_context
-            assert scheme is not None, "legacy `select(ctx, scheme, ...)` requires scheme."
-            if model_fingerprint is None or prior_fingerprint is None:
-                raise ValueError(
-                    f"{type(self).__name__}.select requires explicit "
-                    f"`model_fingerprint` and `prior_fingerprint` kwargs "
-                    f"to enforce strict cross-experiment refusal. Pass "
-                    f"`model.fingerprint()` and `prior.fingerprint()` from "
-                    f"the inference call site."
-                )
-            if statistic is None:
-                raise ValueError("legacy select(...) requires `statistic` kwarg.")
-            self._ensure_loaded()
-            self._check_scheme(scheme)
-            self._check_alpha(ctx.alpha)
-            out = self.select_grid(
-                np.asarray([0.0]),  # |Δ| = 0 == single representative point
-                scheme,
-                statistic=statistic,
-                w=ctx.w,
-                alpha=ctx.alpha,
-                model_fingerprint=model_fingerprint,
-                prior_fingerprint=prior_fingerprint,
-            )
-            return float(out[0])
-
-        # New signature.
-        scheme_obj = scheme_or_context
+        """Single-context η. Convenience for non-dynamic callers."""
         assert data is not None and model is not None and prior is not None
         assert alpha is not None and statistic is not None
         self._ensure_loaded()
-        self._check_scheme(scheme_obj)
+        self._check_scheme(scheme)
         self._check_alpha(alpha)
         D = float(np.atleast_1d(np.asarray(data, dtype=np.float64)).mean())
         out = self.select_grid(
             np.asarray([D]),
-            scheme_obj,
+            scheme,
             statistic=statistic,
             model=model,
             prior=prior,
@@ -858,83 +717,60 @@ class LearnedDynamicEtaSelector:
         scheme: TiltingScheme,
         *,
         statistic: TestStatistic,
-        model: Model | None = None,
-        prior: Prior | None = None,
-        alpha: float | None = None,
-        w: float | None = None,
-        model_fingerprint: tuple | None = None,
-        prior_fingerprint: tuple | None = None,
+        model: Model,
+        prior: Prior,
+        alpha: float,
     ):
         """Per-θ η* lookup via the trained Phase E EtaNet.
 
-        Phase 3a-1: dual signature during the transition.
-          - **New (preferred)**: `select_grid(theta_grid, scheme, *,
-            statistic, model=, prior=, alpha=)`. EtaNet receives θ
-            directly (its natural input); no |Δ| inversion / two-branch
-            averaging.
-          - **Legacy**: `select_grid(abs_delta_grid, scheme, *,
-            statistic, w=, alpha=, model_fingerprint=, prior_fingerprint=)`.
-            Inverts |Δ| → θ via the trained config's μ₀, σ and averages
-            the two branches. Will be removed in commit 3a-2.
+        EtaNet receives θ directly (its natural input); no |Δ|
+        inversion / two-branch averaging.
         """
-        if alpha is None:
-            raise ValueError("select_grid requires `alpha` keyword.")
         self._ensure_loaded()
         self._check_scheme(scheme)
         self._check_alpha(alpha)
 
-        # New θ-keyed path: EtaNet input is θ directly.
-        if model is not None and prior is not None:
-            theta_arr = np.asarray(grid, dtype=np.float64)
-            model_fp = getattr(model, "fingerprint", lambda: None)()
-            prior_fp = getattr(prior, "fingerprint", lambda: None)()
-            if hasattr(model, "sigma") and hasattr(prior, "scale"):
-                w_eff = float(prior.scale) ** 2 / (
-                    float(model.sigma) ** 2 + float(prior.scale) ** 2
-                )
-            else:  # pragma: no cover — non-Normal models will fail below
-                w_eff = 0.5
-            self._check_experiment(
-                w_eff,
-                model_fingerprint=tuple(model_fp) if model_fp is not None else None,
-                prior_fingerprint=tuple(prior_fp) if prior_fp is not None else None,
+        theta_arr = np.asarray(grid, dtype=np.float64)
+        model_fp = getattr(model, "fingerprint", lambda: None)()
+        prior_fp = getattr(prior, "fingerprint", lambda: None)()
+        if hasattr(model, "sigma") and hasattr(prior, "scale"):
+            w_eff = float(prior.scale) ** 2 / (
+                float(model.sigma) ** 2 + float(prior.scale) ** 2
             )
-            eta = self.artifact.predict_eta(theta_arr)
-            return self._maybe_clamp_eta(eta, scheme=scheme, w=w_eff, alpha=alpha)
-
-        # Legacy |Δ|-keyed path.
-        if w is None:
-            raise ValueError(
-                "select_grid (legacy path) requires `w` keyword. "
-                "Pass `model` and `prior` for the new θ-keyed path."
-            )
-        ad = np.asarray(grid, dtype=np.float64)
+        else:  # pragma: no cover — non-Normal models will fail below
+            w_eff = 0.5
         self._check_experiment(
-            w,
-            model_fingerprint=model_fingerprint,
-            prior_fingerprint=prior_fingerprint,
+            w_eff,
+            model_fingerprint=tuple(model_fp) if model_fp is not None else None,
+            prior_fingerprint=tuple(prior_fp) if prior_fp is not None else None,
         )
-        meta = self.artifact.metadata["experiment_config"]
-        mu0 = float(meta["prior_fingerprint"][1])
-        sigma = float(meta["model_fingerprint"][1])
-        offset = sigma * ad / max(1.0 - w, 1e-12)
-        theta_lo = mu0 - offset
-        theta_hi = mu0 + offset
-        eta_lo = self.artifact.predict_eta(theta_lo)
-        eta_hi = self.artifact.predict_eta(theta_hi)
-        eta = 0.5 * (eta_lo + eta_hi)
-        return self._maybe_clamp_eta(eta, scheme=scheme, w=w, alpha=alpha)
+        eta = self.artifact.predict_eta(theta_arr)
+        return self._maybe_clamp_eta(eta, scheme=scheme, w=w_eff, alpha=alpha)
 
     def _maybe_clamp_eta(self, eta, *, scheme, w, alpha):
-        """Runtime safety net for predicted η outside admissible range."""
-        ctx = TiltingContext(w=w, alpha=alpha)
-        # Catch only the documented protocol exception for invalid
-        # context; any other exception (TypeError from a buggy ctx,
-        # AttributeError from a stub scheme, etc.) should propagate
-        # so we don't silently disable the safety net by falling
-        # through to (-inf, inf).
+        """Runtime safety net for predicted η outside admissible range.
+
+        Admissibility bounds are computed inline from the closed-form
+        Normal-Normal `power_law` window
+        `(-w/(1-w) + buffer, 1/(1-w) - buffer)` (also a valid superset
+        for `ot`'s `[0, 1]` admissible region for any `w ∈ (0, 1)`).
+        Schemes outside the Normal-Normal sandbox would need a
+        scheme-specific generalization; today the only registered
+        non-stub schemes are `power_law` and `ot`, both of which the
+        Phase E checkpoints train against.
+        """
+        del alpha  # bounds are α-independent
         try:
-            lo, hi = scheme.admissible_range(ctx)
+            if not (0.0 < w < 1.0):
+                raise ValueError(f"w must lie in (0, 1); got {w!r}")
+            buffer = 1e-3
+            if scheme.name == "ot":
+                lo, hi = 0.0 + buffer, 1.0 - buffer
+            else:
+                # power_law (and any other Normal-Normal scheme using
+                # the same admissible window).
+                lo = -w / (1.0 - w) + buffer
+                hi = 1.0 / (1.0 - w) - buffer
         except (ValueError, TiltingDomainError):
             lo, hi = -np.inf, np.inf
         margin = 1e-6 * max(1.0, abs(hi - lo) if np.isfinite(hi - lo) else 1.0)

@@ -73,15 +73,30 @@ class TestNumericalEtaSelectorObjective:
         assert eta < 1.0
 
     def test_integrated_p_path_runs_select_grid(self):
-        """select_grid completes for integrated_p across a |Δ| sweep."""
+        """select_grid completes for integrated_p across a θ sweep
+        (Phase 3a-1.5: θ-keyed signature; the legacy |Δ| path is
+        dropped).
+        """
+        from frasian.models.distributions import NormalDistribution
+        from frasian.models.normal_normal import NormalNormalModel
+
         sel = NumericalEtaSelector(objective="integrated_p")
         scheme = PowerLawTilting()
+        # w=0.5 → sigma0 == sigma == 1.
+        sigma, mu0 = 1.0, 0.0
+        sigma0 = 1.0
+        model = NormalNormalModel(sigma=sigma)
+        prior = NormalDistribution(loc=mu0, scale=sigma0)
+        # |Δ| grid spans 0..4 in 9 steps; map to θ via the legacy
+        # inversion D = mu0 - |Δ|·σ/(1-w).
         ad_grid = np.linspace(0.0, 4.0, 9)
+        theta_grid = mu0 - ad_grid * sigma / 0.5
         eta = sel.select_grid(
-            ad_grid,
+            theta_grid,
             scheme,
             statistic=WaldoStatistic(),
-            w=0.5,
+            model=model,
+            prior=prior,
             alpha=0.05,
         )
         assert eta.shape == (9,)

@@ -24,7 +24,7 @@ from numpy.typing import ArrayLike, NDArray
 from .._registry import register_tilting
 from ..models.base import Likelihood, Model, Posterior, Prior
 from ..statistics.base import TestStatistic
-from .base import ParamSpec, TiltingContext
+from .base import ParamSpec
 from .eta_selectors import FixedEtaSelector
 
 if TYPE_CHECKING:
@@ -59,9 +59,6 @@ class IdentityTilting:
 
     def is_identity(self, eta: float) -> bool:
         return True
-
-    def admissible_range(self, context: TiltingContext) -> tuple[float, float]:
-        return (-np.inf, np.inf)
 
     # ----- Uniform CI / regions / pvalue interface -----
 

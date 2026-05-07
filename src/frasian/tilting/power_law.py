@@ -45,12 +45,10 @@ from ..models.base import Likelihood, Model, Posterior, Prior
 from ..models.distributions import GaussianLikelihood, NormalDistribution
 from ..models.normal_normal import weight as _weight
 from ..statistics.base import TestStatistic
-from .base import EtaSelector, ParamSpec, TiltingContext
+from .base import EtaSelector, ParamSpec
 from .eta_selectors import FixedEtaSelector
 
 _FORCE_X64 = _x64  # keep static-analysis from stripping the import
-
-_ETA_MIN_BUFFER = Config.default().eta_min_buffer
 
 
 from functools import partial
@@ -265,16 +263,6 @@ class PowerLawTilting:
 
     def is_identity(self, eta: float) -> bool:
         return eta == self.param_space.eta_identity
-
-    def admissible_range(self, context: TiltingContext) -> tuple[float, float]:
-        w = context.w
-        if not (0.0 < w < 1.0):
-            raise ValueError(f"context.w must lie in (0, 1), got {w!r}")
-        # denom = 1 - eta*(1 - w) > 0  ⇔  eta < 1/(1 - w); also eta > -w/(1-w)
-        # for the equivalent variance-positivity condition with the buffer.
-        eta_low = -w / (1.0 - w) + _ETA_MIN_BUFFER
-        eta_high = 1.0 / (1.0 - w) - _ETA_MIN_BUFFER
-        return (eta_low, eta_high)
 
     # ----- (TiltingScheme, TestStatistic) cross-product specialisations -----
     #

@@ -17,9 +17,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from frasian.config import GridSpec
+from frasian.models.distributions import NormalDistribution
+from frasian.models.normal_normal import NormalNormalModel
 from frasian.statistics.waldo import WaldoStatistic
-from frasian.tilting.base import TiltingContext
-from frasian.tilting.eta_selectors import NumericalEtaSelector
+from frasian.tilting.eta_selectors import NumericalEtaSelector, _D_from_abs_delta
 from frasian.tilting.power_law import PowerLawTilting
 
 
@@ -32,10 +33,21 @@ def main(smoke: bool = False, out: Path | None = None) -> Path:
     statistic = WaldoStatistic()
     selector = NumericalEtaSelector(sigma=sigma, mu0=mu0)
 
+    sigma0 = float(np.sqrt(w / max(1.0 - w, 1e-12)) * sigma)
+    model = NormalNormalModel(sigma=sigma)
+    prior = NormalDistribution(loc=mu0, scale=sigma0)
+
     eta_star = np.empty_like(delta)
     for i, d in enumerate(delta):
-        ctx = TiltingContext(w=w, abs_delta=float(d), alpha=alpha)
-        eta_star[i] = selector.select(ctx, scheme, statistic=statistic)
+        D = _D_from_abs_delta(float(d), w, sigma, mu0)
+        eta_star[i] = selector.select(
+            scheme,
+            data=np.asarray([D]),
+            model=model,
+            prior=prior,
+            alpha=alpha,
+            statistic=statistic,
+        )
 
     eta_low_bound = -w / (1.0 - w)
 

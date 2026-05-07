@@ -66,7 +66,7 @@ from .._registry import register_tilting
 from ..models.base import Likelihood, Model, Posterior, Prior
 from ..models.distributions import GaussianLikelihood, NormalDistribution
 from ..statistics.base import TestStatistic
-from .base import EtaSelector, ParamSpec, TiltingContext
+from .base import EtaSelector, ParamSpec
 from .eta_selectors import FixedEtaSelector
 from .quantile_mixture import QuantileMixturePath
 
@@ -236,9 +236,6 @@ class OTTilting:
 
     def is_identity(self, eta: float) -> bool:
         return float(eta) == self.param_space.eta_identity
-
-    def admissible_range(self, context: TiltingContext) -> tuple[float, float]:
-        return (0.0, 1.0)
 
     # ----- (TiltingScheme, TestStatistic) cross-product specialisations -----
 

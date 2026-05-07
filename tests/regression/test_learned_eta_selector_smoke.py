@@ -14,6 +14,9 @@ Verifies:
   5. Cross-experiment fingerprint mismatch raises.
   6. α-marginalised checkpoint accepts any α.
 
+Phase 3a-1.5: tests use the θ-keyed selector signature throughout
+(legacy ``|Δ|``-keyed signature with ``w=`` is gone).
+
 Does NOT require ``torch`` — the stub stays in numpy-land.
 """
 
@@ -86,6 +89,14 @@ class _StubEtaArtifact:
         }
 
 
+def _matched_pair(stub: _StubEtaArtifact) -> tuple[NormalNormalModel, NormalDistribution]:
+    """Build (model, prior) whose fingerprints match the stub artifact."""
+    return (
+        NormalNormalModel(sigma=stub.sigma),
+        NormalDistribution(loc=stub.mu0, scale=stub.sigma0),
+    )
+
+
 @pytest.mark.L2
 class TestLearnedDynamicEtaSelectorSmoke:
     def test_select_grid_returns_constant_eta(self):
@@ -97,13 +108,15 @@ class TestLearnedDynamicEtaSelectorSmoke:
             mu0=0.0,
         )
         scheme = PowerLawTilting()
+        model, prior = _matched_pair(artifact)
 
-        ad_grid = np.linspace(0.0, 5.0, 11)
+        theta_grid = np.linspace(-5.0, 5.0, 11)
         eta = selector.select_grid(
-            ad_grid,
+            theta_grid,
             scheme,
             statistic=WaldoStatistic(),
-            w=0.5,
+            model=model,
+            prior=prior,
             alpha=0.05,
         )
         assert eta.shape == (11,)
@@ -120,8 +133,7 @@ class TestLearnedDynamicEtaSelectorSmoke:
         scheme = PowerLawTilting(selector=selector)
 
         D = 1.5
-        model = NormalNormalModel(sigma=1.0)
-        prior = NormalDistribution(loc=0.0, scale=1.0)
+        model, prior = _matched_pair(artifact)
 
         regions = scheme.confidence_regions(
             0.05,
@@ -146,18 +158,18 @@ class TestLearnedDynamicEtaSelectorSmoke:
 
     def test_scheme_mismatch_raises(self):
         """Artifact trained for scheme X must not be used with scheme Y."""
-        from frasian.tilting.ot import OTTilting
-
         artifact = _StubEtaArtifact(scheme_name="ot")
         selector = LearnedDynamicEtaSelector(artifact=artifact)
         scheme = PowerLawTilting()
+        model, prior = _matched_pair(artifact)
 
         with pytest.raises(MissingArtifactError, match="scheme"):
             selector.select_grid(
                 np.asarray([0.5, 1.0]),
                 scheme,
                 statistic=WaldoStatistic(),
-                w=0.5,
+                model=model,
+                prior=prior,
                 alpha=0.05,
             )
 
@@ -170,17 +182,18 @@ class TestLearnedDynamicEtaSelectorSmoke:
             mu0=0.0,
         )
         scheme = PowerLawTilting()
-
         # Different prior loc — same w, but different fingerprint.
+        model = NormalNormalModel(sigma=1.0)
+        prior = NormalDistribution(loc=1.0, scale=1.0)
+
         with pytest.raises(MissingArtifactError, match="trained with prior"):
             selector.select_grid(
                 np.asarray([0.5, 1.0]),
                 scheme,
                 statistic=WaldoStatistic(),
-                w=0.5,
+                model=model,
+                prior=prior,
                 alpha=0.05,
-                model_fingerprint=("normal_normal", 1.0),
-                prior_fingerprint=("normal", 1.0, 1.0),
             )
 
     def test_alpha_marginalised_works_at_any_alpha(self):
@@ -192,26 +205,23 @@ class TestLearnedDynamicEtaSelectorSmoke:
             mu0=0.0,
         )
         scheme = PowerLawTilting()
+        model, prior = _matched_pair(artifact)
 
         for alpha in (0.01, 0.05, 0.10, 0.20):
             eta = selector.select_grid(
                 np.asarray([0.5, 1.0]),
                 scheme,
                 statistic=WaldoStatistic(),
-                w=0.5,
+                model=model,
+                prior=prior,
                 alpha=alpha,
             )
             assert eta.shape == (2,)
 
-    def test_select_requires_fingerprints(self):
-        """`select` convenience method must reject calls missing fingerprints.
-
-        Closes the bypass where the convenience entry point falls back to
-        the w-only derived check (which cannot distinguish two ``(σ, σ₀)``
-        pairs giving the same ``w``).
+    def test_select_uses_data_keyword(self):
+        """The convenience `select` entry takes `data=`, `model=`, `prior=`,
+        `alpha=`, `statistic=` kwargs (Phase 3a-1.5 — no `TiltingContext`).
         """
-        from frasian.tilting.base import TiltingContext
-
         artifact = _StubEtaArtifact(sigma=1.0, sigma0=1.0, mu0=0.0)
         selector = LearnedDynamicEtaSelector(
             artifact=artifact,
@@ -219,28 +229,35 @@ class TestLearnedDynamicEtaSelectorSmoke:
             mu0=0.0,
         )
         scheme = PowerLawTilting()
-        ctx = TiltingContext(w=0.5, alpha=0.05)
+        model, prior = _matched_pair(artifact)
 
-        # No fingerprints → raise.
-        with pytest.raises(ValueError, match="fingerprint"):
-            selector.select(ctx, scheme, statistic=WaldoStatistic())
-
-        # Mismatched model fingerprint → raise (different sigma).
-        with pytest.raises(MissingArtifactError):
-            selector.select(
-                ctx,
-                scheme,
-                statistic=WaldoStatistic(),
-                model_fingerprint=("normal_normal", 2.0),
-                prior_fingerprint=("normal", 0.0, 1.0),
-            )
-
-        # Matching fingerprints → succeed.
         eta = selector.select(
-            ctx,
             scheme,
+            data=np.asarray([1.0]),
+            model=model,
+            prior=prior,
+            alpha=0.05,
             statistic=WaldoStatistic(),
-            model_fingerprint=("normal_normal", 1.0),
-            prior_fingerprint=("normal", 0.0, 1.0),
         )
         assert isinstance(eta, float)
+
+    def test_select_mismatched_model_fingerprint_raises(self):
+        """Artifact trained on σ=1 cannot serve inference at σ=2."""
+        artifact = _StubEtaArtifact(sigma=1.0, sigma0=1.0, mu0=0.0)
+        selector = LearnedDynamicEtaSelector(
+            artifact=artifact,
+            sigma=1.0,
+            mu0=0.0,
+        )
+        scheme = PowerLawTilting()
+        model = NormalNormalModel(sigma=2.0)
+        prior = NormalDistribution(loc=0.0, scale=1.0)
+        with pytest.raises(MissingArtifactError):
+            selector.select(
+                scheme,
+                data=np.asarray([1.0]),
+                model=model,
+                prior=prior,
+                alpha=0.05,
+                statistic=WaldoStatistic(),
+            )

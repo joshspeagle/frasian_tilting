@@ -19,7 +19,7 @@ import pytest
 from frasian import TiltingDomainError
 from frasian.models.distributions import GaussianLikelihood, NormalDistribution
 from frasian.models.normal_normal import NormalNormalModel, posterior_params
-from frasian.tilting.base import TiltingContext
+from frasian.tilting.eta_selectors import NumericalEtaSelector
 from frasian.tilting.power_law import PowerLawTilting
 
 
@@ -89,18 +89,37 @@ class TestPowerLawDomain:
         with pytest.raises(TiltingDomainError):
             scheme.tilt(posterior, prior, likelihood, 2.5)
 
-    def test_admissible_range_brackets_finite_window(self):
+    def test_numerical_selector_eta_bounds_brackets_finite_window(self):
+        """Phase 3a-1.5: η-bounds moved out of the public protocol into
+        `NumericalEtaSelector._eta_bounds(model, prior)` (internal). This
+        replaces the old `scheme.admissible_range(context)` test.
+        """
+        sigma, mu0, w = 1.0, 0.0, 0.5
+        sigma0 = float(np.sqrt(w / (1.0 - w)) * sigma)
+        model = NormalNormalModel(sigma=sigma)
+        prior = NormalDistribution(loc=mu0, scale=sigma0)
+        sel = NumericalEtaSelector(sigma=sigma, mu0=mu0)
+        lo, hi = sel._eta_bounds(model, prior)
         scheme = PowerLawTilting()
-        ctx = TiltingContext(w=0.5, alpha=0.05)
-        lo, hi = scheme.admissible_range(ctx)
         assert lo < scheme.param_space.eta_identity < hi
 
-    def test_admissible_range_validates_w(self):
-        scheme = PowerLawTilting()
-        with pytest.raises(ValueError):
-            scheme.admissible_range(TiltingContext(w=0.0, alpha=0.05))
-        with pytest.raises(ValueError):
-            scheme.admissible_range(TiltingContext(w=1.0, alpha=0.05))
+    def test_numerical_selector_eta_bounds_validates_w(self):
+        """w outside (0, 1) cannot be derived from a NormalDistribution
+        prior with finite scale; the selector's `_normal_normal_w`
+        guards by construction. This pins the closed-form admissibility
+        condition still being enforced after the refactor.
+        """
+        sigma, mu0 = 1.0, 0.0
+        # w → 1 corresponds to sigma0 → ∞: any moderately large sigma0
+        # gives w very close to 1 but still strictly < 1.
+        sigma0 = 1e6
+        model = NormalNormalModel(sigma=sigma)
+        prior = NormalDistribution(loc=mu0, scale=sigma0)
+        sel = NumericalEtaSelector(sigma=sigma, mu0=mu0)
+        lo, hi = sel._eta_bounds(model, prior)
+        # Bounds should still be finite + ordered.
+        assert np.isfinite(lo) and np.isfinite(hi)
+        assert lo < hi
 
 
 @pytest.mark.L0

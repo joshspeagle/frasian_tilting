@@ -121,22 +121,23 @@ class TestDynamicTiltedConfidenceInterval:
         )
         assert len(regions) >= 1
         # Recompute p at each endpoint via the same dynamic procedure.
+        # Phase 3a-1.5: selector signature is θ-keyed throughout.
+        from frasian.tilting.eta_selectors import _NamedStatistic
+
+        # Mirror the dynamic_ci_scan internal coarse-θ grid: it spans
+        # ``D ± search_mult·σ`` (default 8) — see _dynamic.py.
+        coarse_theta = np.linspace(1.5 - 8.0, 1.5 + 8.0, 11)
+        eta_grid = selector.select_grid(
+            coarse_theta,
+            scheme,
+            statistic=_NamedStatistic("waldo"),
+            model=model,
+            prior=prior,
+            alpha=alpha,
+        )
         for lo, hi in regions:
             for theta in (lo, hi):
-                # Direct dynamic-pvalue evaluation
-                ad = abs((1 - 0.5) * (0.0 - theta) / 1.0)
-                # Use the same coarse grid as the inversion did
-                from frasian.tilting.eta_selectors import _NamedStatistic
-
-                coarse = np.linspace(0.0, 8.0, 11)
-                eta_grid = selector.select_grid(
-                    coarse,
-                    scheme,
-                    statistic=_NamedStatistic("waldo"),
-                    w=0.5,
-                    alpha=alpha,
-                )
-                eta = float(np.interp(ad, coarse, eta_grid))
+                eta = float(np.interp(theta, coarse_theta, eta_grid))
                 p = float(scheme.tilted_pvalue(theta, 1.5, model, prior, eta, "waldo"))
                 assert abs(p - alpha) < 0.02
 

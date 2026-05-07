@@ -29,27 +29,6 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
-class TiltingContext:
-    """Non-η parameters that bound or describe a tilting choice.
-
-    `w` is Normal-Normal-flavored (= sigma0**2 / (sigma**2 + sigma0**2));
-    it's kept here because `admissible_range(context)` consumes it for
-    the closed-form Normal-Normal η bracket. Non-Normal callers may
-    pass a placeholder (e.g. 0.5) until a follow-up generalizes
-    `admissible_range(model, prior)`.
-
-    Phase 3a-1: ``abs_delta`` is deprecated and ignored — it is retained
-    as an optional field only so that legacy callers (smoothness.py +
-    its demo) continue to construct contexts unchanged. It will be
-    removed in commit 3a-3 when smoothness.py owns its own |Δ| sweep.
-    """
-
-    w: float
-    alpha: float
-    abs_delta: float = 0.0  # deprecated; ignored by all selector code paths
-
-
-@dataclass(frozen=True)
 class ParamSpec:
     """Description of a tilting scheme's η parameter space."""
 
@@ -71,9 +50,15 @@ class TiltingScheme(Protocol):
           distribution numerically equal to `posterior`.
         - `tilt(...).pdf` is non-negative and integrates to 1 (KS-tolerance).
         - `path(ts)` is continuous in t (W₁ Lipschitz bound).
-        - `admissible_range(context)` brackets the η values for which `tilt`
-          succeeds; outside this range the implementation MUST raise
-          `TiltingDomainError`, never return NaN.
+        - For η outside the scheme's admissible parameter region (e.g.
+          η that drives a variance non-positive on Normal-Normal),
+          `tilt` / `tilted_pvalue` MUST raise `TiltingDomainError`,
+          never return NaN. The admissible region is an *internal*
+          property of each implementation: the public protocol does
+          not expose it. Selectors that need η-bounds compute them
+          internally (`NumericalEtaSelector._eta_bounds`); learned
+          selectors enforce admissibility via the trained
+          `ValidityNet` boundary penalty.
     """
 
     @property
@@ -91,8 +76,6 @@ class TiltingScheme(Protocol):
     ) -> Iterable[Posterior]: ...
 
     def is_identity(self, eta: float) -> bool: ...
-
-    def admissible_range(self, context: TiltingContext) -> tuple[float, float]: ...
 
     def confidence_interval(
         self,
@@ -170,9 +153,12 @@ class EtaSelector(Protocol):
     `ClosedFormEtaSelector` (analytic approximation), `LearnedEtaSelector`
     (wraps a `LearnedArtifact` such as the monotonic MLP).
 
-    Phase 3a-1: the call surface is θ-space and model-agnostic. `data`,
-    `model`, `prior` and `alpha` are passed at call time; selectors no
-    longer consume the Normal-Normal-specific `|Δ|` summary.
+    The call surface is θ-space and model-agnostic. `data`, `model`,
+    `prior` and `alpha` are passed at call time; selectors do not
+    consume Normal-Normal-specific `|Δ|` summaries. Selectors that
+    need η-bounds (e.g. `NumericalEtaSelector`'s minimization
+    bracket) compute them internally; the protocol does not expose
+    a `TiltingContext` or `admissible_range` indirection.
     """
 
     name: str

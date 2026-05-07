@@ -113,23 +113,23 @@ class TestConfidenceRegionsBasics:
         scheme = PowerLawTilting(selector=sel)
 
         # Direct dynamic-p evaluation; count local maxima.
+        # Phase 3a-1.5: selector signature is θ-keyed throughout.
         from frasian.tilting.eta_selectors import _NamedStatistic
 
         sigma = 1.0
         mu0 = 0.0
-        w = 0.5
         D = 2.0
         thetas = np.linspace(D - 8, D + 8, 1001)
-        abs_d = np.abs((1.0 - w) * (mu0 - thetas) / sigma)
-        coarse_grid = np.linspace(0.0, abs_d.max() + 1e-6, 25)
+        coarse_theta = np.linspace(D - 8, D + 8, 25)
         coarse_eta = sel.select_grid(
-            coarse_grid,
+            coarse_theta,
             scheme,
             statistic=_NamedStatistic("waldo"),
-            w=w,
+            model=m,
+            prior=p,
             alpha=0.05,
         )
-        eta_at_theta = np.interp(abs_d, coarse_grid, coarse_eta)
+        eta_at_theta = np.interp(thetas, coarse_theta, coarse_eta)
         p_dyn = scheme.dynamic_tilted_pvalue(
             thetas,
             D,
