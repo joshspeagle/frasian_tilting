@@ -263,7 +263,8 @@ p-value error on the canonical sandbox.
 - Implementation: `src/frasian/tilting/ot.py`
 - General-path Distribution: `src/frasian/tilting/quantile_mixture.py`
 - Property tests: `tests/properties/test_ot_invariants.py`
-- Regression tests: `tests/regression/test_ot_regression.py`
+- Regression tests: `tests/regression/test_ot_tilting.py` (closed-form),
+  `tests/regression/test_ot_generic_tilt.py` (generic + Beta endpoints)
 - Illustration: `src/frasian/experiments/illustrations/ot_demo.py`
 
 ## Status notes

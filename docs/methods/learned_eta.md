@@ -1,21 +1,24 @@
 # learned_eta
 
-> Status: `implemented`
+> Status: `implemented` (post-Phase-F JAX/Equinox/Optax port; see CLAUDE.md
+> Phase 10 / Migration Status).
 
 ## Summary
 
 `LearnedDynamicEtaSelector` is a calibrated dynamic-η-per-θ
 `EtaSelector` that minimises the **dynamic-procedure loss directly**
 (integrated CI width, by default), rather than the static-per-D
-width that `NumericalEtaSelector` minimises pointwise. The η*(|Δ|; w)
+width that `NumericalEtaSelector` minimises pointwise. The `η(θ)`
 function is parameterised by a small dual-head neural network
-(`EtaNet` + `ValidityNet`), trained end-to-end via `torch.autograd` through
-the differentiable tilted-WALDO p-value formula and trapezoidal
-integration.
+(`EtaNet` + `ValidityNet`), trained end-to-end via JAX autograd
+through the differentiable tilted-WALDO p-value formula and
+trapezoidal integration, with Optax driving the parameter updates and
+Equinox handling the model serialisation (`.eqx` checkpoint format).
 
 The headline empirical claim: dynamically-tilted CIs from WALDO that
 **maintain nominal coverage AND match-or-beat un-tilted WALDO width
-across the (w, θ_true) plane** — calibrated *and* narrow, simultaneously.
+across the (w, θ_true) plane** — calibrated *and* narrow,
+simultaneously. See [Empirical headline numbers](#empirical-headline-numbers).
 
 ## Motivation
 
@@ -26,7 +29,7 @@ by construction (η depends only on θ, never on D) but uses
 `-w/(1-w)` at small |Δ|. When that kinky η*(|Δ|) curve is used per-θ,
 the resulting "Frankenstein" p-value spuriously accepts θ values 2–3σ
 from D — verified empirically: at (D=4, w=0.5) the dynamic CI is
-5.34, much wider than Wald's 3.92.
+~5.24, much wider than Wald's 3.92.
 
 The right objective is the **dynamic-procedure loss itself**:
 
@@ -42,21 +45,24 @@ the η-function is unconstrained within that family.
 ## Definition
 
 The learner produces an `EtaArtifact` (Phase E, checkpoint format
-v2). It is a thin checkpoint wrapper — not a structural
+v3 — the post-Phase-F Equinox `.eqx` format; v2 was the pre-port
+torch `.pt` format and is no longer written, only loadable for
+back-compat). It is a thin checkpoint wrapper — not a structural
 `LearnedArtifact` Protocol implementation; the dual-head design
 exposes `predict_eta(theta)` and `predict_validity(theta, eta)`
 rather than the single `predict(x)` that `LearnedArtifact`
-specifies. At inference, `LearnedDynamicEtaSelector`
-plugs into the same `tilting.confidence_regions` pipeline via
-`select_grid` as `DynamicNumericalEtaSelector` does, but reads η from
-the trained MLP instead of a width-minimising solver.
+specifies. At inference, `LearnedDynamicEtaSelector` plugs into the
+same `tilting.confidence_regions` pipeline via `select_grid` as
+`DynamicNumericalEtaSelector` does, but reads η from the trained
+network instead of a width-minimising solver.
 
 The Phase E selector is **per-experiment**: each (model, prior,
 scheme, statistic) configuration trains its own checkpoint, recorded
 via fingerprints in the checkpoint metadata. The selector compares
 fingerprints at inference and refuses cross-experiment use.
 
-**Architecture: dual-head.** Two MLPs trained jointly:
+**Architecture: dual-head Equinox modules.** Two MLPs trained
+jointly:
 
 - **Head A — `EtaNet`**: smooth GELU-MLP from `θ ∈ ℝ^p` (raw, not
   `|Δ|`) to a real-valued `η`. No bounded sigmoid output, no
@@ -69,7 +75,9 @@ fingerprints at inference and refuses cross-experiment use.
   returned a finite scalar in `[0, 1]`.
 
 Both heads have hidden sizes `(64, 64)` by default; configurable in
-the YAML or via the CLI.
+the YAML or via the CLI. Both modules are `equinox.Module` subclasses
+with explicit `architecture_kwargs()` for round-trip checkpoint
+metadata.
 
 **Three-step training.** Per minibatch of θ (drawn from a one-shot
 Latin Hypercube sample over `theta_distribution.support()`):
@@ -78,24 +86,25 @@ Latin Hypercube sample over `theta_distribution.support()`):
    `(θ_aux, η_aux)` boundary-probing pairs (`η_aux ~ Uniform(eta_-`
    `explore_box)`); sample `D ~ likelihood(·|θ)` per row; label
    per-sample validity via `compute_pvalues_per_sample` +
-   `validity_mask`. `η_pred` is `.detach()`-ed before labelling so
-   Head A's gradient does not flow through the discrete labels.
-2. Train Head B: `BCEWithLogitsLoss(logits, valid_labels)`.
+   `validity_mask`. `η_pred` is wrapped in `jax.lax.stop_gradient`
+   before labelling so Head A's gradient does not flow through the
+   discrete labels.
+2. Train Head B: BCE-with-logits loss on `(logits, valid_labels)`
+   (Optax `optax.sigmoid_binary_cross_entropy`).
 3. Train Head A:
    `width_loss(...)  +  λ(epoch) · boundary_penalty`
    where `width_loss` is `integrated_pvalue_loss` over an n_mc=8 D
    batch (per-step Monte Carlo average; closes the high-variance
    single-D regime that made val_width oscillate), and
-   `boundary_penalty = -log P(valid | θ_batch, η_pred)` with
-   ValidityNet's parameters detached via
-   `torch.func.functional_call`. Gradient flows through the
-   `(θ, η)` input but not into ValidityNet's weights.
+   `boundary_penalty = -log P(valid | θ_batch, η_pred)` evaluated
+   under Head B with its parameters held constant via
+   `equinox.filter` partition + `jax.lax.stop_gradient`. Gradient
+   flows through the `(θ, η)` input but not into ValidityNet's weights.
 
-**No clamp on the boundary penalty.** `logsigmoid(x)` is numerically
-stable for any finite `x` and its derivative `-sigmoid(-x)` saturates
-to `-1` (not zero) as `x → -∞`, so the wrong-side gradient stays
-alive at bounded magnitude. A `torch.clamp(logits, ±20)` would zero
-that gradient and was explicitly removed in the E.1 review round.
+**No clamp on the boundary penalty.** `jax.nn.log_sigmoid(x)` is
+numerically stable for any finite `x` and its derivative
+`-sigmoid(-x)` saturates to `-1` (not zero) as `x → -∞`, so the
+wrong-side gradient stays alive at bounded magnitude.
 
 **λ schedule.** Linear warmup from 0 to `λ_max=10` over the first
 `warmup_frac=0.3` of training, then constant. Lets Head B accumulate
@@ -108,15 +117,17 @@ sample).
 
 **Runtime safety clamp.** A poorly-trained checkpoint can drift past
 the scheme's admissible η range at extreme conflict. The Phase E
-selector clamps η to `scheme.admissible_range(...)` with a
-`RuntimeWarning` — the calibration check on the trained checkpoint
-should prevent this in practice, but the clamp avoids a crash mid-CI
-inversion when the user loads an undertrained smoke checkpoint.
+selector clamps η to the Normal-Normal closed-form admissible range
+for `power_law` and the explicit `eta_explore_box` for non-NN models,
+emitting a `RuntimeWarning` per call when a sample is clamped.
+Cumulative `_clamped_calls` and `_last_clamped_fraction` counters on
+the selector instance track how often the clamp fires.
 
 **Loss options.**
 
 1. `integrated_p` (default): `∫ p_dyn(θ; D, η_φ) dθ`. By Fubini =
    `∫_α |C_α(D)| dα` with uniform α weighting. α-marginalised.
+   Recorded in the checkpoint as `alpha_mode = "marginalised"`.
 2. `cd_variance`: `Var_{F_D}[θ]` where `F_D` is the Schweder–Hjort
    CD built from `½ |∂p_dyn/∂θ|`, Z-normalised. α-marginalised.
    Caveat: variance is around the CD's own mean, not θ_true; in
@@ -125,23 +136,30 @@ inversion when the user loads an undertrained smoke checkpoint.
 3. `static_width(α)`: sigmoid-relaxed `∫ σ_β(p_dyn − α) dθ` at fixed
    α. Default sharpness `β = 200` (β=50 has +110% bias at α=0.05).
    α-conditioned: trained MLP valid only at the α it was trained for.
+   Recorded in the checkpoint as `alpha_mode = "fixed"`.
+
+`alpha_mode` is the explicit gate consulted by
+`LearnedDynamicEtaSelector._check_alpha` at inference time (audit
+P0-16); the previous "alpha is None ⇒ marginalised" overload is
+preserved as a legacy fallback that emits a UserWarning.
 
 ## Derivation
 
-**Calibration is automatic.** For any `η_φ : (|Δ|, w) → ℝ` that
-depends on θ only through `|Δ_θ| = (1-w)|μ₀-θ|/σ` (and `w`), not on
-`D`, the dynamic procedure achieves nominal 1-α coverage by
-construction.
+**Calibration is automatic.** For any `η_φ : θ → ℝ` that depends on
+θ only (and on the *model* and *prior*, both fixed across the
+training distribution), not on `D`, the dynamic procedure achieves
+nominal 1-α coverage by construction.
 
-Sketch: under `H0: θ = θ₀`, the trained `η_φ(|Δ_{θ₀}|; w)` is a
-*constant* with respect to `D` (it only depends on θ₀ and w, both of
-which are fixed under `H0`). The tilted-WALDO p-value at fixed η is
-`U[0, 1]` under `D ~ N(θ₀, σ²)` (the standard WALDO calibration
-property, inherited via the algebraic structure `Φ(b−a) + Φ(−a−b)`).
-Therefore `p_dyn(θ₀; D, η_φ)` is `U[0, 1]`, and the inverted CI hits
-nominal coverage. **Verified empirically** in the post-training
-calibration report: 5×5 (θ_true, w) × 3-α (0.05/0.10/0.20) grid,
-`n_reps=1000` per cell, mean coverage matches nominal within 1·MC_SE.
+Sketch: under `H0: θ = θ₀`, the trained `η_φ(θ₀)` is a *constant* with
+respect to `D` (it only depends on θ₀, which is fixed under `H0`). The
+tilted-WALDO p-value at fixed η is `U[0, 1]` under
+`D ~ N(θ₀, σ²)` (the standard WALDO calibration property, inherited
+via the algebraic structure `Φ(b−a) + Φ(−a−b)`). Therefore
+`p_dyn(θ₀; D, η_φ)` is `U[0, 1]`, and the inverted CI hits nominal
+coverage. **Verified empirically** in the post-training calibration
+report: 5×3 (θ_true × α∈{0.05, 0.10, 0.20}) grid, `n_reps≥300`,
+mean coverage matches nominal within 3·MC_SE
+(`tests/regression/test_learned_eta_calibration.py`).
 
 **Layer-cake identity for `integrated_p`.** For `p ∈ [0, 1]`,
 
@@ -153,34 +171,41 @@ So minimising `∫ p_dyn dθ` is equivalent to minimising the CI width
 integrated uniformly over all α — "all CIs as small as possible".
 α-sampling at training time is unnecessary.
 
-**Differentiability.** All ingredients are end-to-end differentiable:
-- Tilted p-value: `Φ(b−a) + Φ(−a−b)` with `Φ(x) = ½(1+erf(x/√2))`.
-- Per-sample θ-grid: `D ± search_mult·σ`, `linspace`-built.
-- Trapezoidal integration: `torch.trapezoid`.
-- η inverse and architecture: smooth.
+**Differentiability.** All ingredients are end-to-end differentiable
+through JAX autograd:
+- Tilted p-value: `Φ(b−a) + Φ(−a−b)` with `Φ(x) = ½(1+erf(x/√2))`
+  (`pvalue_jax.power_law_tilted_pvalue_jax` for power_law,
+  `ot_tilted_pvalue_jax` for OT).
+- Per-sample θ-grid: `D ± search_mult·σ`, `jnp.linspace`-built.
+- Trapezoidal integration: `jnp.trapezoid`.
+- η inverse and architecture: smooth (GELU activation throughout).
 
-No α-crossings, no `argmax`, no `brentq` inside the loss. `gradcheck`
-verifies in `tests/properties/test_loss_diff.py`.
+No α-crossings, no `argmax`, no `brentq` inside the loss. Verified by
+finite-difference gradient agreement in
+`tests/properties/test_loss_diff.py`.
+
+**Surrogate-vs-Theorem-8 bias.** The training uses the *generic
+grid* surrogate `generic_grid_tilted_pvalue` for non-Normal-Normal
+schemes; on Normal-Normal it routes to the closed-form
+`power_law_tilted_pvalue_jax` which agrees with Theorem 8 byte-equal.
+The grid surrogate has a deliberate documented bias (≤ 0.20 on the
+p-value at b=0; argmin-η drift ≤ 1.5 at |Δ|≥1.5) pinned by
+`tests/regression/test_grid_surrogate_vs_theorem8.py`.
 
 ## Predicted behavior
 
 - **η(θ) curve is smooth** by architectural construction (GELU MLP,
   no kinks). Approximate symmetry about `μ₀` is empirical, not
   enforced — for symmetric Normal-Normal training distributions it
-  emerges from the training objective. The selector averages the
-  two θ-branches when looking up η at a given `|Δ|` (see
-  `LearnedDynamicEtaSelector.select_grid` Phase E branch) so the
-  contract `η(|Δ|)` is exactly symmetric at inference regardless.
+  emerges from the training objective.
 - **Calibration at nominal level** at every (θ_true, α) cell. The
   per-checkpoint `final_eta_pred_valid_rate` summarises in-sample
   validity; the empirical L3 calibration regression
   (`tests/regression/test_learned_eta_calibration.py`) MC-checks
-  coverage at the trained `w`.
+  coverage at the trained `w` across θ ∈ [-4, 4] and
+  α ∈ {0.05, 0.10, 0.20}.
 - **Width strictly improves on `NumericalEtaSelector`** in the
-  conflict band. v0_smoke headline at w=0.5 (committed):
-  power_law[learned] = 3.71 / 3.80 at θ_true ∈ {3, 4}, vs
-  power_law[numerical] = 4.53 / 5.23. v1 production checkpoints
-  (longer training) expected to tighten further.
+  conflict band; see [headline numbers](#empirical-headline-numbers).
 - **Width approaches Wald (3.92)** at high |Δ|, matching the
   asymptotic Wald limit of WALDO.
 - **CD shape**: smooth, unimodal across the conflict band. The Dyn-
@@ -197,72 +222,79 @@ verifies in `tests/properties/test_loss_diff.py`.
   identifiers (`name`, `param_dim`) which are `ClassVar` so an
   instance cannot lie about its identity past this check.
 
-  **`select` API contract (Phase 1c).** `LearnedDynamicEtaSelector.select`
-  and `select_grid` now require explicit `model_fingerprint=` and
+  **`select` API contract.** `LearnedDynamicEtaSelector.select` and
+  `select_grid` require explicit `model_fingerprint=` and
   `prior_fingerprint=` kwargs at every call site; bare
-  `select(ctx, scheme, statistic=...)` raises `ValueError` rather than
+  `select(scheme, statistic=...)` raises `ValueError` rather than
   falling back to the w-only derived check (which cannot distinguish
   two `(σ, σ₀)` pairs giving the same `w`). All in-framework callers
-  (`tilting/power_law.py`, `tilting/ot.py`, `experiments/smoothness.py`)
-  pass `model.fingerprint()` / `prior.fingerprint()` from the inference
-  call site; third-party callers must do the same. This contract change
-  is necessary to make the cross-experiment refusal strict — the
-  derived-w fallback could quietly pass a wrong-experiment checkpoint
-  whenever the trained and inference σ/σ₀ pairs happened to share the
-  same `w`.
-- **Validity vs distribution properness — known gap.** The
-  per-sample validity criterion (`tilted_pvalue` returns a finite
-  scalar in `[0, 1]`) checks the p-value output, not the underlying
-  tilted distribution being a proper CDF. There is a deliberate
-  numpy/torch split in the registered schemes:
+  pass `model.fingerprint()` / `prior.fingerprint()` from the
+  inference call site; third-party callers must do the same.
+
+- **Validity vs distribution properness — known gap.** The per-sample
+  validity criterion (`tilted_pvalue` returns a finite scalar in
+  `[0, 1]`) checks the p-value output, not the underlying tilted
+  distribution being a proper CDF. There is a deliberate numpy/JAX
+  split in the registered schemes:
   - **Numpy** `tilted_pvalue` (used by the validity helper to label
     Head B's BCE) **raises** `TiltingDomainError` for invalid η —
-    `power_law` when `1 − η(1−w) ≤ 0`, `ot` when `η ∉ [0, 1]`.
+    `power_law` when `1 − η(1−w) ≤ 0`, `ot` when
+    `eta ≤ -w/(1-w)` (post-audit P0-4: OT no longer hard-clamps to
+    `[0, 1]`; the closed-form pvalue is admissible whenever
+    `s_t = (w + η(1-w))·σ > 0`).
     `compute_pvalues_per_sample` catches and writes NaN; the
     validity mask drops the slot.
-  - **Torch** ports (used by Head A's width loss for autograd)
-    instead `clamp(denom or s_t, min=1e-6)` so the loss surface
-    stays smooth and gradient-bearing past the boundary. Without
-    this, an EtaNet initialised outside the admissible region
-    produces 100 % NaN loss and never recovers (verified for OT
-    during training). The validity helper independently labels
-    Head B correctly because it uses the numpy path.
+  - **JAX** ports (used by Head A's width loss for autograd) instead
+    `clamp(denom or s_t, min=1e-6)` so the loss surface stays smooth
+    and gradient-bearing past the boundary. Without this, an EtaNet
+    initialised outside the admissible region produces 100 % NaN
+    loss and never recovers (verified for OT during training). The
+    validity helper independently labels Head B correctly because it
+    uses the numpy path.
+
   A future scheme whose closed-form numpy `tilted_pvalue` returns
   a finite-in-[0,1] value despite an improper tilted distribution
   could pass validity while encoding a bogus η range. Mitigation:
   every newly-registered scheme must ship a per-scheme audit
   test (`tests/regression/test_scheme_improper_returns_nan.py`)
   asserting `compute_pvalues_per_sample` returns NaN across the
-  declared `admissible_range` complement; the end-to-end
-  calibration regression on a trained checkpoint catches any miss
-  via empirical coverage drift.
+  declared admissible-range complement; the end-to-end calibration
+  regression on a trained checkpoint catches any miss via empirical
+  coverage drift.
+
 - **Undertrained checkpoint at conflict.** The boundary penalty
   pushes η_pred into Head B's predicted-valid region during
   training, but a smoke run (few epochs, small LHS) can leave η
   drifting past the scheme's admissible boundary at extreme
-  conflict. The runtime selector clamps to
-  `scheme.admissible_range(...)` with a `RuntimeWarning`; if you
-  see this fire on a production checkpoint, train longer or widen
-  `eta_explore_box`.
+  conflict. The runtime selector clamps with a `RuntimeWarning`; if
+  you see this fire on a production checkpoint, train longer or
+  widen `eta_explore_box`. The OT v0_smoke is documented as
+  undertrained (Head B accuracy ~0.67 vs power_law's ~0.97); v1
+  retraining is recommended for production-grade OT.
+
 - **Class-degenerate Head B BCE.** If `eta_explore_box` doesn't
   probe the invalid region (e.g. `(0, 0.5)` for `power_law` at
   `w=0.5`, where everything is valid), Head B's BCE collapses to
   predicting `True` always and the boundary signal goes to zero.
   The training loop emits a `RuntimeWarning` per epoch when the
   per-batch aux validity rate is outside `(0.05, 0.95)`.
+
 - **Degenerate `w`.** Priors so tight or so wide that
   `w := σ₀²/(σ²+σ₀²)` is outside `(0.001, 0.999)` are rejected at
-  training time (delta priors and improper priors both put the
-  WALDO admissible range into a degenerate regime that the existing
-  torch port doesn't handle).
+  training time (`extract_normal_normal_params` `_W_EPS = 1e-3` in
+  `_losses_compose.py`). Delta priors and improper priors both put
+  the WALDO admissible range into a degenerate regime.
+
 - **CD-variance bias.** `Var_{F_D}[θ]` is the CD's spread around its
   own mean, not around `θ_true`. In conflict regimes where the CD
   median drifts toward μ₀, this can incentivise sharpness around a
   biased estimate. Use `cd_variance` only when centring is known to
   be benign.
+
 - **Static-width sharpness.** Default `β = 200` keeps the relaxation
   bias < 1% at α ∈ [0.05, 0.5]; for very small α (≤ 0.01) raise to
   `β ≥ 500` or expect bias.
+
 - **Non-Gaussian likelihoods.** Phase 4 generalised the JAX
   tilted-pvalue registry from `dict[str, ...]` to `dict[tuple[
   scheme_name, model_kind], ...]`. Closed-form NN paths register
@@ -273,43 +305,46 @@ verifies in `tests/properties/test_loss_diff.py`.
   with finite `model.support()` and `prior.logpdf` defined on the
   grid. `ExperimentConfig` carries `n_data: int = 1` so non-NN
   experiments (e.g. Bernoulli + Beta(2, 2)) can sample the
-  multi-observation likelihood per training θ. The
-  `LearnedDynamicEtaSelector` byte-equal fingerprint compare is
-  unchanged; the historical NN-only model/prior reject is gone, and
-  `_maybe_clamp_eta` now falls back to the checkpoint's
-  `eta_explore_box` when `w_eff` is undefined (non-NN). Trained
-  non-NN checkpoints round-trip through the same selector.
+  multi-observation likelihood per training θ. Trained non-NN
+  checkpoints round-trip through the same selector. The Bernoulli
+  smoke fixture
+  `artifacts/learned_eta_canonical_bernoulli_powerlaw_v0_smoke.eqx`
+  is committed; its YAML is `experiments/canonical_bernoulli_powerlaw.yaml`.
 
 ## Invariants
 
 (Tested in `tests/properties/test_dual_head_invariants.py`,
 `tests/properties/test_loss_diff.py`,
 `tests/properties/test_learned_eta_invariants.py`,
-`tests/regression/test_torch_pvalue_matches_numpy.py`,
-`tests/regression/test_torch_cd_matches_numpy.py`,
+`tests/properties/test_eta_net_jax_invariants.py`,
+`tests/regression/test_jax_pvalue_matches_numpy.py`,
+`tests/regression/test_jax_cd_matches_numpy.py`,
+`tests/regression/test_jax_determinism.py`,
 `tests/regression/test_learned_eta_calibration.py`,
 `tests/regression/test_learned_eta_narrowness.py`,
 `tests/regression/test_learned_eta_selector_smoke.py`,
-`tests/regression/test_scheme_improper_returns_nan.py`.)
+`tests/regression/test_alpha_mode_gating.py`,
+`tests/regression/test_scheme_improper_returns_nan.py`,
+`tests/regression/test_checkpoint_metadata_compat.py`.)
 
 - `EtaNet(theta_dim ≥ 1)` and `ValidityNet(theta_dim ≥ 1)` accept
   scalar and vector θ; vector future-proofs the framework even
   though scalar is the only case today.
-- `boundary_penalty_from_validity` passes `torch.autograd.gradcheck`
-  in the linear regime and at logits `±30` (well outside any
-  previous clamp); wrong-side gradient saturates at `-1`,
-  right-side at `0`.
+- `boundary_penalty_from_validity` is finite-difference-gradient-
+  agreeing in the linear regime and at logits `±30`; wrong-side
+  gradient saturates at `-1`, right-side at `0`.
 - `EtaNet` parameters receive gradient from Head A's loss;
-  `ValidityNet` parameters do **not** (`functional_call` with
-  detached params leaves their `.grad` `is None`).
+  `ValidityNet` parameters do **not** (Equinox `filter` partition +
+  `jax.lax.stop_gradient` on Head B's params during Head A's
+  gradient pass leaves Head B unchanged).
 - Symmetrically, `EtaNet` parameters receive **no** gradient from
-  Head B's BCE (η_pred is detached at the boundary between the
-  two heads).
+  Head B's BCE (η_pred is `stop_gradient`-detached at the boundary
+  between the two heads).
 - `is_pair_valid` is per-scalar (not per-grid) and admits values
   in `[-1e-9, 1+1e-9]` to absorb FP rounding. NaN / ±Inf / values
   outside that slack are invalid.
 - `OTTilting.tilted_pvalue` (numpy) raises `TiltingDomainError`
-  for `eta ∉ [0, 1]`; `ot_tilted_pvalue_torch` clamps `s_t` to
+  for `eta ≤ -w/(1-w)`; `ot_tilted_pvalue_jax` clamps `s_t` to
   keep the loss surface differentiable past the boundary instead
   (the validity helper uses the numpy path so labels are correct
   regardless). Same dual mechanism for `power_law`. Audited per-
@@ -319,27 +354,33 @@ verifies in `tests/properties/test_loss_diff.py`.
   framework, `a == b ⟺ a.fingerprint() == b.fingerprint()`.
 - `ExperimentConfig.from_dict` rejects unknown top-level keys
   (catches YAML typos like `n_gird`); `_build_*_from_dict`
-  rejects per-type unknown kwargs (catches malicious or confused
-  YAML attempting to override `name` / `param_dim`).
+  rejects per-type unknown kwargs.
 - `lhs_1d` is true 1D Latin Hypercube — every stratum receives
   exactly one sample.
 - The width loss accepts a `(B,)` D batch and returns a scalar
   mean (replaces the high-variance single-D per-step estimator).
 - The training loop's per-step `aux_valid_rate` outside
   `(0.05, 0.95)` triggers a `RuntimeWarning` per epoch.
-- Phase E checkpoint v2 has required keys
-  `(checkpoint_format_version, architecture,
-   eta_architecture_kwargs, validity_architecture_kwargs,
-   eta_state_dict, validity_state_dict, experiment_config)`.
-  Missing keys raise.
-- Checkpoint write is atomic (`torch.save → tmp → os.replace`).
+- Phase E checkpoint v3 (Equinox `.eqx`) has required metadata keys
+  including `(checkpoint_format_version=3, architecture,
+  arch_sha, eta_architecture_kwargs, validity_architecture_kwargs,
+  experiment_config, loss_kind, alpha, alpha_mode,
+  equinox_version, jax_version)`. Missing required keys raise.
+- `alpha_mode in {"marginalised", "fixed"}` is the inference-time
+  gate consulted by `_check_alpha`; the previous `alpha is None`
+  overload is preserved as a legacy fallback with a `UserWarning`.
+- Checkpoint write is atomic (Equinox `tree_serialise_leaves` →
+  tmp file → `os.replace`).
 - Selector compares `(scheme.name, model.fingerprint(),
-   prior.fingerprint())` to checkpoint metadata; mismatch raises
-  `MissingArtifactError`.
+  prior.fingerprint())` to checkpoint metadata; mismatch raises
+  `MissingArtifactError`. v2 (legacy torch) checkpoints are
+  accepted by the metadata loader but produce a clear error if the
+  Equinox loader is asked to reconstruct them — they are
+  read-metadata-only.
 
 ## Literature
 
-### Foundational (information geometry of WALDO + monotonic NNs)
+### Foundational (information geometry of WALDO + neural surrogate losses)
 
 - Bissiri, P. G., Holmes, C. C., Walker, S. G. "A general framework
   for updating belief distributions." *J. Royal Stat. Soc. B* 78
@@ -347,12 +388,12 @@ verifies in `tests/properties/test_loss_diff.py`.
   information-geometric path.
 - Daniels, H. A., Velikova, M. "Monotone and partially monotone
   neural networks." *IEEE Trans. Neural Netw.* 21 (2010): 906–917.
-  — Architectural enforcement of partial monotonicity via
-  positive-weight pathways.
+  — Architectural enforcement of partial monotonicity (rejected
+  here in favour of validity-driven smoothness; cited for contrast).
 - You, S., Ding, D., Canini, K., Pfeifer, J., Gupta, M. "Deep lattice
   networks and partial monotonic functions." *NeurIPS* 30 (2017). —
   Modern partial-monotonicity architectures; influence on the
-  legacy MLP design.
+  legacy Phase D MLP design that the dual-head approach replaces.
 
 ### Closely related
 
@@ -370,67 +411,109 @@ verifies in `tests/properties/test_loss_diff.py`.
 - `NumericalEtaSelector` (in-framework): minimises static-per-D
   width pointwise. The kinky η*(|Δ|) curve it produces is the
   motivating failure mode; this method's whole point is to fix it.
+  Bears `is_post_selection = True` flag (audit P0-7) to surface
+  the calibration-gap explicitly.
 
 ## Links
 
 - Selector: `src/frasian/tilting/eta_selectors.py:LearnedDynamicEtaSelector`
 - Phase E artifact: `src/frasian/learned/eta_artifact.py:EtaArtifact`
 - Architecture: `src/frasian/learned/training/architecture.py`
-  (`EtaNet`, `ValidityNet`)
+  (`EtaNet`, `ValidityNet` — Equinox modules)
 - Validity helpers: `src/frasian/learned/training/validity.py`
-  (`is_pair_valid`, `validity_mask`, `compute_pvalues_per_sample`)
+  (`is_pair_valid`, `validity_mask`, `compute_pvalues_per_sample`,
+  `_admissibility_mask`)
 - Losses: `src/frasian/learned/training/losses.py`
-  (`boundary_penalty_from_validity` + width losses)
+  (`boundary_penalty_from_validity` + width losses);
+  `_losses_compose.py` (loss-kind dispatch).
 - Experiment config: `src/frasian/learned/training/sampling.py`
   (`ExperimentConfig`, `ThetaDistribution`,
   `UniformThetaDistribution`, `lhs_1d`)
-- Torch ports: `src/frasian/learned/training/pvalue_torch.py`,
-              `src/frasian/learned/training/cd_torch.py`
+- JAX kernels: `src/frasian/learned/training/pvalue_jax.py`
+  (`power_law_tilted_pvalue_jax`, `ot_tilted_pvalue_jax`,
+  `generic_grid_tilted_pvalue`),
+  `src/frasian/learned/training/cd_jax.py` (CD density via
+  `½|∂p/∂θ|`).
 - Training pipeline: `src/frasian/learned/training/train.py:fit_eta_artifact`
-- CLI: `scripts/train_learned_eta.py` (`--config <yaml>`)
+  (orchestrator); `_train_loop.py` (Optax step loop);
+  `_setup.py` (`resolve_device`, `validate_loss_kind`,
+  `enable_determinism`); `_checkpoint.py` (Equinox `.eqx` write).
+- CLI: `scripts/train_learned_eta.py` (`--config <yaml>`;
+  `--force` required to overwrite, audit P0-15).
+- Reproduction: `scripts/regen_headline.py`
+  (requires `PYTHONHASHSEED=0`, audit P0-12).
 - Experiment configs: `experiments/canonical_normal_normal_powerlaw.yaml`,
-                      `experiments/canonical_normal_normal_ot.yaml`
+  `experiments/canonical_normal_normal_ot.yaml`,
+  `experiments/canonical_bernoulli_powerlaw.yaml`.
 - Property tests: `tests/properties/test_dual_head_invariants.py`,
-                  `tests/properties/test_learned_eta_invariants.py`
-- Regression tests: `tests/regression/test_torch_pvalue_matches_numpy.py`,
-                    `tests/regression/test_torch_cd_matches_numpy.py`,
-                    `tests/regression/test_learned_eta_calibration.py`,
-                    `tests/regression/test_learned_eta_narrowness.py`,
-                    `tests/regression/test_learned_eta_selector_smoke.py`,
-                    `tests/regression/test_scheme_improper_returns_nan.py`
+  `tests/properties/test_learned_eta_invariants.py`,
+  `tests/properties/test_eta_net_jax_invariants.py`,
+  `tests/properties/test_loss_diff.py`.
+- Regression tests: `tests/regression/test_jax_pvalue_matches_numpy.py`,
+  `tests/regression/test_jax_cd_matches_numpy.py`,
+  `tests/regression/test_jax_determinism.py`,
+  `tests/regression/test_learned_eta_calibration.py`,
+  `tests/regression/test_learned_eta_narrowness.py`,
+  `tests/regression/test_learned_eta_selector_smoke.py`,
+  `tests/regression/test_alpha_mode_gating.py`,
+  `tests/regression/test_scheme_improper_returns_nan.py`,
+  `tests/regression/test_checkpoint_metadata_compat.py`.
 - Illustration: `src/frasian/experiments/illustrations/learned_eta_demo.py`
+- Committed v0_smoke artifacts:
+  `artifacts/learned_eta_canonical_normal_normal_powerlaw_v0_smoke.eqx`,
+  `artifacts/learned_eta_canonical_normal_normal_ot_v0_smoke.eqx`,
+  `artifacts/learned_eta_canonical_bernoulli_powerlaw_v0_smoke.eqx`.
 
 ## Empirical headline numbers
 
 End-to-end CI width on the canonical Normal-Normal sandbox (σ=1,
 μ₀=0, σ₀=1 → w=0.5, n_reps=200, α=0.05). Phase E v0_smoke
-checkpoint:
+checkpoint, post-Equinox-port:
 
 | θ_true | Wald | bare WALDO | numerical Dyn | power_law[learned] |
 |---|---|---|---|---|
-| 0  | 3.92 | 3.32 | 3.35     | 3.67 |
-| 1  | 3.92 | 3.44 | 3.50     | 3.67 |
-| 2  | 3.92 | 3.75 | 3.92     | 3.67 |
-| 3  | 3.92 | 4.24 | **4.53** | **3.71** |
-| 4  | 3.92 | 4.85 | **5.23** | **3.80** |
+| 0  | 3.92 | 3.33 | 3.36     | 3.63 |
+| 1  | 3.92 | 3.43 | 3.49     | 3.64 |
+| 2  | 3.92 | 3.75 | 3.91     | 3.68 |
+| 3  | 3.92 | 4.23 | **4.54** | **3.75** |
+| 4  | 3.92 | 4.78 | **5.24** | **3.82** |
 
 Single-seed v0_smoke checkpoint; standard error ≈ 0.05 across
 α=0.05 narrowness MC repeats. v1 production retraining will
 produce variability within ~1× this SE. To regenerate, run
-`python -m scripts.regen_headline` (requires torch).
 
-These numbers were trained with `antithetic=False` (the
-pre-Phase-4 default). The current default is `antithetic=True`
-(only effective for `loss_kind='static_width'`); re-trained
-checkpoints will produce different EtaNet weights — expected
-within MC noise of these values, but unverified.
+```
+PYTHONHASHSEED=0 python -m scripts.regen_headline
+```
+
+(Requires JAX + Equinox; audit P0-12 made the `PYTHONHASHSEED`
+requirement explicit — without it the narrowness test seed derivation
+drifts across Python processes.)
+
+These numbers were trained with `antithetic=False` (the pre-Phase-4
+default). The current default is `antithetic=True` (only effective
+for `loss_kind='static_width'`); re-trained checkpoints will produce
+different EtaNet weights — expected within MC noise of these values,
+but unverified.
+
+These numbers are **not bit-equal** to the pre-Phase-F torch numbers.
+JAX's `random.PRNGKey` differs from torch's RNG even at the same
+nominal seed, so retrained weights drift within ~1·MC SE of the
+torch-era numbers. The qualitative pattern (calibrated AND ≤ Wald
+across θ, narrow at conflict) is preserved.
+
+The headline table is for `power_law` only. `ot[learned]` is wired
+into `default_tiltings()` and runs through the coverage/width
+experiments, but the OT smoke checkpoint is undertrained relative
+to power_law (Head B accuracy ~0.67 on the v0_smoke); train a v1
+checkpoint via `scripts/train_learned_eta` for production-grade OT.
 
 Headline:
-- **Conflict band (|θ|≥3)**: learned is ~20–30 % narrower than the
+- **Conflict band (|θ|≥3)**: learned is ~17–28 % narrower than the
   `numerical` Dynamic selector *and* narrower than bare WALDO.
-- **Low conflict (|θ|≤1)**: learned is ~10 % wider than the
+- **Low conflict (|θ|≤1)**: learned is ~8 % wider than the
   `numerical` Dynamic selector. (Both are calibrated by
-  construction — η depends only on θ; the static `NumericalEta`-
+  construction — η depends only on θ; the static `NumericalEta-`
   `Selector` is the one that undercovers via post-selection
   inference. The learned cell trades width back at low conflict
   in exchange for the smooth η(θ) curve that prevents the legacy
@@ -439,7 +522,10 @@ Headline:
   L3 calibration regression at the trained w (α=0.05).
 
 Production v1 checkpoints (longer training, larger LHS) are
-expected to tighten the low-conflict gap further.
+expected to tighten the low-conflict gap further. Audit P0-13
+added `test_learned_strict_narrowness_at_v1` (nightly) which fires
+only when a v1 checkpoint is on disk and asserts strict
+narrowness with rel_tol=0 + n_reps=500.
 
 ## Status notes
 
@@ -447,7 +533,10 @@ The default selector in `default_tiltings()` is gated by the env var
 `FRASIAN_DEFAULT_DYNAMIC_ETA`:
 - `numerical` (default for backwards compat): `DynamicNumericalEtaSelector`.
 - `learned`: `LearnedDynamicEtaSelector` reading the trained
-  `EtaArtifact` from `artifacts/learned_eta_<config_name>_v0_smoke.pt`.
+  `EtaArtifact` from
+  `artifacts/learned_eta_<config_name>_v0_smoke.eqx` (or `_v1.eqx`
+  if available; resolution order in
+  `_default_cells._make_learned_selector` prefers v1 → v0_smoke).
 
 To switch globally:
 ```
@@ -459,16 +548,30 @@ python -m scripts.run --fast experiment=width
 The smoothness experiment uses its own internal selector
 (`NumericalEtaSelector`) and is not affected by this env var.
 
-v1 production checkpoints aren't committed (~each ~50 KB, easy to
+v1 production checkpoints aren't committed (~each ~75 KB, easy to
 re-train); the v0_smoke shipped here is sufficient for L2/L3/L4
-gates. Run `scripts.train_learned_eta --config <experiment.yaml>
---out artifacts/learned_eta_<config_name>_v1.pt --version v1` for
-a longer training budget; the resolution order in
-`_default_cells._make_learned_selector` prefers v1 → v0_smoke.
+gates. Run
+
+```
+python -m scripts.train_learned_eta \
+    --config experiments/<config>.yaml \
+    --out artifacts/learned_eta_<config_name>_v1.eqx \
+    --version v1
+```
+
+for a longer training budget. Audit P0-15 added the refuse-on-exists
+default; pass `--force` to overwrite an existing artifact.
 
 Phase E architectural change vs Phase D: `EtaNet` is unbounded and
-non-monotonic (raw GELU MLP on θ); validity is enforced by
-training (boundary penalty + Head B), not architecture. The Phase
-D `MonotonicEtaNet` (legacy `(w, |Δ'|)` input + bounded sigmoid +
+non-monotonic (raw GELU MLP on θ); validity is enforced by training
+(boundary penalty + Head B), not architecture. The Phase D
+`MonotonicEtaNet` (legacy `(w, |Δ'|)` input + bounded sigmoid +
 positive-weight ReLU pathway) is removed; the framework is
 per-experiment from here on.
+
+Phase F architectural change vs the original Phase E: torch →
+JAX/Equinox/Optax. The numerical kernels were ported byte-equal
+where possible (closed-form Theorem 6/8 paths agree at atol 1e-10),
+but trained-weight bit-equality was not preserved across the port
+because JAX's PRNG primitive differs from torch's. Re-trained v0_smoke
+checkpoints drift within ~1·MC SE of the torch-era headline numbers.
