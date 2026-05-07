@@ -1,4 +1,4 @@
-"""1D Wasserstein-2 geodesic between two arbitrary Distributions.
+"""1D Wasserstein-2 geodesic / displacement line between two Distributions.
 
 The W2 geodesic between two 1D distributions p and q at parameter
 `t in [0, 1]` is the distribution whose quantile function is the
@@ -8,11 +8,18 @@ linear interpolation of the endpoint quantiles:
 
 Equivalently: the law of the random variable
 `(1 - t) * F_p^{-1}(U) + t * F_q^{-1}(U)` for `U ~ Uniform[0, 1]`. The
-geodesic is well-defined for any two endpoints exposing `quantile`,
-which is in the `Distribution` protocol — so this is the **general**
-1D OT path. The Gaussian-endpoint case collapses to the closed-form
-linear interpolation in `(mu, sigma)` that `OTTilting.tilt` uses as a
-fast path.
+geodesic segment is well-defined for any two endpoints exposing
+`quantile`. Extended to any finite `t in R`, the same formula traces
+the **W2 displacement line** through p (at t=0) and q (at t=1); the
+result is a valid distribution iff `(1-t) F_p^{-1}(u) + t F_q^{-1}(u)`
+remains non-decreasing in u, which always holds for `t in [0, 1]` and
+may fail for `t outside [0, 1]` depending on the endpoints. Callers
+that extrapolate are responsible for the result; downstream methods
+(`pdf`, `var`) detect failure via the resulting density / variance.
+
+The Gaussian-endpoint case collapses to the closed-form linear
+interpolation in `(mu, sigma)` that `OTTilting.tilt` uses as a fast
+path; sigma_t > 0 is the explicit admissibility condition there.
 
 JAX seam (`docs/jax_style.md`):
 - `quantile`, `mean`, `var`, `sample` are bulk kernels that return
@@ -60,8 +67,8 @@ class QuantileMixturePath:
     t: float
 
     def __post_init__(self) -> None:
-        if not (0.0 <= float(self.t) <= 1.0):
-            raise ValueError(f"t must lie in [0, 1], got {self.t!r}.")
+        if not np.isfinite(float(self.t)):
+            raise ValueError(f"t must be finite, got {self.t!r}.")
 
     # ----- Closed-form pieces -----
 

@@ -101,6 +101,9 @@ class FixedEtaSelector:
     eta: float = 0.0
     name: ClassVar[str] = "fixed"
     is_dynamic: bool = False
+    # Post-selection inference flag: True iff `select(data=...)` reads D
+    # to pick eta. FixedEtaSelector returns a constant; not post-selection.
+    is_post_selection: ClassVar[bool] = False
 
     def select(
         self,
@@ -165,6 +168,12 @@ class NumericalEtaSelector:
     mu0: float = 0.0
     eta_min_buffer: float = 1e-3
     is_dynamic: bool = False
+    # NumericalEtaSelector reads `D = data.mean()` inside `select(...)`
+    # and minimises width / integrated-p AT that D — η = η(D), not η(θ).
+    # That's post-selection inference: the resulting CI undercovers by
+    # ~2 points at α=0.05 (see test_post_selection_coverage.py).
+    # Calibrated callers should use DynamicNumericalEtaSelector instead.
+    is_post_selection: ClassVar[bool] = True
 
     # New: objective + integrated_p hyperparameters.
     objective: str = "static_width"  # "static_width" | "integrated_p"
@@ -247,8 +256,11 @@ class NumericalEtaSelector:
         )
 
     def _select_inner(self, scheme, *, D, model, prior, alpha, statistic):
+        # The bracket is the closed-form Normal-Normal `power_law`
+        # admissible range (also valid for `ot`'s W2 displacement line);
+        # the optimizer's objective returns +inf on TiltingDomainError so
+        # over-broad brackets are self-correcting at the optimum.
         eta_lo, eta_hi = self._eta_bounds(model, prior)
-        eta_hi = min(eta_hi, 1.0 - self.eta_min_buffer)
 
         if self.objective == "static_width":
             objective_fn = self._make_static_width_objective(
@@ -407,6 +419,11 @@ class DynamicNumericalEtaSelector:
     search_mult: float = 8.0
     cache_bin_width: float = 0.5
     is_dynamic: bool = True
+    # `select_grid(theta_grid, ...)` is θ-only — η at each θ depends on
+    # θ, not D — so the dynamic CI is calibrated. The single-context
+    # `select(data=[D], ...)` shim falls back to NumericalEtaSelector at
+    # θ=D and inherits its post-selection bias; prefer `select_grid`.
+    is_post_selection: ClassVar[bool] = False
     # Mutable cache; `compare=False, repr=False` keeps the dataclass's
     # auto-generated `__eq__` / `__repr__` independent of the cache state.
     _cache: dict = field(default_factory=dict, compare=False, repr=False)
@@ -547,6 +564,9 @@ class LearnedDynamicEtaSelector:
     sigma: float = 1.0
     mu0: float = 0.0
     is_dynamic: bool = True
+    # Per-θ learned selector — η = MLP(θ), no D-conditioning. Calibrated
+    # by construction (see learned_eta.md / dual-head training).
+    is_post_selection: ClassVar[bool] = False
     _loaded: bool = field(default=False, init=False, repr=False, compare=False)
     # Diagnostic counters tracking how often the runtime safety clamp
     # has fired (skeptic E pre-PR review #2). Cumulative across calls

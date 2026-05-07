@@ -1,15 +1,20 @@
-"""STUB: convex mixture between prior and posterior.
+"""STUB: m-geodesic — convex mixture between posterior and likelihood.
 
-The simplest possible interpolation: q(theta; eta) = (1 - eta) * pi(theta)
-+ eta * post(theta). Bounded everywhere, no admissible-range pathology.
-For Gaussian inputs the mixture is *not* Gaussian, so closed-form CIs are
-not available — the cross-product cell with WaldoStatistic / WaldStatistic
-needs a numerical CI inversion based on the mixture cdf.
+The m-geodesic of information geometry: linear interpolation in density
+space between the posterior and the likelihood-as-Gaussian,
 
-Included as a baseline for the smoothness diagnostic: a mixture path is
-trivially smooth in (mean, var) but produces multi-modal posteriors
-when prior and posterior disagree, which may break test-statistic
-assumptions. Whether it is *useful* is what we are measuring.
+    q(theta; eta) = (1 - eta) * post(theta) + eta * L(theta) / Z_L,
+    eta in [0, 1].
+
+Following the framework's uniform endpoint contract (matches `power_law`
+and `ot`): `eta=0` recovers the posterior (identity element) and `eta=1`
+recovers the likelihood-as-Gaussian. See `docs/methods/mixture.md`.
+
+For Gaussian inputs the mixture is *not* Gaussian — it is a two-component
+Gaussian mixture, bimodal when prior and likelihood disagree strongly.
+Closed-form CIs are not available; the cross-product cell with WALDO
+needs numerical inversion of the mixture cdf, and may need HPD-set
+semantics when bimodal.
 """
 
 from __future__ import annotations
@@ -29,13 +34,17 @@ from .base import ParamSpec
 @register_tilting(name="mixture", brief="docs/methods/mixture.md", status="stub")
 @dataclass(frozen=True)
 class MixtureTilting:
-    """STUB. Convex mixture (1-eta)*prior + eta*posterior."""
+    """STUB. m-geodesic: q = (1 - eta) * posterior + eta * likelihood.
+
+    Endpoint convention matches the framework: `eta=0` is the identity
+    (recovers the posterior); `eta=1` recovers the likelihood-as-Gaussian.
+    """
 
     name: ClassVar[str] = "mixture"
     param_space: ParamSpec = ParamSpec(
-        eta_default=1.0,
-        eta_identity=1.0,  # eta=1 recovers posterior
-        description="STUB: eta in [0, 1]; 0=prior, 1=posterior.",
+        eta_default=0.0,
+        eta_identity=0.0,  # eta=0 recovers posterior
+        description="STUB: eta in [0, 1]; 0=posterior, 1=likelihood.",
     )
 
     def tilt(

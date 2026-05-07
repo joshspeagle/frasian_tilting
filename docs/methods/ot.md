@@ -27,7 +27,7 @@ truth: `tilting/power_law.py` lines ~91-94 (`eta_default=0.0`,
 |---------------|----------------------|----------------------------------|-------|
 | `identity`    | posterior            | (no other endpoint)              | No-op; the matrix's identity element. |
 | `power_law`   | posterior            | `eta=1` → Wald (likelihood-only) | e-geodesic; admissible η ∈ (-w/(1-w), 1/(1-w)) (open). |
-| `ot`          | posterior            | `eta=1` → likelihood-as-Gaussian | W2 geodesic; admissible η ∈ [0, 1] (closed). |
+| `ot`          | posterior            | `eta=1` → likelihood-as-Gaussian | W2 displacement line; the *segment* is [0,1]. Extrapolation along the line is admissible whenever the result is well-defined: Gaussian path requires σ_t > 0, closed-form pvalue requires η > -w/(1-w). |
 | `mixture`     | posterior            | `eta=1` → likelihood-as-Gaussian | m-geodesic, dual partner of `power_law`; planned. |
 | `fisher_rao`  | posterior            | `eta=1` → likelihood-as-Gaussian | Levi-Civita / Fisher-Rao geodesic; planned. |
 

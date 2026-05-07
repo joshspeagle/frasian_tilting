@@ -119,7 +119,17 @@ def _admissibility_mask(
         # moments, var_tilted ≈ 0).
         return finite
     if name == "ot":
-        return finite & (eta_arr >= 0.0) & (eta_arr <= 1.0)
+        # Audit P0-4: OT is no longer interval-clamped to [0, 1]. The
+        # closed-form WALDO p-value is parameterised by
+        # `s_t = (w + eta*(1-w)) * sigma`; admissibility is `s_t > 0`,
+        # i.e. `eta > -w/(1-w)`. There is no upper bound from s_t.
+        sigma = float(getattr(model, "sigma", float("nan")))
+        sigma0 = float(getattr(prior, "scale", float("nan")))
+        if not (np.isfinite(sigma) and np.isfinite(sigma0)):
+            return finite
+        w = sigma0**2 / (sigma**2 + sigma0**2)
+        eta_lower = -w / (1.0 - w)
+        return finite & (eta_arr > eta_lower)
     # TODO Phase 6: extend _admissibility_mask for mixture (η ∈ [0,1])
     # and fisher_rao (open half-plane).
     # Unknown scheme: don't pre-mask; let the per-element fallback handle it.
