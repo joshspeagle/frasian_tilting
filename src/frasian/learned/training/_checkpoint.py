@@ -204,6 +204,14 @@ def save_checkpoint(
     validity_kwargs = val_net.architecture_kwargs()
     sha = arch_spec_sha(eta_kwargs, validity_kwargs)
 
+    # Audit P0-16: alpha_mode disambiguates "marginalised by design"
+    # (integrated_p / cd_variance — alpha=None at training, valid for
+    # any inference α) from "fixed at training-time" (static_width —
+    # alpha=value, only valid for that specific α at inference). The
+    # legacy `alpha=None` overload conflated the two semantics; the
+    # new field makes the contract explicit and gates `_check_alpha`
+    # on it instead of `is None`.
+    alpha_mode = "fixed" if loss_kind == "static_width" else "marginalised"
     metadata: dict[str, Any] = {
         "checkpoint_format_version": CHECKPOINT_FORMAT_VERSION,
         "architecture": "EtaNet+ValidityNet",
@@ -215,6 +223,7 @@ def save_checkpoint(
         "experiment_config": config.to_dict(),
         "loss_kind": loss_kind,
         "alpha": alpha,
+        "alpha_mode": alpha_mode,
         "lambda_max": lambda_max,
         "lambda_warmup_frac": lambda_warmup_frac,
         "n_aux": n_aux,

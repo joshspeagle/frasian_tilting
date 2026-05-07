@@ -618,18 +618,62 @@ class LearnedDynamicEtaSelector:
                 f"{self.artifact.name} not loaded; " f"call .load() before _check_alpha()."
             )
         meta = self.artifact.metadata
-        # Phase E records `alpha` (None for marginalised losses, fixed
-        # value for static_width).
-        stored = meta.get("alpha")
-        if stored is None:
+        # Audit P0-16: gate on `alpha_mode` (added in Cluster E) NOT on
+        # `alpha is None`. Pre-fix: a checkpoint trained with
+        # loss_kind=static_width but with the alpha field accidentally
+        # stripped to None (e.g. via a metadata sanitiser) would pass
+        # `_check_alpha` silently. The new explicit `alpha_mode in
+        # {"marginalised", "fixed"}` field carries the intended
+        # contract; `is None` is no longer load-bearing.
+        alpha_mode = meta.get("alpha_mode")
+        if alpha_mode is None:
+            # Legacy checkpoints (pre-Cluster E) lack alpha_mode; fall
+            # back to the old `alpha is None → marginalised` heuristic
+            # for backward compatibility, but warn so the user knows to
+            # re-train at their convenience.
+            stored = meta.get("alpha")
+            if stored is None:
+                import warnings as _w
+                _w.warn(
+                    f"{self.artifact.name}: legacy checkpoint without "
+                    f"`alpha_mode`; falling back to alpha-is-None heuristic. "
+                    f"Re-train via `python -m scripts.train_learned_eta` to "
+                    f"get the explicit alpha_mode field.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                return
+            trained_alpha = float(stored)
+            if abs(alpha - trained_alpha) > 1e-9:
+                raise MissingArtifactError(
+                    f"{self.artifact.name} trained at alpha={trained_alpha}, "
+                    f"but inference alpha={alpha}; retrain or use a "
+                    f"marginalised checkpoint."
+                )
             return
-        trained_alpha = float(stored)
-        if abs(alpha - trained_alpha) > 1e-9:
-            raise MissingArtifactError(
-                f"{self.artifact.name} trained at alpha={trained_alpha}, "
-                f"but inference alpha={alpha}; retrain or use a "
-                f"marginalised checkpoint."
-            )
+        if alpha_mode == "marginalised":
+            return
+        if alpha_mode == "fixed":
+            stored = meta.get("alpha")
+            if stored is None:
+                raise MissingArtifactError(
+                    f"{self.artifact.name} declares alpha_mode='fixed' but "
+                    f"alpha is None — checkpoint metadata is internally "
+                    f"inconsistent. Re-train."
+                )
+            trained_alpha = float(stored)
+            if abs(alpha - trained_alpha) > 1e-9:
+                raise MissingArtifactError(
+                    f"{self.artifact.name} trained at alpha={trained_alpha} "
+                    f"(alpha_mode=fixed), but inference alpha={alpha}; "
+                    f"retrain at the right alpha or use a marginalised "
+                    f"checkpoint."
+                )
+            return
+        raise MissingArtifactError(
+            f"{self.artifact.name}: unknown alpha_mode={alpha_mode!r}; "
+            f"expected 'marginalised' or 'fixed'."
+        )
 
     def _check_experiment(
         self,
