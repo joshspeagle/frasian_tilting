@@ -126,13 +126,32 @@ class TestBernoulliPairingsGenericVsRaise:
         assert np.isfinite(lo) and np.isfinite(hi)
         assert 0.0 <= lo < hi <= 1.0  # CI lives on the parameter support [0, 1]
 
-    def test_power_law_tilt_raises_until_phase3(self):
-        """PowerLawTilting generic path is Phase 3 (separately tracked)."""
+    def test_power_law_tilt_runs_generic_on_bernoulli(self):
+        """Phase 3b: PowerLawTilting.tilt() now runs generically on
+        non-Normal models via the numerical `_generic_tilt` path
+        (`log L + (1-eta) * log pi`, normalised on a theta-grid).
+        The closed-form Theorem 6 path stays the fast path on
+        (NormalDistribution, NormalDistribution, GaussianLikelihood)
+        triples; everything else routes through the GridDistribution
+        wrapper.
+
+        Previously raised `NotImplementedError`. Now returns a
+        `GridDistribution` with finite moments. End-to-end CI inversion
+        through `tilted_pvalue` is Phase 3c (not yet wired).
+        """
+        from frasian.models.distributions import BernoulliLikelihood
+        from frasian.tilting._grid_distribution import GridDistribution
+
         prior = BetaDistribution(alpha=2.0, beta=2.0)
         model = BernoulliModel()
         post = model.posterior(np.array([1.0, 0.0]), prior)
-        from frasian.models.distributions import BernoulliLikelihood
-
         lik = BernoulliLikelihood(n_success=1, n_total=2)
-        with pytest.raises(NotImplementedError):
-            PowerLawTilting().tilt(post, prior, lik, 0.0)
+        tilted = PowerLawTilting().tilt(post, prior, lik, 0.0)
+        assert isinstance(tilted, GridDistribution)
+        m = tilted.mean()
+        v = tilted.var()
+        assert 0.0 <= m <= 1.0
+        assert v > 0.0
+        # Cross-check: at eta=0 the tilted distribution recovers the posterior.
+        assert abs(m - post.mean()) < 5e-3
+        assert abs(v - post.var()) < 5e-3

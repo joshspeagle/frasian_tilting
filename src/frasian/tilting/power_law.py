@@ -140,29 +140,170 @@ def _tilted_pvalue_kernel(
     )
 
 
+def _is_gaussian_triple(
+    posterior: Posterior, prior: Prior, likelihood: Likelihood
+) -> bool:
+    """Return True iff (posterior, prior, likelihood) is the Normal-Normal triple
+    that admits the Theorem 6 closed form. Used to dispatch between the
+    closed-form fast path and the model-agnostic numerical path.
+    """
+    return (
+        isinstance(posterior, NormalDistribution)
+        and isinstance(prior, NormalDistribution)
+        and isinstance(likelihood, GaussianLikelihood)
+    )
+
+
 def _require_gaussian(
     posterior: Posterior, prior: Prior, likelihood: Likelihood
 ) -> tuple[NormalDistribution, NormalDistribution, GaussianLikelihood]:
-    """Recognize a Normal-Normal context. Raise if any input is not Gaussian."""
+    """Same as the isinstance check, but raises with the legacy error message.
+
+    Retained for the closed-form path's narrowing assertions; the public
+    `tilt()` method dispatches via `_is_gaussian_triple` and only this
+    function's raising is used post-dispatch (i.e. on the closed-form
+    branch where the inputs are already known to be Gaussian).
+    """
     if not isinstance(posterior, NormalDistribution):
         raise NotImplementedError(
-            "PowerLawTilting requires a NormalDistribution posterior; "
-            f"got {type(posterior).__name__!r}. Numerical fallback is a "
-            f"future extension."
+            "PowerLawTilting closed form requires a NormalDistribution posterior; "
+            f"got {type(posterior).__name__!r}."
         )
     if not isinstance(prior, NormalDistribution):
         raise NotImplementedError(
-            "PowerLawTilting requires a NormalDistribution prior; " f"got {type(prior).__name__!r}."
+            "PowerLawTilting closed form requires a NormalDistribution prior; "
+            f"got {type(prior).__name__!r}."
         )
     if not isinstance(likelihood, GaussianLikelihood):
         raise NotImplementedError(
-            "PowerLawTilting requires a GaussianLikelihood; " f"got {type(likelihood).__name__!r}."
+            "PowerLawTilting closed form requires a GaussianLikelihood; "
+            f"got {type(likelihood).__name__!r}."
         )
     return posterior, prior, likelihood
 
 
 def _denom(w: float, eta: float) -> float:
     return 1.0 - eta * (1.0 - w)
+
+
+# ----- Generic numerical path (any Distribution-conforming inputs) -----
+
+# Default grid parameters per the deriver's recommendation
+# (`/root/.claude/plans/...`, validated atol 1e-7 at N=1024 against
+# Theorem 6 on Normal-Normal). N=2048 + k=8 are mildly more conservative;
+# the suite picks N=1024 to keep per-call cost ~1 ms on Bernoulli.
+_GENERIC_TILT_N_GRID: int = 1024
+_GENERIC_TILT_HALF_WIDTH_K: float = 8.0
+_GENERIC_TILT_QUANTILE_EPS: float = 1e-4
+
+
+def _generic_tilt_grid_window(
+    posterior: Posterior,
+    prior: Prior,
+    *,
+    support: tuple[float, float],
+) -> tuple[float, float]:
+    """Pick the (theta_lo, theta_hi) integration window for `_generic_tilt`.
+
+    Strategy: union of the posterior's and prior's near-quantile windows,
+    clipped to `model.support()`. Quantile-based on bounded supports
+    (Bernoulli's `[0, 1]`, etc.) so we don't pick an arbitrary k·std
+    interval that overruns the support; ``mean ± k * std`` fallback
+    on unbounded supports where quantile inversion can be expensive
+    on a non-Gaussian posterior.
+
+    The window must contain enough mass of *both* the prior and the
+    likelihood-shaped posterior so the η ∈ [0, 1] sweep stays well-
+    integrated. Posterior alone undercovers at η→1; prior alone
+    undercovers at η→0; the union is robust at both ends.
+    """
+    eps = _GENERIC_TILT_QUANTILE_EPS
+    support_lo, support_hi = float(support[0]), float(support[1])
+
+    if np.isfinite(support_lo) and np.isfinite(support_hi):
+        # Bounded support: use quantile-based window on both endpoints.
+        try:
+            lo = min(
+                float(np.asarray(posterior.quantile(eps))),
+                float(np.asarray(prior.quantile(eps))),
+            )
+            hi = max(
+                float(np.asarray(posterior.quantile(1.0 - eps))),
+                float(np.asarray(prior.quantile(1.0 - eps))),
+            )
+        except Exception:
+            lo, hi = support_lo, support_hi
+        return (max(lo, support_lo), min(hi, support_hi))
+
+    # Unbounded support: use mean ± k * std for both, take the union.
+    try:
+        post_mu, post_sigma = float(posterior.mean()), float(np.sqrt(posterior.var()))
+        prior_mu, prior_sigma = float(prior.mean()), float(np.sqrt(prior.var()))
+    except Exception as e:
+        raise ValueError(
+            "PowerLawTilting._generic_tilt: posterior/prior must expose mean()+var() "
+            f"on unbounded supports; got {type(posterior).__name__!r}, "
+            f"{type(prior).__name__!r}."
+        ) from e
+    k = _GENERIC_TILT_HALF_WIDTH_K
+    lo = min(post_mu - k * post_sigma, prior_mu - k * prior_sigma)
+    hi = max(post_mu + k * post_sigma, prior_mu + k * prior_sigma)
+    return (max(lo, support_lo), min(hi, support_hi))
+
+
+def _generic_tilt(
+    posterior: Posterior,
+    prior: Prior,
+    likelihood: Likelihood,
+    eta: float,
+    *,
+    support: tuple[float, float],
+    n_grid: int = _GENERIC_TILT_N_GRID,
+):
+    """Numerical tilted distribution: log q(theta;eta) ∝ log L(theta) + (1-eta) log pi(theta).
+
+    The deriver verified (`/root/.claude/plans/.../`) that this formula
+    reduces to PowerLawTilting's Theorem 6 closed form on Normal-Normal,
+    atol 1e-7 at N=1024 — see `tests/regression/test_grid_distribution.py`
+    and the cross-check below in `test_power_law_generic_matches_closed_form.py`.
+
+    Returns a `GridDistribution` (conforms to the Distribution protocol).
+    """
+    from ._grid_distribution import grid_distribution_from_log_density
+
+    theta_lo, theta_hi = _generic_tilt_grid_window(
+        posterior, prior, support=support
+    )
+    if not (theta_lo < theta_hi):
+        raise ValueError(
+            f"PowerLawTilting._generic_tilt: degenerate grid window "
+            f"[{theta_lo}, {theta_hi}] (likely posterior collapsed onto "
+            f"support boundary or quantile inversion failed)."
+        )
+    theta_grid = np.linspace(theta_lo, theta_hi, n_grid)
+
+    # log q_tilt(theta; eta) = log L(theta) + (1-eta) * log pi(theta).
+    log_lik = np.asarray(likelihood.loglik(theta_grid), dtype=np.float64)
+    log_prior = np.asarray(prior.logpdf(theta_grid), dtype=np.float64)
+    log_q = log_lik + (1.0 - float(eta)) * log_prior
+
+    # Replace -inf entries (e.g. theta outside the prior's support on
+    # bounded models) with a finite floor so the trapezoidal Z is finite.
+    # The grid_distribution_from_log_density helper will exp(log_q -
+    # max(log_q)) which sends these to ~0 anyway.
+    log_q = np.where(np.isfinite(log_q), log_q, -1e300)
+
+    return grid_distribution_from_log_density(
+        theta_grid,
+        log_q,
+        metadata={
+            "scheme": "power_law",
+            "eta": float(eta),
+            "n_grid": int(n_grid),
+            "theta_lo": float(theta_lo),
+            "theta_hi": float(theta_hi),
+        },
+    )
 
 
 def _data_to_scalar_D(data: NDArray[np.float64]) -> float:
@@ -229,10 +370,35 @@ class PowerLawTilting:
 
     def tilt(
         self, posterior: Posterior, prior: Prior, likelihood: Likelihood, eta: ArrayLike
-    ) -> NormalDistribution:
-        """Closed-form tilted Normal posterior (Theorem 6 in legacy docs)."""
-        post, pri, lik = _require_gaussian(posterior, prior, likelihood)
+    ) -> Posterior:
+        """Tilted distribution `q(theta; eta) ∝ L(theta) * pi(theta)^(1-eta)`.
 
+        Dispatch:
+          - **Normal-Normal closed form (Theorem 6)** when (posterior, prior,
+            likelihood) is the (NormalDistribution, NormalDistribution,
+            GaussianLikelihood) triple. Returns a `NormalDistribution`.
+          - **Generic numerical fallback** otherwise. Builds the tilted
+            log-density `log L(theta) + (1-eta) * log pi(theta)` on a 1024-
+            point theta grid sized from the union of posterior and prior
+            quantile windows (clipped to `model.support()`), normalises
+            via trapezoidal Z, and wraps the result as a `GridDistribution`.
+            Requires `model.support()` to be supplied via the `_support`
+            attribute or attribute-of-likelihood; pass through the
+            `confidence_regions` / `pvalue` consumer paths instead of
+            calling directly when possible.
+
+        Generic-vs-closed-form agreement on Normal-Normal: atol 1e-7 at
+        N=1024 (per the deriver-verified Theorem-6 reduction; cross-checked
+        in `tests/regression/test_power_law_generic_matches_closed_form.py`).
+
+        Backward-compat note: ``tilt()`` previously returned only
+        `NormalDistribution`; the return type widens to `Posterior`
+        (the Distribution protocol). Callers that rely on the concrete
+        `NormalDistribution` API (`.loc`, `.scale`) on Normal-Normal
+        inputs continue to work unchanged — the closed-form branch
+        still returns `NormalDistribution`. Generic-path consumers
+        must use the protocol surface (`pdf`, `cdf`, `mean`, `var`).
+        """
         eta_arr = np.asarray(eta, dtype=np.float64)
         if eta_arr.ndim != 0:
             raise NotImplementedError(
@@ -241,19 +407,48 @@ class PowerLawTilting:
             )
         eta_f = float(eta_arr)
 
-        w = _weight(lik.sigma, pri.scale)
-        denom = _denom(w, eta_f)
-        if denom <= 0.0:
-            raise TiltingDomainError(
-                f"eta={eta_f!r} drives the tilted-posterior denominator to "
-                f"{denom!r} <= 0 with w={w!r}; admissible range is "
-                f"({-w/(1-w):+.6g}, inf)."
-            )
+        if _is_gaussian_triple(posterior, prior, likelihood):
+            # Closed-form Theorem-6 fast path.
+            post, pri, lik = _require_gaussian(posterior, prior, likelihood)
+            w = _weight(lik.sigma, pri.scale)
+            denom = _denom(w, eta_f)
+            if denom <= 0.0:
+                raise TiltingDomainError(
+                    f"eta={eta_f!r} drives the tilted-posterior denominator "
+                    f"to {denom!r} <= 0 with w={w!r}; admissible range is "
+                    f"({-w/(1-w):+.6g}, inf)."
+                )
+            mu_eta = (w * lik.D + (1.0 - eta_f) * (1.0 - w) * pri.loc) / denom
+            sigma_eta_sq = w * lik.sigma**2 / denom
+            sigma_eta = float(np.sqrt(sigma_eta_sq))
+            return NormalDistribution(loc=float(mu_eta), scale=sigma_eta)
 
-        mu_eta = (w * lik.D + (1.0 - eta_f) * (1.0 - w) * pri.loc) / denom
-        sigma_eta_sq = w * lik.sigma**2 / denom
-        sigma_eta = float(np.sqrt(sigma_eta_sq))
-        return NormalDistribution(loc=float(mu_eta), scale=sigma_eta)
+        # Generic numerical fallback. Need the model's support to size
+        # the integration window. The Distribution protocol does not
+        # carry support info; callers must supply it. As a fallback,
+        # try (-inf, inf) — works on unbounded posteriors via the
+        # mean ± k*std window heuristic; raises on bounded supports
+        # where quantile inversion would be needed but isn't on the
+        # protocol.
+        support_attr: tuple[float, float] | None = getattr(
+            self, "_support_for_generic_tilt", None
+        )
+        if support_attr is None:
+            # Try to infer from the likelihood object's binding model.
+            # GaussianLikelihood -> (-inf, inf); BernoulliLikelihood -> (0, 1).
+            from ..models.distributions import BernoulliLikelihood, GaussianLikelihood
+            if isinstance(likelihood, BernoulliLikelihood):
+                support_attr = (0.0, 1.0)
+            elif isinstance(likelihood, GaussianLikelihood):
+                support_attr = (-float("inf"), float("inf"))
+            else:
+                # Last-resort default. Quantile-based window in
+                # `_generic_tilt_grid_window` will pick this up.
+                support_attr = (-float("inf"), float("inf"))
+
+        return _generic_tilt(
+            posterior, prior, likelihood, eta_f, support=support_attr
+        )
 
     def path(
         self, posterior: Posterior, prior: Prior, likelihood: Likelihood, ts: NDArray[np.float64]
