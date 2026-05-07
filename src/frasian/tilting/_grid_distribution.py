@@ -112,14 +112,20 @@ class GridDistribution:
         return jnp.log(jnp.maximum(self.pdf(x), 1e-300))
 
     def cdf(self, x: ArrayLike) -> jax.Array:
-        """cdf interpolated at `x` (linear; clamped to [0, total_mass])."""
+        """cdf interpolated at `x` (linear; clamped to [0, total_mass]).
+
+        Returns a `jax.Array` and uses `jnp.interp` with JAX-array
+        boundary args so the call is JIT-traceable for Phase 4
+        learned-eta loss closures (no host-sync).
+        """
         cdf_vals = self.cdf_values
+        theta = jnp.asarray(self.theta_grid, dtype=jnp.float64)
         return jnp.interp(
             jnp.asarray(x, dtype=jnp.float64),
-            jnp.asarray(self.theta_grid, dtype=jnp.float64),
+            theta,
             cdf_vals,
-            left=0.0,
-            right=float(cdf_vals[-1]),
+            left=jnp.zeros((), dtype=jnp.float64),
+            right=cdf_vals[-1],
         )
 
     def quantile(self, q: ArrayLike) -> jax.Array:
@@ -127,13 +133,16 @@ class GridDistribution:
 
         Well-defined whenever `cdf_values` is monotone non-decreasing,
         which the trapezoidal cumulant guarantees for non-negative pdf.
+        Returns `jax.Array`; boundary args are JAX scalars so the call
+        is JIT-traceable (no Python-float host-sync).
         """
+        theta = jnp.asarray(self.theta_grid, dtype=jnp.float64)
         return jnp.interp(
             jnp.asarray(q, dtype=jnp.float64),
             self.cdf_values,
-            jnp.asarray(self.theta_grid, dtype=jnp.float64),
-            left=float(self.theta_grid[0]),
-            right=float(self.theta_grid[-1]),
+            theta,
+            left=theta[0],
+            right=theta[-1],
         )
 
     def mean(self) -> float:
@@ -183,20 +192,25 @@ def grid_distribution_from_log_density(
     metadata : optional
         Forwarded to the resulting `GridDistribution`.
     """
-    log_d = jnp.asarray(log_density_values, dtype=jnp.float64)
-    # Subtract the max for numerical stability before exp.
-    pdf_unnorm = jnp.exp(log_d - jnp.max(log_d))
-    theta = jnp.asarray(theta_grid, dtype=jnp.float64)
-    Z = jnp.trapezoid(pdf_unnorm, theta)
-    if not bool(jnp.isfinite(Z)) or float(Z) <= 0.0:
+    # JAX-quality #2: this construction runs eagerly per `_generic_tilt`
+    # call (n_mc * brentq_iter times in CI inversion). The validity
+    # check below requires a Python-bool comparison on Z, which would
+    # host-sync if Z were a JAX array. Stay numpy-eager throughout —
+    # callers needing a JAX-traceable density use `GridDistribution`'s
+    # methods (which DO use jnp internally on already-built grids).
+    log_d_np = np.asarray(log_density_values, dtype=np.float64)
+    theta_np = np.asarray(theta_grid, dtype=np.float64)
+    pdf_unnorm = np.exp(log_d_np - np.max(log_d_np))
+    Z = float(np.trapezoid(pdf_unnorm, theta_np))
+    if not np.isfinite(Z) or Z <= 0.0:
         raise ValueError(
-            f"GridDistribution.from_log_density: trapezoidal Z={float(Z)!r} "
+            f"GridDistribution.from_log_density: trapezoidal Z={Z!r} "
             f"is non-finite or non-positive; check for NaN log-density "
             f"or a degenerate grid."
         )
     pdf = pdf_unnorm / Z
     return GridDistribution(
-        theta_grid=np.asarray(theta_grid, dtype=np.float64),
-        pdf_values=np.asarray(pdf, dtype=np.float64),
+        theta_grid=theta_np,
+        pdf_values=pdf,
         metadata=metadata or {},
     )

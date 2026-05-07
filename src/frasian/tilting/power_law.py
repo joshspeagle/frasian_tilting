@@ -222,6 +222,12 @@ def _generic_tilt_grid_window(
 
     if np.isfinite(support_lo) and np.isfinite(support_hi):
         # Bounded support: use quantile-based window on both endpoints.
+        # Skeptic finding #2: narrow the catch to specific exception types
+        # so genuine bugs in `quantile()` (e.g. shape mismatches, internal
+        # scipy errors) propagate cleanly. The `(ValueError, RuntimeError,
+        # NotImplementedError)` set covers the documented failure modes
+        # (improper shape parameters, numerical overflow on extreme Beta,
+        # missing quantile implementation).
         try:
             lo = min(
                 float(np.asarray(posterior.quantile(eps))),
@@ -231,7 +237,11 @@ def _generic_tilt_grid_window(
                 float(np.asarray(posterior.quantile(1.0 - eps))),
                 float(np.asarray(prior.quantile(1.0 - eps))),
             )
-        except Exception:
+        except (ValueError, RuntimeError, NotImplementedError):
+            # Documented fallback: full support window. Coarser than the
+            # quantile window, but still produces a valid integration.
+            # Coverage may degrade on very-skewed priors (Beta(101, 1));
+            # that's pinned by a regression test.
             lo, hi = support_lo, support_hi
         return (max(lo, support_lo), min(hi, support_hi))
 
@@ -239,7 +249,7 @@ def _generic_tilt_grid_window(
     try:
         post_mu, post_sigma = float(posterior.mean()), float(np.sqrt(posterior.var()))
         prior_mu, prior_sigma = float(prior.mean()), float(np.sqrt(prior.var()))
-    except Exception as e:
+    except (TypeError, ValueError, AttributeError) as e:
         raise ValueError(
             "PowerLawTilting._generic_tilt: posterior/prior must expose mean()+var() "
             f"on unbounded supports; got {type(posterior).__name__!r}, "
@@ -416,6 +426,32 @@ def _generic_tilted_t_statistic(
     return diff * diff / var_safe
 
 
+def _resolve_support(
+    model: object, data: NDArray[np.float64]
+) -> tuple[float, float]:
+    """Resolve `(support_lo, support_hi)` from a `Model` (preferred) or by
+    falling back to inspecting the likelihood's class.
+
+    The `Model` protocol declares `support()` so the `hasattr` guard is
+    defensive; the likelihood-class fallback is retained for the rare
+    `Model`-protocol partial conformer (test fixtures that mock just
+    enough). Centralised here to avoid the same dispatch tree being
+    inlined in `_generic_tilt`, `_generic_tilted_pvalue`, and
+    `_generic_tilted_confidence_interval`.
+    """
+    from ..models.distributions import BernoulliLikelihood, GaussianLikelihood
+
+    if hasattr(model, "support"):
+        lo, hi = tuple(model.support())
+        return float(lo), float(hi)
+    likelihood = model.likelihood(data)
+    if isinstance(likelihood, BernoulliLikelihood):
+        return (0.0, 1.0)
+    if isinstance(likelihood, GaussianLikelihood):
+        return (-float("inf"), float("inf"))
+    return (-float("inf"), float("inf"))
+
+
 def _generic_tilted_pvalue(
     theta: float,
     data: NDArray[np.float64],
@@ -428,6 +464,7 @@ def _generic_tilted_pvalue(
     derived_seed: int | None = None,
     alpha: float = 0.0,
     base_seed: int = _GENERIC_TILTED_PVALUE_BASE_SEED,
+    obs_moments: tuple[float, float] | None = None,
 ) -> float:
     """Generic MC tilted p-value — works on any (model, prior) pair.
 
@@ -465,18 +502,7 @@ def _generic_tilted_pvalue(
             f"data.ndim={data_arr.ndim}."
         )
 
-    # Infer the model's parameter support for grid windowing.
-    if hasattr(model, "support"):
-        support = tuple(model.support())
-    else:
-        # Likelihood-class fallback (matches `tilt()` dispatch).
-        likelihood_at_obs = model.likelihood(data_arr)
-        if isinstance(likelihood_at_obs, BernoulliLikelihood):
-            support = (0.0, 1.0)
-        elif isinstance(likelihood_at_obs, GaussianLikelihood):
-            support = (-float("inf"), float("inf"))
-        else:
-            support = (-float("inf"), float("inf"))
+    support = _resolve_support(model, data_arr)
 
     theta_f = float(theta)
     eta_f = float(eta)
@@ -486,17 +512,29 @@ def _generic_tilted_pvalue(
             data_arr, model, prior, eta_f, alpha, base_seed
         )
 
-    # Observed t-statistic on the high-resolution grid.
-    t_obs = _generic_tilted_t_statistic(
-        theta_f, data_arr, model, prior, eta_f, support=support,
-        n_grid=_GENERIC_TILT_N_GRID,
-    )
+    # Observed tilted moments are theta-INDEPENDENT given the data;
+    # callers in a hot loop (CI inversion, per-theta pvalue) should
+    # hoist them and pass via `obs_moments` to skip the redundant
+    # recomputation per call. (Skeptic Phase 3 finding #3.)
+    if obs_moments is not None:
+        mu_obs, var_obs = obs_moments
+    else:
+        posterior_obs = model.posterior(data_arr, prior)
+        likelihood_obs = model.likelihood(data_arr)
+        mu_obs, var_obs = _generic_tilted_moments(
+            posterior_obs, prior, likelihood_obs, eta_f,
+            support=support, n_grid=_GENERIC_TILT_N_GRID,
+        )
+    var_obs_safe = max(var_obs, 1e-300)
+    diff_obs = mu_obs - theta_f
+    t_obs = diff_obs * diff_obs / var_obs_safe
 
     # MC reference under H_0: theta_0 = theta. Coarser grid for speed —
     # MC noise dominates over grid-discretisation noise at n_mc>=200.
     rng = np.random.default_rng(derived_seed)
     n_obs = int(data_arr.size)
     t_samples = np.empty(n_mc, dtype=np.float64)
+    n_collapsed = 0
     for i in range(n_mc):
         D_prime = model.sample_data(theta_f, rng, n_obs)
         try:
@@ -504,12 +542,29 @@ def _generic_tilted_pvalue(
                 theta_f, D_prime, model, prior, eta_f, support=support,
                 n_grid=_GENERIC_TILTED_PVALUE_N_GRID_MC,
             )
-        except Exception:
-            # Pathological MC sample (e.g. all-zero / all-one Bernoulli
-            # collapses the posterior). Sentinel to NOT count as more-
-            # extreme — i.e. treat as "missing" via 0; the +1 smoothing
-            # below keeps the empirical p strictly in (0, 1].
+        except (ValueError, RuntimeError, ArithmeticError) as e:
+            # Skeptic finding #8 narrowing: catch only the documented
+            # failure modes (degenerate grid window from collapsed
+            # posterior on extreme MC draws; numerical issues in the
+            # trapezoidal Z). Bugs from elsewhere (TypeError, etc.) now
+            # propagate cleanly. Sentinel `t = 0` treats the draw as
+            # NOT more-extreme — biases the empirical p UP, i.e.
+            # CONSERVATIVE direction. The +1 smoothing keeps the result
+            # bounded below by 1/(n_mc+1).
+            del e  # explicit: discard the exception object
             t_samples[i] = 0.0
+            n_collapsed += 1
+    if n_collapsed > n_mc // 2:
+        # More than half the MC samples collapsed — the conservative-
+        # direction bias is too large to be useful. Surface as a warning.
+        import warnings
+        warnings.warn(
+            f"_generic_tilted_pvalue: {n_collapsed}/{n_mc} MC samples "
+            f"collapsed (theta={theta_f}, eta={eta_f}); empirical p is "
+            f"strongly biased upward. Increase data size or reduce eta.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
     # +1 smoothing: conservative empirical p-value (see Phase 2 WALDO).
     p = (float(np.sum(t_samples >= t_obs)) + 1.0) / (float(n_mc) + 1.0)
@@ -544,24 +599,21 @@ def _generic_tilted_confidence_interval(
         data_arr, model, prior, eta_f, alpha, base_seed
     )
 
-    if hasattr(model, "support"):
-        support = tuple(model.support())
-    else:
-        support = (-float("inf"), float("inf"))
-    support_lo, support_hi = float(support[0]), float(support[1])
+    support = _resolve_support(model, data_arr)
+    support_lo, support_hi = support
 
-    # Tilted-distribution centre + spread for the bracket.
+    # Hoist observed moments (skeptic finding #3): mu_obs, var_obs are
+    # theta-INDEPENDENT — compute once, reuse across every brentq probe
+    # via the `obs_moments` kwarg on `_generic_tilted_pvalue`. ~10x speedup
+    # on the brentq path.
     posterior_at_obs = model.posterior(data_arr, prior)
     likelihood_at_obs = model.likelihood(data_arr)
-    if hasattr(model, "support"):
-        tilt_support = tuple(model.support())
-    else:
-        tilt_support = (-float("inf"), float("inf"))
-    tilted_at_obs = _generic_tilt(
-        posterior_at_obs, prior, likelihood_at_obs, eta_f, support=tilt_support
+    mu_obs, var_obs = _generic_tilted_moments(
+        posterior_at_obs, prior, likelihood_at_obs, eta_f,
+        support=support, n_grid=_GENERIC_TILT_N_GRID,
     )
-    mu_tilted = float(tilted_at_obs.mean())
-    sigma_tilted = float(np.sqrt(max(tilted_at_obs.var(), 1e-300)))
+    var_obs_safe = max(var_obs, 1e-300)
+    sigma_tilted = float(np.sqrt(var_obs_safe))
 
     def f(theta_val: float) -> float:
         # Clamp to support: brentq's bracket-doubling can probe out-of-
@@ -580,21 +632,46 @@ def _generic_tilted_confidence_interval(
             derived_seed=derived_seed,
             alpha=alpha,
             base_seed=base_seed,
+            obs_moments=(mu_obs, var_obs),
         ) - alpha
 
     half = max(4.0 * sigma_tilted, 1e-3)
-    try:
-        lower = brentq_with_doubling(
-            f, midpoint=mu_tilted, initial_half_width=half, direction=-1
-        )
-    except BracketingFailed:
+
+    # Skeptic finding #1 — explicit boundary detection. If
+    # `f(support_lo) >= 0` (resp. `f(support_hi) >= 0`), the CI extends
+    # PAST that boundary. brentq-with-doubling on the clamped flat
+    # plateau would just exhaust its 16 doublings and raise
+    # BracketingFailed — caught and snapped to support, but with no
+    # telemetry. Detect the boundary case explicitly.
+    if np.isfinite(support_lo):
+        f_at_lower_support = f(support_lo)
+        ci_extends_below = (f_at_lower_support >= 0.0)
+    else:
+        ci_extends_below = False
+    if np.isfinite(support_hi):
+        f_at_upper_support = f(support_hi)
+        ci_extends_above = (f_at_upper_support >= 0.0)
+    else:
+        ci_extends_above = False
+
+    if ci_extends_below:
         lower = support_lo
-    try:
-        upper = brentq_with_doubling(
-            f, midpoint=mu_tilted, initial_half_width=half, direction=+1
-        )
-    except BracketingFailed:
+    else:
+        try:
+            lower = brentq_with_doubling(
+                f, midpoint=mu_obs, initial_half_width=half, direction=-1
+            )
+        except BracketingFailed:
+            lower = support_lo
+    if ci_extends_above:
         upper = support_hi
+    else:
+        try:
+            upper = brentq_with_doubling(
+                f, midpoint=mu_obs, initial_half_width=half, direction=+1
+            )
+        except BracketingFailed:
+            upper = support_hi
     return (max(lower, support_lo), min(upper, support_hi))
 
 
@@ -715,28 +792,16 @@ class PowerLawTilting:
             sigma_eta = float(np.sqrt(sigma_eta_sq))
             return NormalDistribution(loc=float(mu_eta), scale=sigma_eta)
 
-        # Generic numerical fallback. Need the model's support to size
-        # the integration window. The Distribution protocol does not
-        # carry support info; callers must supply it. As a fallback,
-        # try (-inf, inf) — works on unbounded posteriors via the
-        # mean ± k*std window heuristic; raises on bounded supports
-        # where quantile inversion would be needed but isn't on the
-        # protocol.
-        support_attr: tuple[float, float] | None = getattr(
-            self, "_support_for_generic_tilt", None
-        )
-        if support_attr is None:
-            # Try to infer from the likelihood object's binding model.
-            # GaussianLikelihood -> (-inf, inf); BernoulliLikelihood -> (0, 1).
-            from ..models.distributions import BernoulliLikelihood, GaussianLikelihood
-            if isinstance(likelihood, BernoulliLikelihood):
-                support_attr = (0.0, 1.0)
-            elif isinstance(likelihood, GaussianLikelihood):
-                support_attr = (-float("inf"), float("inf"))
-            else:
-                # Last-resort default. Quantile-based window in
-                # `_generic_tilt_grid_window` will pick this up.
-                support_attr = (-float("inf"), float("inf"))
+        # Generic numerical fallback. Centralised support resolution
+        # via `_resolve_support` (works for any model that conforms to
+        # the protocol's `support()` plus a likelihood-class fallback).
+        from ..models.distributions import BernoulliLikelihood, GaussianLikelihood
+        if isinstance(likelihood, BernoulliLikelihood):
+            support_attr = (0.0, 1.0)
+        elif isinstance(likelihood, GaussianLikelihood):
+            support_attr = (-float("inf"), float("inf"))
+        else:
+            support_attr = (-float("inf"), float("inf"))
 
         return _generic_tilt(
             posterior, prior, likelihood, eta_f, support=support_attr
