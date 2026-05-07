@@ -103,6 +103,149 @@ def extract_normal_normal_params(
     return w, mu0, sigma
 
 
+# Phase 4b: model-kind dispatch for the width-loss adapter.
+
+# Number of grid points used by the generic (grid-based) tilted pvalue
+# during TRAINING. Lower than inference (1024) since MC noise dominates
+# over grid-discretisation noise at training-time, and per-step cost is
+# the dominant wall-time of training. Bernoulli v0_smoke target is ~30 min
+# at this setting.
+_N_GRID_GENERIC_TRAINING: int = 512
+
+
+def _call_normal_normal_pvalue(
+    *,
+    eta_net: EtaNet,
+    theta_grid_t: jax.Array,
+    D_batch_t: jax.Array,
+    model: Any,
+    prior: Any,
+    statistic_name: str,
+    scheme_name: str,
+) -> jax.Array:
+    """Adapter: extract Normal-Normal (w, mu0, sigma) and call the
+    per-scheme JAX kernel (closed-form fast path).
+
+    Output is byte-identical to the pre-Phase-4b path on Normal-Normal —
+    same callable, same broadcasting, same JIT cache key. Pinned by
+    `test_fit_eta_artifact_byte_equality.py`.
+    """
+    w, mu0, sigma = extract_normal_normal_params(model, prior)
+    w_t = jnp.asarray(w)
+    mu0_t = jnp.asarray(mu0)
+    sigma_t = jnp.asarray(sigma)
+
+    eta_grid = eta_net(theta_grid_t)  # (G,)
+    tilted_pvalue = get_jax_tilted_pvalue(scheme_name, "normal_normal")
+    G = theta_grid_t.shape[0]
+    B = D_batch_t.shape[0]
+    return tilted_pvalue(
+        jnp.broadcast_to(theta_grid_t[None, :], (B, G)),
+        jnp.broadcast_to(D_batch_t[:, None], (B, G)),
+        w_t,
+        mu0_t,
+        sigma_t,
+        jnp.broadcast_to(eta_grid[None, :], (B, G)),
+        statistic_name,
+    )
+
+
+def _call_generic_grid_pvalue(
+    *,
+    eta_net: EtaNet,
+    theta_grid_t: jax.Array,
+    D_batch_t: jax.Array,
+    model: Any,
+    prior: Any,
+    statistic_name: str,
+    scheme_name: str,
+) -> jax.Array:
+    """Adapter: build grid log-densities from (model, prior, data) and
+    call `generic_grid_tilted_pvalue` (Phase 4 generic path).
+
+    The integration grid (`support_theta_grid`) lives on the model's
+    parameter support. For bounded supports (Bernoulli's [0, 1]) we
+    use the support window directly with an interior padding to avoid
+    log(0) at the boundary. For unbounded supports we fall back to
+    a posterior-mean ± 6σ heuristic on the first batch element (all
+    batch elements share the same support window since the model is
+    fixed; only D varies, which only affects log_lik on the grid).
+    """
+    from .pvalue_jax import generic_grid_tilted_pvalue
+
+    if not hasattr(model, "support"):
+        raise NotImplementedError(
+            f"_call_generic_grid_pvalue requires `model.support()`; "
+            f"got {type(model).__name__!r} without it."
+        )
+    support_lo, support_hi = model.support()
+    n_grid = _N_GRID_GENERIC_TRAINING
+    if jnp.isfinite(support_lo) and jnp.isfinite(support_hi):
+        # Bounded support — pad by 1% inward to avoid log-density
+        # divergence at the boundary on Bernoulli (log(0) = -inf at θ ∈ {0, 1}).
+        pad = 0.01 * (float(support_hi) - float(support_lo))
+        support_theta_grid = jnp.linspace(
+            float(support_lo) + pad, float(support_hi) - pad, n_grid
+        )
+    else:
+        raise NotImplementedError(
+            "_call_generic_grid_pvalue: unbounded support fallback not yet "
+            "wired (no current Phase 4 consumer needs it)."
+        )
+
+    log_p_prior_grid = jnp.asarray(prior.logpdf(support_theta_grid))  # (N_grid,)
+    # Vectorise log-likelihood over batch via numpy loop + stack
+    # (model.likelihood is a Python factory; jax.vmap can't trace through
+    # it without protocol changes). The loop is on B (typically 4-8),
+    # negligible relative to the kernel's O(B*G*N_grid) cost.
+    log_lik_per_b = []
+    for d_b in D_batch_t:
+        likelihood_b = model.likelihood(jnp.atleast_1d(d_b))
+        log_lik_per_b.append(jnp.asarray(likelihood_b.loglik(support_theta_grid)))
+    log_p_lik_grid = jnp.stack(log_lik_per_b, axis=0)  # (B, N_grid)
+
+    eta_grid = eta_net(theta_grid_t)  # (G_test,)
+    G = theta_grid_t.shape[0]
+    B = D_batch_t.shape[0]
+    return generic_grid_tilted_pvalue(
+        jnp.broadcast_to(theta_grid_t[None, :], (B, G)),  # (B, G_test)
+        jnp.broadcast_to(eta_grid[None, :], (B, G)),  # (B, G_test)
+        log_p_lik_grid,                                    # (B, N_grid)
+        log_p_prior_grid,                                  # (N_grid,)
+        support_theta_grid,                                # (N_grid,)
+        statistic_name,
+    )
+
+
+# Width-loss dispatch keyed on (scheme_name, model_kind). Mirrors
+# JAX_TILTED_PVALUE but at the adapter level (extractor + kernel call).
+# Falls back to ("scheme", "generic") if specific (scheme, model_kind)
+# isn't registered — matches `get_jax_tilted_pvalue`'s pattern.
+WIDTH_LOSS_DISPATCH: dict[tuple[str, str], Any] = {
+    ("power_law", "normal_normal"): _call_normal_normal_pvalue,
+    ("ot", "normal_normal"): _call_normal_normal_pvalue,
+    ("power_law", "generic"): _call_generic_grid_pvalue,
+    # ("ot", "generic") deferred — see JAX_TILTED_PVALUE comment.
+}
+
+
+def _resolve_width_loss_adapter(
+    scheme_name: str, model_kind: str
+) -> Any:
+    """Look up the (scheme, model_kind) adapter, with `(scheme, "generic")`
+    fallback. Mirrors `get_jax_tilted_pvalue`."""
+    key = (scheme_name, model_kind)
+    if key in WIDTH_LOSS_DISPATCH:
+        return WIDTH_LOSS_DISPATCH[key]
+    generic_key = (scheme_name, "generic")
+    if generic_key in WIDTH_LOSS_DISPATCH:
+        return WIDTH_LOSS_DISPATCH[generic_key]
+    raise NotImplementedError(
+        f"Phase E training doesn't support cell (scheme={scheme_name!r}, "
+        f"model={model_kind!r}). Available cells: {sorted(WIDTH_LOSS_DISPATCH)}."
+    )
+
+
 def compose_width_loss(
     *,
     eta_net: EtaNet,
@@ -115,43 +258,38 @@ def compose_width_loss(
 ) -> jax.Array:
     """Integrated-p (or variant) width loss averaged over a D batch.
 
+    Phase 4b: dispatches to a per-(scheme, model_kind) adapter that
+    extracts model-specific kwargs and calls the matching JAX kernel.
+    On Normal-Normal this routes through the closed-form fast path
+    (byte-identical to pre-Phase-4b output); on Bernoulli + power_law
+    it routes through the grid-based generic path.
+
     Skeptic block #1: a single-D Monte Carlo estimator has too much
-    variance for both training and validation signal — val_width
-    oscillates with the per-step D draw. Vectorise over a (B,) D
-    array and average; gives an unbiased estimator with variance
-    ~1/B. The JAX tilted-pvalue port broadcasts naturally so this
-    is one tensor call, not a Python loop.
+    variance for both training and validation signal. Vectorise over
+    a (B,) D array and average; gives an unbiased estimator with
+    variance ~1/B. The JAX tilted-pvalue port broadcasts naturally so
+    this is one tensor call, not a Python loop.
 
-    The ``beta`` argument is forwarded to ``static_width_loss`` only
-    (the other two losses are α-marginalised and don't use a
-    sigmoid-relaxed indicator). For ``static_width`` it must be a
-    finite positive scalar; for the symmetric losses it is ignored
-    (passing a value emits no warning, but is dead code).
+    The ``beta`` argument is forwarded to ``static_width_loss`` only.
     """
-    w, mu0, sigma = extract_normal_normal_params(config.model, config.prior)
-    w_t = jnp.asarray(w)
-    mu0_t = jnp.asarray(mu0)
-    sigma_t = jnp.asarray(sigma)
-
     if D_batch_t.ndim == 0:
-        D_batch_t = D_batch_t[None]  # (1,)
+        D_batch_t = D_batch_t[None]
     if D_batch_t.ndim != 1:
         raise ValueError(f"D_batch_t must be 0D or 1D; got shape {tuple(D_batch_t.shape)}.")
 
-    eta_grid = eta_net(theta_grid_t)  # (G,)
-    tilted_pvalue = get_jax_tilted_pvalue(config.scheme_name)
-    # Broadcast: theta=(1, G), D=(B, 1), eta=(1, G) → p=(B, G).
+    model_kind = config.model.fingerprint()[0]
+    adapter = _resolve_width_loss_adapter(config.scheme_name, model_kind)
+    p_grid = adapter(
+        eta_net=eta_net,
+        theta_grid_t=theta_grid_t,
+        D_batch_t=D_batch_t,
+        model=config.model,
+        prior=config.prior,
+        statistic_name=config.statistic_name,
+        scheme_name=config.scheme_name,
+    )
     G = theta_grid_t.shape[0]
     B = D_batch_t.shape[0]
-    p_grid = tilted_pvalue(
-        jnp.broadcast_to(theta_grid_t[None, :], (B, G)),  # (B, G)
-        jnp.broadcast_to(D_batch_t[:, None], (B, G)),  # (B, G)
-        w_t,
-        mu0_t,
-        sigma_t,
-        jnp.broadcast_to(eta_grid[None, :], (B, G)),  # (B, G)
-        config.statistic_name,
-    )  # (B, G)
     # Skeptic caveat #12: float64 round-off in `_phi(b-a) + _phi(-a-b)`
     # can drift slightly outside [0, 1]. Warn (without breaking the
     # gradient) when drift exceeds tolerance — clamp would zero the

@@ -291,25 +291,48 @@ def generic_grid_tilted_pvalue(
     )
 
 
-# Registry keyed on scheme.name. Add new schemes by registering here.
-JAX_TILTED_PVALUE: dict[str, Callable[..., jax.Array]] = {
-    "power_law": power_law_tilted_pvalue_jax,
-    "ot": ot_tilted_pvalue_jax,
+# Phase 4b: tuple-keyed registry on (scheme_name, model_kind).
+# Keeps the per-scheme NN closed-form callables for the fast path
+# (training byte-equality preserved); adds a "generic" key per scheme
+# for the grid-based path which works on any model with JAX-traceable
+# log_pdf / loglik.
+JAX_TILTED_PVALUE: dict[tuple[str, str], Callable[..., jax.Array]] = {
+    ("power_law", "normal_normal"): power_law_tilted_pvalue_jax,
+    ("ot", "normal_normal"): ot_tilted_pvalue_jax,
+    ("power_law", "generic"): generic_grid_tilted_pvalue,
+    # ("ot", "generic") is deferred — QuantileMixturePath has no
+    # closed-form log-density on a fixed grid; would need a separate
+    # quantile-pushforward kernel.
 }
 
 
-def get_jax_tilted_pvalue(scheme_name: str) -> Callable[..., jax.Array]:
-    """Look up the JAX tilted-p-value function for a scheme.
+def get_jax_tilted_pvalue(
+    scheme_name: str,
+    model_kind: str = "normal_normal",
+) -> Callable[..., jax.Array]:
+    """Look up the JAX tilted-p-value function for a (scheme, model) cell.
 
-    Raises ``NotImplementedError`` if the scheme has no registered JAX
-    p-value (training is gated on this; the inference-time
-    `tilted_pvalue` on the scheme still works via its own kernel +
-    scalar fast path).
+    Falls back to the per-scheme generic kernel (`(scheme, "generic")`)
+    if the specific `(scheme, model_kind)` is not registered, so a
+    novel model_kind automatically routes through the grid path when
+    a generic kernel exists for the scheme.
+
+    Raises `NotImplementedError` if neither the specific nor the
+    generic key is registered for the scheme.
+
+    `model_kind` defaults to `"normal_normal"` for backward compat
+    with pre-Phase-4b callers; new callers should always pass it
+    explicitly.
     """
-    if scheme_name not in JAX_TILTED_PVALUE:
-        raise NotImplementedError(
-            f"No JAX tilted_pvalue registered for scheme {scheme_name!r}. "
-            f"Available: {sorted(JAX_TILTED_PVALUE)}. "
-            f"To train against a new scheme, register a JAX p-value here."
-        )
-    return JAX_TILTED_PVALUE[scheme_name]
+    key = (scheme_name, model_kind)
+    if key in JAX_TILTED_PVALUE:
+        return JAX_TILTED_PVALUE[key]
+    generic_key = (scheme_name, "generic")
+    if generic_key in JAX_TILTED_PVALUE:
+        return JAX_TILTED_PVALUE[generic_key]
+    raise NotImplementedError(
+        f"No JAX tilted_pvalue registered for cell "
+        f"(scheme={scheme_name!r}, model={model_kind!r}). "
+        f"Available cells: {sorted(JAX_TILTED_PVALUE)}. "
+        f"To train against a new scheme/model, register a JAX p-value here."
+    )
