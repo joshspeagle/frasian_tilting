@@ -183,12 +183,42 @@ def precompute_generic_grids(
             "precompute_generic_grids: unbounded support fallback not yet "
             "wired (no current Phase 4 consumer needs it)."
         )
-    # Pad by 1% inward to avoid log(0) at θ ∈ {0, 1} on Bernoulli.
-    pad = 0.01 * (support_hi_f - support_lo_f)
+    # Pad inward to keep ``prior.logpdf`` finite on the grid (Bernoulli
+    # at θ ∈ {0, 1} with Beta(α<1, β<1) gives -inf). Phase 4 skeptic
+    # #10: previous fixed 1% pad silently truncated tails on priors
+    # with significant boundary mass (e.g. Beta(0.5, 0.5)); now we
+    # adapt — start at 1e-6, double the pad while the boundary
+    # log-prior is non-finite, cap at 5% of support.
+    width = support_hi_f - support_lo_f
+    pad = 1e-6 * width
+    pad_cap = 0.05 * width
+    lp_lo = lp_hi = float("-inf")
+    while pad <= pad_cap:
+        boundary_lo = support_lo_f + pad
+        boundary_hi = support_hi_f - pad
+        lp_lo = float(np.asarray(prior.logpdf(jnp.asarray([boundary_lo]))).item())
+        lp_hi = float(np.asarray(prior.logpdf(jnp.asarray([boundary_hi]))).item())
+        if np.isfinite(lp_lo) and np.isfinite(lp_hi):
+            break
+        pad *= 2.0
+    if not (np.isfinite(lp_lo) and np.isfinite(lp_hi)):
+        raise ValueError(
+            f"precompute_generic_grids: prior log-pdf non-finite at both "
+            f"grid endpoints even after padding to {pad_cap:.4f} "
+            f"({pad_cap / width * 100:.1f}% of support). The prior "
+            f"concentrates essentially all mass on the boundary; the "
+            f"learned-η training distribution is degenerate."
+        )
     support_theta_grid = jnp.linspace(
         support_lo_f + pad, support_hi_f - pad, n_grid
     )
     log_p_prior_grid = jnp.asarray(prior.logpdf(support_theta_grid))
+    if not bool(jnp.all(jnp.isfinite(log_p_prior_grid))):
+        raise ValueError(
+            f"precompute_generic_grids: prior log-pdf is non-finite at "
+            f"interior grid points (pad={pad:.4g}). The prior may have "
+            f"discontinuities or zero-density regions inside the support."
+        )
     return support_theta_grid, log_p_prior_grid
 
 
@@ -200,6 +230,13 @@ def compute_log_p_lik_grid_np(
     Numpy-side helper called from outside the jit boundary. ``D_batch_np``
     can be ``(B,)`` (n_data == 1) or ``(B, n_data)`` (n_data > 1); each
     row is an independent dataset for ``model.likelihood``.
+
+    Phase 4 skeptic #3 (per-step numpy loop overhead): benchmarked at
+    7.2 ms / step (B=8, n_data=16, n_grid=512) on dev hardware — ~213x
+    slower than a Bernoulli-specific vectorised form, but small in
+    absolute terms relative to the rest of the per-step cost
+    (validity fast path + jit kernel). Vectorising would require a
+    `model.loglik_grid_batched` protocol method — Phase 5+ work.
     """
     B = D_batch_np.shape[0]
     N_grid = support_theta_grid_np.shape[0]

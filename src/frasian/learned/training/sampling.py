@@ -322,6 +322,14 @@ class ExperimentConfig:
             "prior_fingerprint": list(self.prior.fingerprint()),
             "model_fingerprint": list(self.model.fingerprint()),
             "theta_distribution_fingerprint": list(self.theta_distribution.fingerprint()),
+            # Class-name defense-in-depth: closes skeptic Phase 4 #6 —
+            # a subclass with same fingerprint but custom ``logpdf`` /
+            # ``sample_data`` no longer slips through the strict tuple-
+            # equal compare. Pre-Phase-4-refresh checkpoints lack these
+            # keys; ``_check_experiment`` treats absence as legacy and
+            # warns rather than refusing.
+            "prior_class": type(self.prior).__name__,
+            "model_class": type(self.model).__name__,
         }
 
     @classmethod
@@ -347,6 +355,8 @@ class ExperimentConfig:
             "prior_fingerprint",
             "model_fingerprint",
             "theta_distribution_fingerprint",
+            "prior_class",
+            "model_class",
         }
         extras = set(d.keys()) - allowed
         if extras:

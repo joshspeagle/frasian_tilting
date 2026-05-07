@@ -616,6 +616,8 @@ class LearnedDynamicEtaSelector:
         w: float | None,
         model_fingerprint: tuple | None = None,
         prior_fingerprint: tuple | None = None,
+        model: Model | None = None,
+        prior: Prior | None = None,
     ) -> None:
         """Phase E: verify inference matches the trained experiment.
 
@@ -627,6 +629,14 @@ class LearnedDynamicEtaSelector:
         on ``trained_model_fp[0] == "normal_normal"`` and ``w is not
         None``, so non-NN experiments (Bernoulli + Beta) can train
         and load checkpoints through the same selector.
+
+        Phase 4 skeptic #6 (defense-in-depth on subclass collisions):
+        when the inference-time ``model`` / ``prior`` are passed and
+        the checkpoint records ``model_class`` / ``prior_class``
+        (post-Phase-4 checkpoints), reject if the class names differ.
+        Closes the "subclass with same fingerprint but overridden
+        ``logpdf``" silent-acceptance hole. Older checkpoints lacking
+        these keys preserve the legacy fingerprint-only check.
         """
         from .._errors import MissingArtifactError
 
@@ -652,6 +662,33 @@ class LearnedDynamicEtaSelector:
                 f"{tuple(prior_fingerprint)!r}. Train a new "
                 f"checkpoint for this experiment."
             )
+
+        # Phase 4 skeptic #6: class-name compare guards subclass
+        # collisions where ``fingerprint()`` matches but ``logpdf`` /
+        # ``sample_data`` are overridden. Pre-Phase-4 checkpoints lack
+        # the class keys; treat absence as legacy (fingerprint-only).
+        trained_model_cls = meta.get("model_class")
+        trained_prior_cls = meta.get("prior_class")
+        if trained_model_cls is not None and model is not None:
+            if type(model).__name__ != trained_model_cls:
+                raise MissingArtifactError(
+                    f"{self.artifact.name} trained with "
+                    f"model class {trained_model_cls!r}, but inference "
+                    f"model is class {type(model).__name__!r}. The "
+                    f"fingerprint matches but a subclass with overridden "
+                    f"behaviour can produce different posteriors; refuse "
+                    f"rather than silently load."
+                )
+        if trained_prior_cls is not None and prior is not None:
+            if type(prior).__name__ != trained_prior_cls:
+                raise MissingArtifactError(
+                    f"{self.artifact.name} trained with "
+                    f"prior class {trained_prior_cls!r}, but inference "
+                    f"prior is class {type(prior).__name__!r}. The "
+                    f"fingerprint matches but a subclass with overridden "
+                    f"logpdf can produce different posteriors; refuse "
+                    f"rather than silently load."
+                )
 
         # NN-specific w-derived sanity check — only applies when the
         # trained checkpoint is NormalNormal + Normal prior AND the
@@ -753,6 +790,8 @@ class LearnedDynamicEtaSelector:
             w_eff,
             model_fingerprint=tuple(model_fp) if model_fp is not None else None,
             prior_fingerprint=tuple(prior_fp) if prior_fp is not None else None,
+            model=model,
+            prior=prior,
         )
         eta = self.artifact.predict_eta(theta_arr)
         return self._maybe_clamp_eta(eta, scheme=scheme, w=w_eff, alpha=alpha)
@@ -777,15 +816,34 @@ class LearnedDynamicEtaSelector:
             # Non-NN: rely on the checkpoint's eta_explore_box. This
             # matches the training-time domain of ValidityNet, beyond
             # which the artefact has no signal.
+            #
+            # Phase 4 skeptic #7: refuse when ``eta_explore_box`` is
+            # missing from the checkpoint metadata. The previous
+            # silent fallback (lo, hi) = (-inf, +inf) disabled
+            # clamping entirely — a checkpoint that drifted way
+            # outside training η ranges would pass through with no
+            # warning. Pre-Phase-4 (v2-torch / NN) checkpoints used a
+            # closed-form admissible window; only non-NN checkpoints
+            # need this metadata, and any non-NN checkpoint is post-
+            # Phase-4 by construction (the v0_smoke is the first one).
+            from .._errors import MissingArtifactError
+
             box = self.artifact.metadata.get("experiment_config", {}).get(
                 "eta_explore_box"
             )
             if box is None:
-                lo, hi = -np.inf, np.inf
-            else:
-                buffer = 1e-3
-                lo = float(box[0]) + buffer
-                hi = float(box[1]) - buffer
+                raise MissingArtifactError(
+                    f"{self.artifact.name}: checkpoint metadata is missing "
+                    f"``eta_explore_box`` and the trained model is non-"
+                    f"Normal-Normal (no closed-form admissibility window). "
+                    f"Re-train via "
+                    f"`python -m scripts.train_learned_eta --config "
+                    f"<experiment.yaml>` (post-Phase-4 ExperimentConfig "
+                    f"persists eta_explore_box automatically)."
+                )
+            buffer = 1e-3
+            lo = float(box[0]) + buffer
+            hi = float(box[1]) - buffer
         else:
             try:
                 if not (0.0 < w < 1.0):

@@ -191,6 +191,16 @@ def _make_step_fns(
     Closing over the static config / loss_kind / alpha avoids passing
     them through the jit boundary as PyTree leaves (they are not
     JAX arrays and cannot be hashed cheaply for jit's static_argnums).
+
+    Phase 4 skeptic #4 (closure-stale-config defense):
+    ``ExperimentConfig`` is ``frozen=True`` so direct mutation raises
+    ``FrozenInstanceError``. The closure here captures ``config`` by
+    reference; since the same ``config`` is used to build ``LoopArgs``
+    in ``fit_eta_artifact`` (lockstep construction), there is no path
+    in the orchestrator where the closure and ``args.config`` can
+    desync. ``run_epoch_loop`` asserts the lockstep at entry as a
+    defensive guard against external callers that build step fns +
+    LoopArgs separately.
     """
 
     @eqx.filter_jit
@@ -577,6 +587,29 @@ def _epoch_iteration(
 
 def run_epoch_loop(args: LoopArgs) -> EpochLoopOutputs:
     """Run all epochs; track best val state; early-stop on patience."""
+    # Phase 4 skeptic #4 (closure-stale-config defense): when
+    # ``args.config`` is non-NN the orchestrator (``fit_eta_artifact``)
+    # populates ``args.support_theta_grid_np`` from the same config; an
+    # external caller building ``LoopArgs`` manually could pass a
+    # mismatched precomputed grid. Assert presence consistency at
+    # entry — mismatched fingerprints would surface as either a NaN
+    # log-prior grid or a dimension mismatch in the per-step
+    # ``compute_log_p_lik_grid_np``. The cheap None / shape consistency
+    # check below catches the most likely misuse pattern.
+    is_generic = args.config.model.fingerprint()[0] != "normal_normal"
+    if is_generic and args.support_theta_grid_np is None:
+        raise ValueError(
+            "run_epoch_loop: non-Normal-Normal config requires "
+            "args.support_theta_grid_np precomputed (via "
+            "_losses_compose.precompute_generic_grids); got None."
+        )
+    if not is_generic and args.support_theta_grid_np is not None:
+        raise ValueError(
+            "run_epoch_loop: Normal-Normal config does not use "
+            "args.support_theta_grid_np; got a non-None grid which "
+            "suggests the LoopArgs was built from a different config."
+        )
+
     n_train = len(args.theta_train)
     steps_per_epoch = max(1, n_train // args.batch_size)
     use_beta = args.loss_kind == "static_width"

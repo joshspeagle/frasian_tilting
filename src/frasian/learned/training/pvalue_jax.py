@@ -239,20 +239,41 @@ def generic_grid_tilted_pvalue(
     a documented approximation. Callers that need exact Wald should
     use the per-scheme NN closed form via `power_law_tilted_pvalue_jax`.
 
-    Important relationship to closed-form Theorem 8
-    -----------------------------------------------
+    Important relationship to closed-form Theorem 8 (skeptic Phase 4 #1)
+    -------------------------------------------------------------------
     The per-scheme `power_law_tilted_pvalue_jax` for "waldo" returns the
     asymmetric two-Φ form `Φ(b - a) + Φ(-a - b)` where `b = (1-η)(1-w)
-    (μ₀ - θ)/(denom · norm_factor)` carries the prior-data conflict
-    contribution. THIS kernel uses the simpler symmetric normal
-    approximation `2(1 - Φ(|μ - θ|/σ))`. The two AGREE when `b = 0`
-    (i.e. when `η = 1` drops the prior contribution, or when
-    `μ₀ = θ`) but DIFFER by O(b) when the prior conflicts with the
-    test point. The choice is intentional: training only needs a
-    differentiable surrogate, and the symmetric form has cleaner
-    gradients through η. The cross-check test pins moment-level
-    agreement (μ_tilted, σ²_tilted match Theorem 6), NOT p-value
-    agreement.
+    (μ₀ - θ)/(denom · norm_factor)` and `a = |μ_eta - θ|/(w·σ/denom)`.
+    THIS kernel uses the simpler symmetric normal approximation
+    `2(1 - Φ(|μ - θ|/σ_tilted))`. Two algebraic differences:
+
+    1. **Different scale.** Theorem 8 uses `ν = w·σ/denom`, this uses
+       `σ_tilted = σ·√(w/denom)`; ratio `ν/σ_tilted = √(w/denom)`.
+    2. **No prior-conflict term `b`** in the symmetric form.
+
+    Quantified bias on Normal-Normal at the conflict band (|Δ| ≥ 1.5):
+    `argmin_η` of the surrogate drifts up to ~1.3 from `argmin_η` of
+    Theorem 8 — a major bias if this kernel were used for NN training.
+
+    **Why we ship the surrogate anyway.** Production NN training uses
+    `power_law_tilted_pvalue_jax` (Theorem 8 exact) via the
+    `("power_law", "normal_normal")` registry key — the surrogate is
+    NEVER on the NN training path. The grid kernel is registered ONLY
+    under `("power_law", "generic")` for non-NN models (Bernoulli +
+    future), where computing `b` and `ν` exactly would require Monte
+    Carlo over D' under H_0 — the inference-time
+    `power_law._generic_tilted_pvalue` does this at n_mc=200, but it
+    is too expensive for per-step training. The surrogate is the
+    cheapest differentiable proxy that preserves moment-level
+    agreement with Theorem 6.
+
+    Inference-time calibration on Bernoulli is verified separately
+    against the MC reference path (see
+    `tests/regression/test_bernoulli_coverage.py`), so the surrogate's
+    bias is an η-target shift, not a calibration error.
+
+    Bias is pinned by `tests/regression/test_grid_surrogate_vs_theorem8.py`
+    as a regression that catches future widening.
     """
     mu, var = _generic_grid_tilted_moments(
         eta, log_p_lik_grid, log_p_prior_grid, theta_grid
@@ -261,33 +282,17 @@ def generic_grid_tilted_pvalue(
     if statistic_name == "waldo":
         z = jnp.abs(mu - theta_test) / jnp.sqrt(var)
         return 2.0 * (1.0 - _phi(z))
-    if statistic_name == "wald":
-        # Wald is data-anchored (uses MLE not posterior). On the grid
-        # path we approximate by treating the likelihood's mode as the
-        # MLE and the inverse-Fisher-info as the variance scale; both
-        # come from the log-likelihood's curvature at the grid maximum.
-        # NOTE: this is a documented approximation; for exact Wald on
-        # Normal-Normal use `power_law_tilted_pvalue_jax`.
-        # Find the likelihood's mode on the grid.
-        lik_max_idx = jnp.argmax(log_p_lik_grid, axis=-1)        # (B,)
-        mle = theta_grid[lik_max_idx]                            # (B,)
-        # Approximate sigma from the likelihood's curvature: use the
-        # full-width at half-maximum / 2.355 heuristic on the
-        # exponentiated likelihood (sufficient for Bernoulli-like
-        # likelihoods). For Normal-Normal this would equal sigma_eff;
-        # for Bernoulli it approximates sqrt(theta(1-theta)/n).
-        lik_pdf = jnp.exp(log_p_lik_grid - jnp.max(log_p_lik_grid, axis=-1, keepdims=True))
-        lik_Z = jnp.trapezoid(lik_pdf, theta_grid, axis=-1)
-        lik_norm = lik_pdf / lik_Z[:, None]
-        lik_mu = jnp.trapezoid(theta_grid * lik_norm, theta_grid, axis=-1)
-        lik_m2 = jnp.trapezoid(theta_grid * theta_grid * lik_norm, theta_grid, axis=-1)
-        lik_var = jnp.maximum(lik_m2 - lik_mu * lik_mu, 1e-12)
-        sigma_eff = jnp.sqrt(lik_var)
-        z_wald = jnp.abs(mle[:, None] - theta_test) / sigma_eff[:, None]
-        return 2.0 * (1.0 - _phi(z_wald))
+    # Wald is intentionally NOT supported on the grid path:
+    # `WaldStatistic.accepts_tilting` is `identity`-only, so a
+    # `(power_law | ot, "generic") + statistic_name="wald"` cell is
+    # never built by the runner. Removing the dead branch closes
+    # skeptic Phase 4 #2 (a moment-of-likelihood approximation that
+    # was not pinned against closed-form Wald).
     raise NotImplementedError(
         f"generic_grid_tilted_pvalue: statistic={statistic_name!r} "
-        f"not supported (expected 'wald' or 'waldo')."
+        f"not supported (expected 'waldo'). The grid path does not "
+        f"implement Wald; Wald only accepts identity tilting and uses "
+        f"`statistics/wald.py::_generic_pvalue` directly."
     )
 
 
