@@ -204,6 +204,26 @@ def fit_eta_artifact(
 
     theta_grid_t = jnp.asarray(config.theta_grid)
 
+    # For non-Normal-Normal experiments, precompute the integration
+    # grid + log-prior grid once + the per-validation-batch
+    # log-likelihood grid (frozen across epochs).
+    support_theta_grid_np: np.ndarray | None = None
+    log_p_lik_val_t: jax.Array | None = None
+    if config.model.fingerprint()[0] != "normal_normal":
+        from ._losses_compose import (
+            compute_log_p_lik_grid_np,
+            precompute_generic_grids,
+        )
+
+        support_theta_grid_t, _ = precompute_generic_grids(
+            config.model, config.prior
+        )
+        support_theta_grid_np = np.asarray(support_theta_grid_t)
+        log_p_lik_val_np = compute_log_p_lik_grid_np(
+            config.model, D_val_np, support_theta_grid_np
+        )
+        log_p_lik_val_t = jnp.asarray(log_p_lik_val_np)
+
     args = LoopArgs(
         eta_net=eta_net,
         val_net=val_net,
@@ -233,6 +253,8 @@ def fit_eta_artifact(
         antithetic=effective_antithetic,
         device=device_resolved,
         verbose=verbose,
+        support_theta_grid_np=support_theta_grid_np,
+        log_p_lik_val_t=log_p_lik_val_t,
     )
     out = run_epoch_loop(args)
 

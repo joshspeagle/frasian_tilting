@@ -241,6 +241,71 @@ class TestLearnedDynamicEtaSelectorSmoke:
         )
         assert isinstance(eta, float)
 
+    def test_select_grid_accepts_bernoulli_checkpoint(self):
+        """Phase 4c-3: a checkpoint trained on Bernoulli + Beta loads
+        and serves inference without the legacy NN-only ``trained on
+        model 'normal_normal'`` reject. Strict tuple-equal fingerprint
+        compare still enforces cross-experiment safety, but model
+        kind itself is no longer gated."""
+        from frasian.models.bernoulli import BernoulliModel
+        from frasian.models.distributions import BetaDistribution
+
+        @dataclass
+        class _BernoulliStubArtifact:
+            eta_value: float = 0.0
+            scheme_name: str = "power_law"
+            statistic_name: str = "waldo"
+            alpha: float | None = None
+            alpha_pri: float = 2.0
+            beta_pri: float = 2.0
+            name: str = "stub_bernoulli"
+            version: str = "v0"
+            artifact_path: Path = Path("/dev/null")
+            _loaded: bool = field(default=False, init=False, repr=False)
+
+            def load(self) -> None:
+                self._loaded = True
+
+            def predict_eta(self, theta):
+                if not self._loaded:
+                    raise MissingArtifactError(f"{self.name} not loaded")
+                arr = np.asarray(theta, dtype=np.float64)
+                return np.full(arr.shape, self.eta_value)
+
+            def fingerprint(self) -> str:
+                return "bern_stub_v0"
+
+            @property
+            def metadata(self):
+                return {
+                    "checkpoint_format_version": 2,
+                    "experiment_config": {
+                        "scheme_name": self.scheme_name,
+                        "statistic_name": self.statistic_name,
+                        "model_fingerprint": ["bernoulli"],
+                        "prior_fingerprint": ["beta", self.alpha_pri, self.beta_pri],
+                        "eta_explore_box": [-2.0, 2.0],
+                    },
+                    "alpha": self.alpha,
+                }
+
+        artifact = _BernoulliStubArtifact(eta_value=0.3)
+        selector = LearnedDynamicEtaSelector(artifact=artifact)
+        scheme = PowerLawTilting()
+        model = BernoulliModel()
+        prior = BetaDistribution(alpha=2.0, beta=2.0)
+
+        eta = selector.select_grid(
+            np.linspace(0.05, 0.95, 11),
+            scheme,
+            statistic=WaldoStatistic(),
+            model=model,
+            prior=prior,
+            alpha=0.05,
+        )
+        assert eta.shape == (11,)
+        np.testing.assert_allclose(eta, 0.3, atol=1e-12)
+
     def test_select_mismatched_model_fingerprint_raises(self):
         """Artifact trained on σ=1 cannot serve inference at σ=2."""
         artifact = _StubEtaArtifact(sigma=1.0, sigma0=1.0, mu0=0.0)

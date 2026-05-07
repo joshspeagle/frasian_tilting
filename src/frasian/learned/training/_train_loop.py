@@ -38,7 +38,9 @@ from ._losses_compose import (
     beta_schedule,
     compose_boundary_penalty,
     compose_width_loss,
+    compute_log_p_lik_grid_np,
     lambda_schedule,
+    precompute_generic_grids,
 )
 from ._validity_data import (
     collect_validity_batch,
@@ -117,6 +119,12 @@ class LoopArgs:
     antithetic: bool
     device: str
     verbose: bool
+    # Pre-computed integration grid for the Phase 4 generic tilted-pvalue
+    # path (Bernoulli + any non-Normal-Normal model). None for Normal-
+    # Normal experiments — those use the closed-form fast path that
+    # ignores the grids.
+    support_theta_grid_np: np.ndarray | None = None
+    log_p_lik_val_t: jax.Array | None = None
 
 
 def evaluate_head_b_accuracy(
@@ -199,6 +207,21 @@ def _make_step_fns(
 
         return eqx.filter_value_and_grad(loss_fn)(val_net)
 
+    # For non-Normal-Normal experiments, precompute the integration
+    # grid + log-prior grid once per training run. JAX cannot trace
+    # through `model.support()` / `prior.logpdf` (Python state), so
+    # they live in the closure of the jit'd kernel. Per-step
+    # log_p_lik_grid is computed eagerly in `_training_step` and
+    # passed through as a jax.Array.
+    model_kind = config.model.fingerprint()[0]
+    if model_kind == "normal_normal":
+        support_theta_grid_t: jax.Array | None = None
+        log_p_prior_grid_t: jax.Array | None = None
+    else:
+        support_theta_grid_t, log_p_prior_grid_t = precompute_generic_grids(
+            config.model, config.prior
+        )
+
     @eqx.filter_jit
     def head_a_step(
         eta_net: EtaNet,
@@ -208,6 +231,7 @@ def _make_step_fns(
         theta_batch_t: jax.Array,
         lam: jax.Array,
         beta: jax.Array,
+        log_p_lik_grid_t: jax.Array | None = None,
     ) -> tuple[tuple[jax.Array, tuple[jax.Array, jax.Array]], EtaNet]:
         """Compute (loss_a, (loss_width, penalty)), grad_a."""
         def loss_fn(en: EtaNet) -> tuple[jax.Array, tuple[jax.Array, jax.Array]]:
@@ -220,6 +244,9 @@ def _make_step_fns(
                 loss_kind=loss_kind,
                 alpha=alpha,
                 beta=beta_pass,
+                log_p_lik_grid_t=log_p_lik_grid_t,
+                support_theta_grid_t=support_theta_grid_t,
+                log_p_prior_grid_t=log_p_prior_grid_t,
             )
             eta_pred = en(theta_batch_t)
             penalty = compose_boundary_penalty(
@@ -242,12 +269,22 @@ def _make_eval_fn(
 ) -> Callable:
     """Jit'd held-out width-loss evaluator (closure over static fields)."""
 
+    model_kind = config.model.fingerprint()[0]
+    if model_kind == "normal_normal":
+        support_theta_grid_t: jax.Array | None = None
+        log_p_prior_grid_t: jax.Array | None = None
+    else:
+        support_theta_grid_t, log_p_prior_grid_t = precompute_generic_grids(
+            config.model, config.prior
+        )
+
     @eqx.filter_jit
     def eval_loss(
         eta_net: EtaNet,
         theta_grid_t: jax.Array,
         D_val_t: jax.Array,
         beta: jax.Array,
+        log_p_lik_grid_t: jax.Array | None = None,
     ) -> jax.Array:
         beta_pass = beta if use_beta else None
         return compose_width_loss(
@@ -258,6 +295,9 @@ def _make_eval_fn(
             loss_kind=loss_kind,
             alpha=alpha,
             beta=beta_pass,
+            log_p_lik_grid_t=log_p_lik_grid_t,
+            support_theta_grid_t=support_theta_grid_t,
+            log_p_prior_grid_t=log_p_prior_grid_t,
         )
 
     return eval_loss
@@ -303,6 +343,21 @@ def _training_step(
     )
     D_batch_t = jnp.asarray(D_batch_np)
 
+    # For non-NN models, compute the per-step log-likelihood grid
+    # numpy-side. (model.likelihood is a Python factory; JAX cannot
+    # trace through `BernoulliLikelihood(int(arr.sum()), ...)`.)
+    log_p_lik_grid_t: jax.Array | None = None
+    if args.config.model.fingerprint()[0] != "normal_normal":
+        if args.support_theta_grid_np is None:
+            raise RuntimeError(
+                "non-Normal-Normal training expects "
+                "args.support_theta_grid_np to be precomputed."
+            )
+        log_p_lik_grid_np = compute_log_p_lik_grid_np(
+            args.config.model, D_batch_np, args.support_theta_grid_np
+        )
+        log_p_lik_grid_t = jnp.asarray(log_p_lik_grid_np)
+
     try:
         (loss_a, (loss_width, penalty)), grads_a = head_a_step(
             args.eta_net,
@@ -312,6 +367,7 @@ def _training_step(
             theta_batch_t,
             lam,
             beta,
+            log_p_lik_grid_t,
         )
     except (ValueError, RuntimeError) as e:
         if args.verbose:
@@ -379,7 +435,15 @@ def _evaluate_epoch(
 ) -> tuple[float, float]:
     """Compute (val_loss, head_b_accuracy) on the frozen held-out set."""
     try:
-        v_loss = float(eval_fn(args.eta_net, args.theta_grid_t, args.D_val_t, beta))
+        v_loss = float(
+            eval_fn(
+                args.eta_net,
+                args.theta_grid_t,
+                args.D_val_t,
+                beta,
+                args.log_p_lik_val_t,
+            )
+        )
     except (ValueError, RuntimeError):
         v_loss = float("inf")
     if not np.isfinite(v_loss):
@@ -390,8 +454,21 @@ def _evaluate_epoch(
     return v_loss, head_b_acc
 
 
-def _maybe_warn_class_degenerate(epoch: int, mean_aux_rate: float) -> None:
-    """Warn on class-degenerate Head-B BCE batch."""
+def _maybe_warn_class_degenerate(
+    epoch: int, mean_aux_rate: float, model_kind: str = "normal_normal"
+) -> None:
+    """Warn on class-degenerate Head-B BCE batch.
+
+    Bernoulli + power_law (and other non-NN models with the generic
+    grid path) have no closed-form admissibility boundary — virtually
+    every (θ, η) in ``eta_explore_box`` produces a finite p-value in
+    [0, 1] under MC labelling. ValidityNet has nothing to learn, and
+    the boundary penalty becomes a near-no-op. That is the design,
+    not a bug — the dual-head architecture is over-specified for
+    these models. Skip the warning.
+    """
+    if model_kind != "normal_normal":
+        return
     if 0.05 <= mean_aux_rate <= 0.95:
         return
     warnings.warn(
@@ -468,7 +545,9 @@ def _epoch_iteration(
     out.train_width_losses.append(agg.width_loss / denom)
     out.train_penalty_losses.append(agg.penalty_loss / denom)
     mean_aux_rate = agg.aux_valid_rate_sum / denom
-    _maybe_warn_class_degenerate(epoch, mean_aux_rate)
+    _maybe_warn_class_degenerate(
+        epoch, mean_aux_rate, model_kind=args.config.model.fingerprint()[0]
+    )
 
     v_loss, head_b_acc = _evaluate_epoch(args, eval_fn, beta)
     out.val_losses.append(v_loss)

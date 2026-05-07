@@ -33,6 +33,7 @@ from typing import Any
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 from ... import _jax_setup as _x64  # noqa: F401  — ensure float64 active
 from ...models.distributions import NormalDistribution
@@ -159,6 +160,58 @@ def _call_normal_normal_pvalue(
     )
 
 
+def precompute_generic_grids(
+    model: Any, prior: Any, n_grid: int = _N_GRID_GENERIC_TRAINING
+) -> tuple[jax.Array, jax.Array]:
+    """Precompute ``(support_theta_grid, log_p_prior_grid)`` once per
+    experiment (model + prior fixed across training).
+
+    Returns a pair of jnp arrays. Numpy-side computation; called
+    from outside the jit boundary (typically once at training start)
+    and the result is closed over by the per-step jit'd kernel.
+    """
+    if not hasattr(model, "support"):
+        raise NotImplementedError(
+            f"precompute_generic_grids requires `model.support()`; "
+            f"got {type(model).__name__!r} without it."
+        )
+    support_lo, support_hi = model.support()
+    support_lo_f = float(support_lo)
+    support_hi_f = float(support_hi)
+    if not (np.isfinite(support_lo_f) and np.isfinite(support_hi_f)):
+        raise NotImplementedError(
+            "precompute_generic_grids: unbounded support fallback not yet "
+            "wired (no current Phase 4 consumer needs it)."
+        )
+    # Pad by 1% inward to avoid log(0) at θ ∈ {0, 1} on Bernoulli.
+    pad = 0.01 * (support_hi_f - support_lo_f)
+    support_theta_grid = jnp.linspace(
+        support_lo_f + pad, support_hi_f - pad, n_grid
+    )
+    log_p_prior_grid = jnp.asarray(prior.logpdf(support_theta_grid))
+    return support_theta_grid, log_p_prior_grid
+
+
+def compute_log_p_lik_grid_np(
+    model: Any, D_batch_np: np.ndarray, support_theta_grid_np: np.ndarray
+) -> np.ndarray:
+    """Build ``(B, N_grid)`` log-likelihood grid per batch element.
+
+    Numpy-side helper called from outside the jit boundary. ``D_batch_np``
+    can be ``(B,)`` (n_data == 1) or ``(B, n_data)`` (n_data > 1); each
+    row is an independent dataset for ``model.likelihood``.
+    """
+    B = D_batch_np.shape[0]
+    N_grid = support_theta_grid_np.shape[0]
+    out = np.empty((B, N_grid), dtype=np.float64)
+    is_2d = D_batch_np.ndim == 2
+    for i in range(B):
+        d_i = D_batch_np[i] if is_2d else np.atleast_1d(D_batch_np[i])
+        likelihood_i = model.likelihood(np.asarray(d_i, dtype=np.float64))
+        out[i] = np.asarray(likelihood_i.loglik(support_theta_grid_np))
+    return out
+
+
 def _call_generic_grid_pvalue(
     *,
     eta_net: EtaNet,
@@ -168,60 +221,42 @@ def _call_generic_grid_pvalue(
     prior: Any,
     statistic_name: str,
     scheme_name: str,
+    log_p_lik_grid_t: jax.Array | None = None,
+    support_theta_grid_t: jax.Array | None = None,
+    log_p_prior_grid_t: jax.Array | None = None,
 ) -> jax.Array:
-    """Adapter: build grid log-densities from (model, prior, data) and
-    call `generic_grid_tilted_pvalue` (Phase 4 generic path).
+    """Adapter: call ``generic_grid_tilted_pvalue`` (Phase 4 generic path).
 
-    The integration grid (`support_theta_grid`) lives on the model's
-    parameter support. For bounded supports (Bernoulli's [0, 1]) we
-    use the support window directly with an interior padding to avoid
-    log(0) at the boundary. For unbounded supports we fall back to
-    a posterior-mean ± 6σ heuristic on the first batch element (all
-    batch elements share the same support window since the model is
-    fixed; only D varies, which only affects log_lik on the grid).
+    Requires pre-computed grids (`log_p_lik_grid_t`,
+    `support_theta_grid_t`, `log_p_prior_grid_t`) — these depend on
+    Python state (``model.likelihood``, ``prior.logpdf``,
+    ``model.support()``) that JAX cannot trace through. The caller
+    (``_training_step``) precomputes them numpy-side and passes them
+    in as jax arrays; the per-step jit kernel then closes over the
+    fixed prior+support grids and receives a fresh ``log_p_lik_grid``
+    each step.
     """
     from .pvalue_jax import generic_grid_tilted_pvalue
 
-    if not hasattr(model, "support"):
-        raise NotImplementedError(
-            f"_call_generic_grid_pvalue requires `model.support()`; "
-            f"got {type(model).__name__!r} without it."
+    del D_batch_t, model, prior, scheme_name  # unused in the kernel call
+    if log_p_lik_grid_t is None or support_theta_grid_t is None or log_p_prior_grid_t is None:
+        raise ValueError(
+            "_call_generic_grid_pvalue requires pre-computed "
+            "log_p_lik_grid_t, support_theta_grid_t, and "
+            "log_p_prior_grid_t (compute via "
+            "`precompute_generic_grids` + `compute_log_p_lik_grid_np` "
+            "outside the jit boundary)."
         )
-    support_lo, support_hi = model.support()
-    n_grid = _N_GRID_GENERIC_TRAINING
-    if jnp.isfinite(support_lo) and jnp.isfinite(support_hi):
-        # Bounded support — pad by 1% inward to avoid log-density
-        # divergence at the boundary on Bernoulli (log(0) = -inf at θ ∈ {0, 1}).
-        pad = 0.01 * (float(support_hi) - float(support_lo))
-        support_theta_grid = jnp.linspace(
-            float(support_lo) + pad, float(support_hi) - pad, n_grid
-        )
-    else:
-        raise NotImplementedError(
-            "_call_generic_grid_pvalue: unbounded support fallback not yet "
-            "wired (no current Phase 4 consumer needs it)."
-        )
-
-    log_p_prior_grid = jnp.asarray(prior.logpdf(support_theta_grid))  # (N_grid,)
-    # Vectorise log-likelihood over batch via numpy loop + stack
-    # (model.likelihood is a Python factory; jax.vmap can't trace through
-    # it without protocol changes). The loop is on B (typically 4-8),
-    # negligible relative to the kernel's O(B*G*N_grid) cost.
-    log_lik_per_b = []
-    for d_b in D_batch_t:
-        likelihood_b = model.likelihood(jnp.atleast_1d(d_b))
-        log_lik_per_b.append(jnp.asarray(likelihood_b.loglik(support_theta_grid)))
-    log_p_lik_grid = jnp.stack(log_lik_per_b, axis=0)  # (B, N_grid)
 
     eta_grid = eta_net(theta_grid_t)  # (G_test,)
     G = theta_grid_t.shape[0]
-    B = D_batch_t.shape[0]
+    B = log_p_lik_grid_t.shape[0]
     return generic_grid_tilted_pvalue(
         jnp.broadcast_to(theta_grid_t[None, :], (B, G)),  # (B, G_test)
         jnp.broadcast_to(eta_grid[None, :], (B, G)),  # (B, G_test)
-        log_p_lik_grid,                                    # (B, N_grid)
-        log_p_prior_grid,                                  # (N_grid,)
-        support_theta_grid,                                # (N_grid,)
+        log_p_lik_grid_t,        # (B, N_grid)
+        log_p_prior_grid_t,      # (N_grid,)
+        support_theta_grid_t,    # (N_grid,)
         statistic_name,
     )
 
@@ -264,6 +299,9 @@ def compose_width_loss(
     loss_kind: str,
     alpha: float | None,
     beta: float | None = None,
+    log_p_lik_grid_t: jax.Array | None = None,
+    support_theta_grid_t: jax.Array | None = None,
+    log_p_prior_grid_t: jax.Array | None = None,
 ) -> jax.Array:
     """Integrated-p (or variant) width loss averaged over a D batch.
 
@@ -273,11 +311,11 @@ def compose_width_loss(
     (byte-identical to pre-Phase-4b output); on Bernoulli + power_law
     it routes through the grid-based generic path.
 
-    Skeptic block #1: a single-D Monte Carlo estimator has too much
-    variance for both training and validation signal. Vectorise over
-    a (B,) D array and average; gives an unbiased estimator with
-    variance ~1/B. The JAX tilted-pvalue port broadcasts naturally so
-    this is one tensor call, not a Python loop.
+    Generic-path inputs (``log_p_lik_grid_t``, ``support_theta_grid_t``,
+    ``log_p_prior_grid_t``) are pre-computed numpy-side outside the
+    jit boundary (see ``precompute_generic_grids`` and
+    ``compute_log_p_lik_grid_np``); they are unused by the NN
+    closed-form path.
 
     The ``beta`` argument is forwarded to ``static_width_loss`` only.
     """
@@ -290,7 +328,7 @@ def compose_width_loss(
 
     model_kind = config.model.fingerprint()[0]
     adapter = _resolve_width_loss_adapter(config.scheme_name, model_kind)
-    p_grid = adapter(
+    adapter_kwargs: dict[str, Any] = dict(
         eta_net=eta_net,
         theta_grid_t=theta_grid_t,
         D_batch_t=D_batch_t,
@@ -299,6 +337,13 @@ def compose_width_loss(
         statistic_name=config.statistic_name,
         scheme_name=config.scheme_name,
     )
+    if adapter is _call_generic_grid_pvalue:
+        adapter_kwargs.update(
+            log_p_lik_grid_t=log_p_lik_grid_t,
+            support_theta_grid_t=support_theta_grid_t,
+            log_p_prior_grid_t=log_p_prior_grid_t,
+        )
+    p_grid = adapter(**adapter_kwargs)
     G = theta_grid_t.shape[0]
     B = D_batch_t.shape[0]
     # Skeptic caveat #12: float64 round-off in `_phi(b-a) + _phi(-a-b)`

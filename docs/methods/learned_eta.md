@@ -263,15 +263,22 @@ verifies in `tests/properties/test_loss_diff.py`.
 - **Static-width sharpness.** Default `β = 200` keeps the relaxation
   bias < 1% at α ∈ [0.05, 0.5]; for very small α (≤ 0.01) raise to
   `β ≥ 500` or expect bias.
-- **Non-Gaussian likelihoods.** Today's torch p-value registry
-  covers `power_law` and `ot` on Normal-Normal only. The Phase E
-  training loop is structurally model-agnostic — it routes through
-  `Model` / `Prior` / `TiltingScheme` protocols — but
-  `_extract_normal_normal_params` raises `NotImplementedError` for
-  non-Normal-Normal experiments because the existing torch ports
-  take Normal-Normal coordinates. Extending to a new model/prior
-  pair requires either generalising those ports or registering new
-  ones.
+- **Non-Gaussian likelihoods.** Phase 4 generalised the JAX
+  tilted-pvalue registry from `dict[str, ...]` to `dict[tuple[
+  scheme_name, model_kind], ...]`. Closed-form NN paths register
+  under `("power_law", "normal_normal")` / `("ot", "normal_normal")`
+  and stay byte-equal with the pre-Phase-4 surface. The new generic
+  grid kernel (`pvalue_jax.generic_grid_tilted_pvalue`) registers
+  under `("power_law", "generic")` and serves any `(Model, Prior)`
+  with finite `model.support()` and `prior.logpdf` defined on the
+  grid. `ExperimentConfig` carries `n_data: int = 1` so non-NN
+  experiments (e.g. Bernoulli + Beta(2, 2)) can sample the
+  multi-observation likelihood per training θ. The
+  `LearnedDynamicEtaSelector` byte-equal fingerprint compare is
+  unchanged; the historical NN-only model/prior reject is gone, and
+  `_maybe_clamp_eta` now falls back to the checkpoint's
+  `eta_explore_box` when `w_eff` is undefined (non-NN). Trained
+  non-NN checkpoints round-trip through the same selector.
 
 ## Invariants
 

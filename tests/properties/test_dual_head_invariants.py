@@ -383,10 +383,13 @@ def test_compute_pvalues_per_sample_2d_D_routes_per_sample():
                   [0.0, 0.0, 1.0, 1.0]])
     p = compute_pvalues_per_sample(scheme, theta, D, model, prior, eta, "waldo")
     assert p.shape == (3,)
-    # Bernoulli + power_law has no closed-form tilted_pvalue → loop
-    # catches NotImplementedError per row → all NaN. Phase 4c-2 will
-    # wire the generic path; for now, the shape contract is what we pin.
-    assert np.all(np.isnan(p))
+    # Phase 4c-2: non-NN models route through the scheme's generic MC
+    # tilted-pvalue. Output is finite, in [0, 1], and the validity
+    # mask flips True (Head B can now train on Bernoulli).
+    assert np.all(np.isfinite(p))
+    assert np.all((p >= 0.0) & (p <= 1.0))
+    from frasian.learned.training.validity import validity_mask
+    assert validity_mask(p).all()
 
 
 @pytest.mark.L1

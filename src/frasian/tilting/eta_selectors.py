@@ -613,38 +613,31 @@ class LearnedDynamicEtaSelector:
 
     def _check_experiment(
         self,
-        w: float,
+        w: float | None,
         model_fingerprint: tuple | None = None,
         prior_fingerprint: tuple | None = None,
     ) -> None:
         """Phase E: verify inference matches the trained experiment.
 
         Strict tuple-equal compare on (model.fingerprint(),
-        prior.fingerprint()) when both are plumbed through from the
-        caller. Falls back to a w-only derived check if not — this
-        catches gross mismatches but cannot distinguish two
-        ``(σ, σ₀)`` pairs giving the same ``w``.
+        prior.fingerprint()) is the primary safety check — and it
+        is sufficient: byte-equal fingerprints rule out any
+        cross-experiment use. The historical w-derived check (NN
+        only) and the NN-only model/prior gate are kept conditional
+        on ``trained_model_fp[0] == "normal_normal"`` and ``w is not
+        None``, so non-NN experiments (Bernoulli + Beta) can train
+        and load checkpoints through the same selector.
         """
         from .._errors import MissingArtifactError
 
         meta = self.artifact.metadata["experiment_config"]
         trained_model_fp = tuple(meta["model_fingerprint"])
         trained_prior_fp = tuple(meta["prior_fingerprint"])
-        # Normal-Normal-only inversion path today.
-        if trained_model_fp[0] != "normal_normal":
-            raise MissingArtifactError(
-                f"{self.artifact.name} trained on model "
-                f"{trained_model_fp[0]!r}; only Normal-Normal is "
-                f"supported by the Phase E inversion path."
-            )
-        if trained_prior_fp[0] != "normal":
-            raise MissingArtifactError(
-                f"{self.artifact.name} trained with prior "
-                f"{trained_prior_fp[0]!r}; only NormalDistribution is "
-                f"supported by the Phase E inversion path."
-            )
 
-        # Strict per-fingerprint compare when available.
+        # Strict per-fingerprint compare when available — this is the
+        # cross-experiment safety net. A byte-equal match rules out
+        # both NN/NN drift and any non-NN (Bernoulli/Beta, ...) cross-
+        # use; an unequal match refuses loudly.
         if model_fingerprint is not None and tuple(model_fingerprint) != trained_model_fp:
             raise MissingArtifactError(
                 f"{self.artifact.name} trained on model "
@@ -660,8 +653,14 @@ class LearnedDynamicEtaSelector:
                 f"checkpoint for this experiment."
             )
 
-        # Derived w check (catches rough mismatches even when
-        # fingerprints aren't plumbed through).
+        # NN-specific w-derived sanity check — only applies when the
+        # trained checkpoint is NormalNormal + Normal prior AND the
+        # caller supplied a w. For non-NN models w is meaningless and
+        # the call passes ``w=None``.
+        if w is None:
+            return
+        if trained_model_fp[0] != "normal_normal" or trained_prior_fp[0] != "normal":
+            return
         sigma_trained = float(trained_model_fp[1])
         sigma0_trained = float(trained_prior_fp[2])
         w_trained = sigma0_trained**2 / (sigma_trained**2 + sigma0_trained**2)
@@ -674,13 +673,13 @@ class LearnedDynamicEtaSelector:
             )
         # Mirror the training-time degenerate-w guard so that hand-
         # edited or out-of-band checkpoints can't slip through with
-        # w → 0 / w → 1 (where the torch port's denom-clamp distorts
+        # w → 0 / w → 1 (where the JAX port's denom-clamp distorts
         # silently).
         _W_EPS = 1e-3
         if not (_W_EPS < w < 1.0 - _W_EPS):
             raise MissingArtifactError(
                 f"{self.artifact.name}: inference w={w:.6f} is outside "
-                f"({_W_EPS}, {1.0 - _W_EPS}); the torch port's "
+                f"({_W_EPS}, {1.0 - _W_EPS}); the JAX port's "
                 f"denom-clamp distorts silently in this regime."
             )
 
@@ -733,12 +732,23 @@ class LearnedDynamicEtaSelector:
         theta_arr = np.asarray(grid, dtype=np.float64)
         model_fp = getattr(model, "fingerprint", lambda: None)()
         prior_fp = getattr(prior, "fingerprint", lambda: None)()
-        if hasattr(model, "sigma") and hasattr(prior, "scale"):
+        # w_eff is the data-weight ratio σ₀² / (σ² + σ₀²) — defined
+        # only for the (NormalNormal, NormalDistribution) pair. For
+        # non-NN experiments (Bernoulli + Beta) it is meaningless;
+        # pass None so `_check_experiment` skips the NN-derived
+        # sanity check and `_maybe_clamp_eta` skips the NN-specific
+        # admissibility window.
+        w_eff: float | None
+        if (
+            model_fp is not None and prior_fp is not None
+            and tuple(model_fp)[0] == "normal_normal"
+            and tuple(prior_fp)[0] == "normal"
+        ):
             w_eff = float(prior.scale) ** 2 / (
                 float(model.sigma) ** 2 + float(prior.scale) ** 2
             )
-        else:  # pragma: no cover — non-Normal models will fail below
-            w_eff = 0.5
+        else:
+            w_eff = None
         self._check_experiment(
             w_eff,
             model_fingerprint=tuple(model_fp) if model_fp is not None else None,
@@ -750,29 +760,46 @@ class LearnedDynamicEtaSelector:
     def _maybe_clamp_eta(self, eta, *, scheme, w, alpha):
         """Runtime safety net for predicted η outside admissible range.
 
-        Admissibility bounds are computed inline from the closed-form
-        Normal-Normal `power_law` window
-        `(-w/(1-w) + buffer, 1/(1-w) - buffer)` (also a valid superset
-        for `ot`'s `[0, 1]` admissible region for any `w ∈ (0, 1)`).
-        Schemes outside the Normal-Normal sandbox would need a
-        scheme-specific generalization; today the only registered
-        non-stub schemes are `power_law` and `ot`, both of which the
-        Phase E checkpoints train against.
+        For Normal-Normal experiments (``w`` is a finite float in
+        ``(0, 1)``) the admissible window is the closed-form
+        ``power_law`` bound ``(-w/(1-w) + buffer, 1/(1-w) - buffer)``
+        — a valid superset of ``ot``'s ``[0, 1]``.
+
+        For non-Normal-Normal experiments (``w is None``, e.g.
+        Bernoulli + Beta), the admissibility region is learned by
+        ``ValidityNet`` during training; the closed-form clamp is
+        not applicable. We fall back to the eta-explore-box recorded
+        in the checkpoint metadata (``eta_explore_box``), with a
+        small interior buffer.
         """
         del alpha  # bounds are α-independent
-        try:
-            if not (0.0 < w < 1.0):
-                raise ValueError(f"w must lie in (0, 1); got {w!r}")
-            buffer = 1e-3
-            if scheme.name == "ot":
-                lo, hi = 0.0 + buffer, 1.0 - buffer
+        if w is None:
+            # Non-NN: rely on the checkpoint's eta_explore_box. This
+            # matches the training-time domain of ValidityNet, beyond
+            # which the artefact has no signal.
+            box = self.artifact.metadata.get("experiment_config", {}).get(
+                "eta_explore_box"
+            )
+            if box is None:
+                lo, hi = -np.inf, np.inf
             else:
-                # power_law (and any other Normal-Normal scheme using
-                # the same admissible window).
-                lo = -w / (1.0 - w) + buffer
-                hi = 1.0 / (1.0 - w) - buffer
-        except (ValueError, TiltingDomainError):
-            lo, hi = -np.inf, np.inf
+                buffer = 1e-3
+                lo = float(box[0]) + buffer
+                hi = float(box[1]) - buffer
+        else:
+            try:
+                if not (0.0 < w < 1.0):
+                    raise ValueError(f"w must lie in (0, 1); got {w!r}")
+                buffer = 1e-3
+                if scheme.name == "ot":
+                    lo, hi = 0.0 + buffer, 1.0 - buffer
+                else:
+                    # power_law (and any other Normal-Normal scheme
+                    # using the same admissible window).
+                    lo = -w / (1.0 - w) + buffer
+                    hi = 1.0 / (1.0 - w) - buffer
+            except (ValueError, TiltingDomainError):
+                lo, hi = -np.inf, np.inf
         margin = 1e-6 * max(1.0, abs(hi - lo) if np.isfinite(hi - lo) else 1.0)
         lo_safe = lo + margin if np.isfinite(lo) else -np.inf
         hi_safe = hi - margin if np.isfinite(hi) else np.inf
