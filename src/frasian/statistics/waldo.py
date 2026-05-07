@@ -398,7 +398,6 @@ class WaldoStatistic:
             ) - alpha
 
         half = max(4.0 * sigma_post, 1e-3)
-        support_lo, support_hi = model.support()
         try:
             lower = brentq_with_doubling(
                 f, midpoint=mu_post, initial_half_width=half, direction=-1
