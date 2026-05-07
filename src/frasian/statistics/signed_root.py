@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
+import jax
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
@@ -37,17 +38,17 @@ class SignedRootStatistic:
 
     def evaluate(
         self, theta0: ArrayLike, data: NDArray[np.float64], model: Model, prior: Prior | None = None
-    ) -> NDArray[np.float64]:
+    ) -> jax.Array:
         raise NotImplementedError("SignedRootStatistic is a stub; see docs/methods/signed_root.md.")
 
     def pvalue(
         self, theta0: ArrayLike, data: NDArray[np.float64], model: Model, prior: Prior | None = None
-    ) -> NDArray[np.float64]:
+    ) -> jax.Array:
         raise NotImplementedError("SignedRootStatistic is a stub; see docs/methods/signed_root.md.")
 
     def acceptance_region(
         self, alpha: float, theta0: ArrayLike, model: Model, prior: Prior | None = None
-    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    ) -> tuple[jax.Array, jax.Array]:
         raise NotImplementedError("SignedRootStatistic is a stub; see docs/methods/signed_root.md.")
 
     def confidence_interval(

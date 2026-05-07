@@ -36,7 +36,7 @@ from numpy.typing import ArrayLike, NDArray
 
 from .._registry import register_tilting
 from ..models.base import Likelihood, Posterior, Prior
-from .base import ParamSpec, TiltingContext
+from .base import ParamSpec
 
 
 @register_tilting(name="fisher_rao", brief="docs/methods/fisher_rao.md", status="stub")
@@ -67,6 +67,3 @@ class FisherRaoTilting:
 
     def is_identity(self, eta: float) -> bool:
         return eta == self.param_space.eta_identity
-
-    def admissible_range(self, context: TiltingContext) -> tuple[float, float]:
-        return (0.0, 1.0)

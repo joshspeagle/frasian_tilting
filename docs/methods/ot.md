@@ -278,3 +278,66 @@ The framework's calibrated default selector is
 `DynamicNumericalEtaSelector` (per-θ varying η), same as `power_law`.
 Cell name picks up the selector when non-default, e.g.
 `ot[dynamic_numerical]` is the OT-WALDO calibrated cell.
+
+### Generic numerical path (Phase 3d)
+
+`OTTilting` now supports non-Normal-Normal pairings via a generic
+numerical implementation. Dispatch in `confidence_regions` /
+`confidence_interval` / `pvalue` routes through
+`_generic_tilted_confidence_interval_ot` (or the per-θ pvalue
+analogue) when `(model, prior)` is not the Normal-Normal pair.
+Only **static** selectors are supported on the generic path
+(dynamic selectors still require Normal-Normal — the dynamic
+scanner builds its θ-window from `D ± search_mult * sigma`).
+
+The generic-path geodesic is the **W2 quantile-mixture** between:
+- **`p` = posterior**: directly from `model.posterior(data, prior)`
+  (e.g. `Beta(α₀+k, β₀+n-k)` on Bernoulli + Beta prior).
+- **`q` = likelihood-as-distribution**: a `GridDistribution` built
+  from `log L(θ)` normalised over `model.support()`. For Bernoulli,
+  this is `Beta(k+1, n-k+1)` shape on `[0, 1]`. **At `eta=1` the
+  OT endpoint is therefore the *normalised likelihood as a proper
+  density* on the support — NOT a Wald-like point-mass at the MLE,
+  and NOT a Gaussian.** The distinction matters for non-Gaussian
+  likelihoods: on Bernoulli with k=4 successes, n=6 trials, the
+  η=1 endpoint has mean ≈ 5/8 ≈ 0.625 (the Beta(5, 3) mean), not
+  0.667 (the MLE).
+
+The MC tilted p-value uses the same CRN-seeded blake2b discipline
+as `WaldoStatistic` and `PowerLawTilting._generic_tilted_pvalue`;
+seed depends on `(data, model.fingerprint, prior.fingerprint, eta,
+alpha)` but NOT on theta, enabling shared uniform streams across
+brentq probes within one CI inversion AND across schemes (so the
+smoothness experiment can directly compare PowerLaw vs OT MC
+draws at fixed inputs).
+
+Cross-path agreement on Normal-Normal is pinned at L3 across
+`eta ∈ {0.0, 0.3, 0.7, 1.0}` in
+`tests/regression/test_ot_generic_tilt.py::test_ot_generic_ci_matches_closed_form_normal_normal`.
+
+**Failure modes specific to the generic path**:
+- `OTTilting.tilt(posterior, prior, likelihood, eta)` (the public
+  protocol method) raises `NotImplementedError` on non-Gaussian
+  likelihood because it cannot construct the W2 second endpoint
+  without `(model, data)`. Use `confidence_regions(...)` for the
+  end-to-end flow, or call `_generic_tilt_ot(posterior, likelihood,
+  eta, model=, data=, support=)` directly. (PowerLawTilting.tilt()
+  doesn't have this constraint — it doesn't need data because the
+  formula `log L + (1-η) log π` is computed at eval points; the
+  asymmetry is intentional, see Failure modes in `power_law.md`.)
+- The generic CI inversion bracket is rooted at the OBSERVED
+  tilted moments (not at the data MLE). For extreme data where
+  the CI extends to the support boundary, the explicit boundary
+  detection from Phase 3c-fix1 returns the support endpoint
+  cleanly (no silent brentq exhaustion).
+
+### Phase 4 entry point: `_ot_tilted_pvalue_kernel`
+
+Mirrors `power_law`'s factoring (see `power_law.md`): a private
+autodiff-clean JAX kernel `src/frasian/tilting/ot.py::_ot_tilted_pvalue_kernel`
+wrapped in `@jax.jit(static_argnames=("statistic_name",))` is the
+contract Phase 4's learned-η loss closes over. The public
+`OTTilting.tilted_pvalue` validates `eta ∈ [0, 1]` in numpy and
+shape-dispatches between the bulk JAX kernel and a numpy-eager
+scalar fast path (`_ot_tilted_pvalue_numpy_scalar`, for brentq inner
+loops).

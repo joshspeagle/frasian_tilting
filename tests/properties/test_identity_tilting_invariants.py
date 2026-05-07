@@ -87,10 +87,17 @@ class TestIdentityTiltingInvariants:
         )
         np.testing.assert_allclose(ci_via_tilting, ci_direct, atol=1e-9)
 
-    def test_admissible_range_is_unbounded(self):
-        from frasian.tilting.base import TiltingContext
-
-        ctx = TiltingContext(w=0.5, abs_delta=1.0, alpha=0.05)
-        lo, hi = IdentityTilting().admissible_range(ctx)
-        assert np.isinf(lo) and lo < 0
-        assert np.isinf(hi) and hi > 0
+    def test_identity_accepts_any_eta(self):
+        """Phase 3a-1.5: `admissible_range` is gone from the public protocol.
+        For IdentityTilting, the equivalent invariant is that `tilt`
+        accepts any finite η without raising.
+        """
+        scheme = IdentityTilting()
+        model = NormalNormalModel(sigma=1.0)
+        prior = NormalDistribution(loc=0.0, scale=1.0)
+        likelihood = GaussianLikelihood(D=0.0, sigma=1.0)
+        post = model.posterior(np.asarray([0.0]), prior)
+        for eta in (-1e6, -1.0, 0.0, 0.5, 1.0, 1e6):
+            out = scheme.tilt(post, prior, likelihood, eta)
+            # Identity returns the input posterior verbatim.
+            assert out is post

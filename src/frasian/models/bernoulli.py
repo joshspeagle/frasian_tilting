@@ -20,13 +20,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 from numpy.random import Generator
 from numpy.typing import ArrayLike, NDArray
 
+from .. import _jax_setup as _x64  # noqa: F401  — ensure float64 active
 from .._registry import register_model
 from .base import Prior
 from .distributions import BernoulliLikelihood, BetaDistribution
+
+_FORCE_X64 = _x64
 
 
 @register_model(name="bernoulli", brief="docs/methods/bernoulli.md")
@@ -73,17 +78,17 @@ class BernoulliModel:
             beta=prior.beta + (n_total - n_success),
         )
 
-    def mle(self, data: NDArray[np.float64]) -> NDArray[np.float64]:
+    def mle(self, data: NDArray[np.float64]) -> jax.Array:
         arr = np.atleast_1d(np.asarray(data, dtype=np.float64))
-        return np.asarray(arr.mean(), dtype=np.float64)
+        return jnp.asarray(arr.mean())
 
-    def fisher_information(self, theta: ArrayLike) -> NDArray[np.float64]:
-        theta_arr = np.asarray(theta, dtype=np.float64)
+    def fisher_information(self, theta: ArrayLike) -> jax.Array:
+        theta_arr = jnp.asarray(theta)
         # I(theta) = 1 / (theta * (1 - theta)) for Bernoulli.
         # Guard against the boundary singularity.
         eps = 1e-300
-        denom = np.clip(theta_arr * (1.0 - theta_arr), eps, None)
-        return np.asarray(1.0 / denom, dtype=np.float64)
+        denom = jnp.clip(theta_arr * (1.0 - theta_arr), eps, None)
+        return 1.0 / denom
 
     def support(self) -> tuple[float, float]:
         return (0.0, 1.0)

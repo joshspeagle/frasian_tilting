@@ -101,16 +101,6 @@ class TestOTInvariants:
         assert abs(a.loc - b.loc) <= bound
         assert abs(a.scale - b.scale) <= bound
 
-    def test_admissible_range_is_unit_interval(self):
-        """t in [0, 1] by construction."""
-        from frasian.tilting.base import TiltingContext
-
-        scheme = OTTilting()
-        ctx = TiltingContext(w=0.5, abs_delta=1.0, alpha=0.05)
-        lo, hi = scheme.admissible_range(ctx)
-        assert lo == 0.0
-        assert hi == 1.0
-
     def test_out_of_domain_raises(self):
         """eta < 0 or eta > 1 must raise TiltingDomainError, not return NaN."""
         sigma, sigma0 = 1.0, 1.0

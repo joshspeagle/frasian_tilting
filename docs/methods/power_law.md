@@ -117,8 +117,15 @@ a follow-up cleanup task.
 ## Links
 
 - Implementation: `src/frasian/tilting/power_law.py`
+- Generic-path GridDistribution: `src/frasian/tilting/_grid_distribution.py`
 - Solver: `src/frasian/tilting/_solvers.py`
-- Regression tests: `tests/regression/test_power_law_tilting.py`
+- Regression tests:
+  - `tests/regression/test_power_law_tilting.py` (closed-form NN)
+  - `tests/regression/test_power_law_generic_tilt.py` (generic tilt)
+  - `tests/regression/test_power_law_generic_pvalue_ci.py` (generic pvalue + CI)
+  - `tests/regression/test_power_law_generic_matches_closed_form.py` (cross-check)
+  - `tests/regression/test_bernoulli_coverage.py` (Bernoulli coverage at nominal 1-α)
+  - `tests/integration/test_bernoulli_end_to_end.py` (full public API on Bernoulli)
 - Property tests: `tests/properties/test_power_law_invariants.py`
 - Illustration: `src/frasian/experiments/illustrations/power_law_demo.py`
 
@@ -139,6 +146,91 @@ a follow-up cleanup task.
 `(power_law[FixedEtaSelector(0.0)], waldo)` is numerically equal to
 `(identity, waldo)`; the runner ships only the latter to keep the
 matrix tight.
+
+### Phase 4 entry point: `_tilted_pvalue_kernel`
+
+The JAX port factored out a private autodiff-clean kernel
+(`src/frasian/tilting/power_law.py::_tilted_pvalue_kernel`) wrapped
+in `@jax.jit(static_argnames=("statistic_name",))`. It contains only
+the JAX arithmetic — no validation, no Python control flow except the
+static `statistic_name` dispatch — so Phase 4's learned-η loss can
+close over it directly inside `@jax.jit` and `jax.grad`. The public
+`PowerLawTilting.tilted_pvalue` runs validation in numpy (JAX cannot
+raise mid-trace) and shape-dispatches between this kernel (for bulk
+arrays) and a numpy-eager scalar fast path (`_tilted_pvalue_numpy_scalar`,
+for brentq inner loops). See `docs/jax_style.md` for the underlying
+principle.
+
+### Generic numerical path (Phase 3c, 3d-fix1)
+
+`PowerLawTilting` works on any `(Model, Prior)` pair via a numerical
+default that uses only abstract protocol methods. The Normal-Normal
+closed-form (Theorem 6 above) is preserved as a fast path; non-Normal
+pairings (e.g. `(BernoulliModel, BetaDistribution)`) route through:
+
+- **`_generic_tilt(posterior, prior, likelihood, eta)`** — builds a
+  `GridDistribution` (in `src/frasian/tilting/_grid_distribution.py`)
+  from `log q(theta; eta) = log L(theta) + (1 - eta) * log pi(theta)`
+  on a 1024-point grid spanning the support's quantile window
+  (bounded support) or `mean ± 6 * std` of the posterior + prior
+  (unbounded). The deriver verified this formula reduces to
+  Theorem 6 on Normal-Normal at atol 1e-7 with N=1024
+  (`tests/regression/test_grid_distribution.py`).
+
+- **`_generic_tilted_pvalue(theta, data, model, prior, eta, statistic_name)`**
+  — Monte Carlo tilted-WALDO p-value. Computes observed tilted moments
+  `(mu_tilted, sigma2_tilted)` via grid integration, draws `n_mc=200`
+  synthetic `D' ~ likelihood(.|theta)` samples, evaluates
+  `t(D', theta) = (mu_tilted_D' - theta)^2 / sigma2_tilted_D'` per
+  draw, returns the empirical tail probability with `(k+1)/(n+1)`
+  smoothing. CRN-seeded via blake2b stable hash on
+  (data, model.fingerprint, prior.fingerprint, eta, alpha) so brentq
+  probes share an internal uniform stream and `f(theta)` is a
+  deterministic function of theta. For `statistic_name="wald"` (eta-
+  independent), delegates to `WaldStatistic._generic_pvalue`.
+
+- **`_generic_tilted_confidence_interval(alpha, data, model, prior,
+  eta, statistic_name)`** — inverts `_generic_tilted_pvalue >= alpha`
+  via `brentq_with_doubling`. Hoists the observed tilted moments
+  outside the brentq loop (skeptic Phase 3 finding #3) for ~10x
+  speedup. Detects boundary saturation explicitly to avoid silent
+  snap-to-support-edge.
+
+- **`confidence_regions` dispatch** — non-Normal pairings + static
+  selectors (e.g. `FixedEtaSelector`) route here. Dynamic selectors
+  (`DynamicNumericalEtaSelector`, `LearnedDynamicEtaSelector`) still
+  raise `NotImplementedError` for non-Normal pairings: the
+  `dynamic_ci_scan` builds its theta-window from
+  `D ± search_mult * sigma`, which is Normal-Normal-flavoured.
+  Generalising it to theta-only inputs is a separate research item
+  (tracked as Phase 5+).
+
+Cross-check tests pin atol-1e-3 agreement between the generic
+numerical path and the closed-form Theorem 6 path on Normal-Normal
+across (eta, D, sigma0) grids:
+`tests/regression/test_power_law_generic_matches_closed_form.py`
+(L2 cross-check on moments) and the L4 integration smoke
+`tests/integration/test_bernoulli_end_to_end.py` (full public API
+on Bernoulli + Beta).
+
+### Phase 4 learned-η on the generic path
+
+The Phase 4 learned-η loop trains an `EtaNet` against a JAX-
+traceable tilted-pvalue. The closed-form NN kernel registers under
+`pvalue_jax.JAX_TILTED_PVALUE[("power_law", "normal_normal")]`; the
+new **generic-grid kernel** registers under `("power_law",
+"generic")` and works on any `(Model, Prior)` with bounded support
+and `prior.logpdf` defined on the grid. The generic kernel uses a
+deliberate **symmetric normal-approximation p-value** (`2 * (1 -
+Phi(|mu - theta| / sigma))`) rather than Theorem 8's asymmetric form
+— the symmetric form has cleaner gradients through eta and is
+sufficient as a differentiable training surrogate (production CI
+inversion uses MC over D' for the exact reference, not this
+surrogate). The moments themselves (Theorem 6 reduction) are
+deriver-verified to atol 1e-7 against the NN closed form. See
+`docs/methods/learned_eta.md` for the full Phase 4 brief and
+`tests/regression/test_generic_grid_pvalue_matches_closed_form.py`
+for the moment-agreement cross-check.
 
 ### The static-vs-dynamic trade-off, in one paragraph
 

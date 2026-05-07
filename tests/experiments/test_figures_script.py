@@ -12,10 +12,18 @@ from frasian.config import Config, GridSpec
 
 
 def _small_config() -> Config:
+    """Smallest config that still produces a figure-able coverage table.
+
+    n_reps=10, 3×2 grid → ~60 CIs per cell × ~5 cells = ~300 CIs total.
+    Wall-time ~30 s on dev hardware (was ~3 min at the previous
+    n_reps=30 / 4×3 grid budget). The test only checks that
+    `regenerate` produces a PNG; it doesn't pin coverage values, so
+    a smaller budget is fine.
+    """
     return Config.fast().from_overrides(
-        n_reps=30,
-        theta_grid=GridSpec("theta", -1.5, 1.5, 4),
-        w_grid=GridSpec("w", 0.3, 0.7, 3),
+        n_reps=10,
+        theta_grid=GridSpec("theta", -1.5, 1.5, 3),
+        w_grid=GridSpec("w", 0.3, 0.7, 2),
     )
 
 

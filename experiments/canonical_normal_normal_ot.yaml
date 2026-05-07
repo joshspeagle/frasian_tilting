@@ -12,8 +12,15 @@ model:
   sigma: 1.0
 theta_distribution:
   type: uniform
-  low: -5.0
-  high: 5.0
+  # The dynamic-CI scan in `tilting/_dynamic.py::dynamic_ci_scan` queries
+  # η at θ ≈ μ₀ ± 2|Δ|, which can extend to θ ≈ ±12 at the test's
+  # conflict band. Training with too narrow a θ range causes the runtime
+  # selector to extrapolate and the calibration suite to flake. The
+  # power_law analogue is less sensitive because its admissibility curve
+  # is monotone in |Δ|; OT's η ≈ const-ish profile means a uniform-θ
+  # learner needs to see the tails. Pinned at [-10, 10] post-Equinox-port.
+  low: -10.0
+  high: 10.0
 n_grid: 401
 n_lhs: 10000
 eta_explore_box: [-0.5, 1.5]

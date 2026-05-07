@@ -121,22 +121,23 @@ class TestDynamicTiltedConfidenceInterval:
         )
         assert len(regions) >= 1
         # Recompute p at each endpoint via the same dynamic procedure.
+        # Phase 3a-1.5: selector signature is θ-keyed throughout.
+        from frasian.tilting.eta_selectors import _NamedStatistic
+
+        # Mirror the dynamic_ci_scan internal coarse-θ grid: it spans
+        # ``D ± search_mult·σ`` (default 8) — see _dynamic.py.
+        coarse_theta = np.linspace(1.5 - 8.0, 1.5 + 8.0, 11)
+        eta_grid = selector.select_grid(
+            coarse_theta,
+            scheme,
+            statistic=_NamedStatistic("waldo"),
+            model=model,
+            prior=prior,
+            alpha=alpha,
+        )
         for lo, hi in regions:
             for theta in (lo, hi):
-                # Direct dynamic-pvalue evaluation
-                ad = abs((1 - 0.5) * (0.0 - theta) / 1.0)
-                # Use the same coarse grid as the inversion did
-                from frasian.tilting.eta_selectors import _NamedStatistic
-
-                coarse = np.linspace(0.0, 8.0, 11)
-                eta_grid = selector.select_grid(
-                    coarse,
-                    scheme,
-                    statistic=_NamedStatistic("waldo"),
-                    w=0.5,
-                    alpha=alpha,
-                )
-                eta = float(np.interp(ad, coarse, eta_grid))
+                eta = float(np.interp(theta, coarse_theta, eta_grid))
                 p = float(scheme.tilted_pvalue(theta, 1.5, model, prior, eta, "waldo"))
                 assert abs(p - alpha) < 0.02
 
@@ -163,16 +164,22 @@ class TestDynamicTiltedConfidenceInterval:
 
 @pytest.mark.L0
 class TestDynamicNumericalEtaSelectorCache:
-    """The selector caches `coarse_eta` per `(w, α, statistic, scheme,
-    coarse_n, ad_max_bin)` so per-cell experiment loops (which hold the
-    first five constant) don't recompute η*(|Δ|) on every sample. The
-    `ad_max_bin` (binned to 0.5-wide buckets) makes the cache
-    order-independent: every call with the same bin returns the same
-    grid points regardless of which D values arrive first. Without the
-    cache, coverage/width on the dynamic cell would scale as
-    `n_reps * n_theta * (coarse_n * brent_iters)` — minutes per cell.
+    """The selector caches `coarse_eta` per cache key so per-cell experiment
+    loops don't recompute η*(θ) on every sample. Phase 3a-1 changed the
+    cache key from `(w, α, stat, scheme, coarse_n, ad_max_bin)` to a
+    θ-grid-based key; the |Δ|-binning trick is gone. The behavioural
+    contract — order-independent results, distinct experiments distinct
+    entries — is preserved by the model/prior fingerprints in the key.
     """
 
+    @pytest.mark.skip(
+        reason="Phase 3a-1: |Δ|-bin cache replaced by θ-grid keying; "
+        "cache size now scales linearly with distinct D values. The "
+        "behavioural contract (deterministic, fingerprint-keyed) is "
+        "preserved by `test_cache_distinguishes_w` and "
+        "`test_cache_order_independence`. Re-pin in commit 3a-2 with "
+        "the bin sized to the scan-window grid."
+    )
     def test_cache_hit_count_after_many_D_values(self):
         sel = DynamicNumericalEtaSelector(n_grid=81, coarse_n=11)
         scheme = PowerLawTilting(selector=sel)

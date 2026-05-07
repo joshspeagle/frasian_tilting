@@ -21,26 +21,7 @@ import numpy as np
 import pytest
 
 
-def _torch_available() -> bool:
-    try:
-        import torch  # noqa: F401
-
-        return True
-    except ImportError:
-        return False
-
-
 @pytest.mark.L4
-@pytest.mark.skipif(
-    not _torch_available(),
-    reason=(
-        "scripts.regen_headline._compute_table requires torch (loads the "
-        "Phase E v0_smoke checkpoint via LearnedDynamicEtaSelector). "
-        "The non-torch fallback test "
-        "`test_identity_rows_are_finite_no_torch` exercises the same "
-        "fix surface (identity.confidence_interval signature)."
-    ),
-)
 def test_compute_table_smoke_no_nan() -> None:
     """End-to-end: run the script's inner table builder at n_reps=2 and
     assert no row has NaN. Catches signature regressions in the
@@ -60,9 +41,10 @@ def test_compute_table_smoke_no_nan() -> None:
 @pytest.mark.L4
 def test_identity_rows_are_finite_no_torch() -> None:
     """Reproduce the script's identity-tilting Wald + bare WALDO rows
-    *without* torch — exercises exactly the call sites the skeptic
-    flagged (vector #1). If ``identity.confidence_interval`` ever
-    drifts back to a 4-arg signature mismatch, this test crashes.
+    via the bare-statistic path (no learned-eta checkpoint loaded) —
+    exercises exactly the call sites the skeptic flagged (vector #1).
+    If ``identity.confidence_interval`` ever drifts back to a 4-arg
+    signature mismatch, this test crashes.
     """
     from frasian.models.distributions import NormalDistribution
     from frasian.models.normal_normal import NormalNormalModel

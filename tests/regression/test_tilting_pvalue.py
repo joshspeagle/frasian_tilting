@@ -127,23 +127,23 @@ class TestTiltingPvalueDispatch:
             WaldoStatistic(),
         )
 
-        # Reconstruct the eta_at_theta lookup the dispatch would use.
-        sigma = self.model.sigma
-        mu0 = self.prior.loc
-        sigma0 = self.prior.scale
-        w = sigma0**2 / (sigma**2 + sigma0**2)
-        abs_delta_theta = np.abs((1.0 - w) * (mu0 - self.thetas) / sigma)
+        # Phase 3a-1: reconstruct the eta_at_theta lookup using the new
+        # θ-keyed selector signature (matches `power_law.pvalue`'s dynamic
+        # branch).
         coarse_n = 25
-        ad_max = float(abs_delta_theta.max()) + 1e-6
-        coarse_grid = np.linspace(0.0, ad_max, coarse_n)
+        theta_lo = float(self.thetas.min())
+        theta_hi = float(self.thetas.max())
+        half_pad = 1e-6 * max(1.0, abs(theta_hi - theta_lo))
+        coarse_grid = np.linspace(theta_lo - half_pad, theta_hi + half_pad, coarse_n)
         coarse_eta = sel.select_grid(
             coarse_grid,
             scheme,
             statistic=_NamedStatistic("waldo"),
-            w=w,
+            model=self.model,
+            prior=self.prior,
             alpha=0.05,
         )
-        eta_at_theta = np.interp(abs_delta_theta, coarse_grid, coarse_eta)
+        eta_at_theta = np.interp(self.thetas, coarse_grid, coarse_eta)
 
         direct = scheme.dynamic_tilted_pvalue(
             self.thetas,

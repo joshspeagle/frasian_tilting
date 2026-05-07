@@ -47,17 +47,31 @@ from dataclasses import dataclass, field
 from typing import ClassVar
 
 import numpy as np
+
+# scipy: minimize_scalar / brentq used by NumericalEtaSelector;
+# objective evaluations consume `scheme.tilted_pvalue` output via
+# `np.asarray(...)` at the boundary so the JAX vs numpy seam is
+# explicit. See `docs/jax_style.md`.
 from scipy import optimize
 
 from ..learned.base import LearnedArtifact
+from ..models.base import Model, Prior
 from ..models.distributions import NormalDistribution
 from ..models.normal_normal import NormalNormalModel
+from ..models.normal_normal import weight as _weight
 from ..statistics.base import TestStatistic
-from .base import TiltingContext, TiltingDomainError, TiltingScheme
+from .base import TiltingDomainError, TiltingScheme
 
 
 def _D_from_abs_delta(abs_delta: float, w: float, sigma: float, mu0: float) -> float:
-    """Invert Delta = (1 - w)(mu0 - D)/sigma with the convention Delta >= 0."""
+    """Invert Delta = (1 - w)(mu0 - D)/sigma with the convention Delta >= 0.
+
+    Normal-Normal-specific helper retained for `experiments/smoothness.py`,
+    which still owns its own |Δ|-keyed sweep until commit 3a-3 relocates
+    it. New selector code paths consume θ directly via the model/prior
+    instances passed at call time; do not introduce new callers of this
+    function outside the smoothness experiment.
+    """
     return float(mu0 - abs_delta * sigma / max(1.0 - w, 1e-12))
 
 
@@ -89,8 +103,18 @@ class FixedEtaSelector:
     is_dynamic: bool = False
 
     def select(
-        self, context: TiltingContext, scheme: TiltingScheme, *, statistic: TestStatistic
+        self,
+        scheme: TiltingScheme,
+        *,
+        data: np.ndarray | None = None,
+        model: Model | None = None,
+        prior: Prior | None = None,
+        alpha: float | None = None,
+        statistic: TestStatistic | None = None,
     ) -> float:
+        """Return the constant η. All kwargs are accepted for protocol
+        parity but ignored — `FixedEtaSelector` is η-only.
+        """
         return float(self.eta)
 
 
@@ -132,6 +156,11 @@ class NumericalEtaSelector:
     """
 
     name: ClassVar[str] = "numerical"
+    # Phase 3a-1: `sigma` and `mu0` are deprecated — they came in
+    # originally only because |Δ| had no model/prior context. The
+    # call-time signature now receives `model` and `prior`, so these
+    # are unused. Retained as informational fields for legacy demos
+    # / smoothness experiment; will be removed in commit 3a-3.
     sigma: float = 1.0
     mu0: float = 0.0
     eta_min_buffer: float = 1e-3
@@ -149,16 +178,77 @@ class NumericalEtaSelector:
                 f"'static_width' or 'integrated_p'; got {self.objective!r}."
             )
 
-    def select(
-        self, context: TiltingContext, scheme: TiltingScheme, *, statistic: TestStatistic
-    ) -> float:
-        eta_lo, eta_hi = scheme.admissible_range(context)
-        eta_hi = min(eta_hi, 1.0 - self.eta_min_buffer)
+    def _normal_normal_w(self, model: Model, prior: Prior) -> float:
+        """Compute w from a NormalNormalModel + NormalDistribution prior.
 
-        sigma0 = float(np.sqrt(context.w / max(1.0 - context.w, 1e-12)) * self.sigma)
-        prior = NormalDistribution(loc=self.mu0, scale=sigma0)
-        model = NormalNormalModel(sigma=self.sigma)
-        D = _D_from_abs_delta(context.abs_delta, context.w, self.sigma, self.mu0)
+        NumericalEtaSelector remains Normal-Normal-only by construction;
+        the static-width / integrated-p objectives use the closed-form
+        `w = sigma0**2 / (sigma**2 + sigma0**2)` to derive the η bracket.
+        Non-NormalNormal callers must use the generic numerical selector
+        planned for Phase 3 follow-ups.
+        """
+        if not isinstance(model, NormalNormalModel):
+            raise NotImplementedError(
+                f"NumericalEtaSelector currently requires NormalNormalModel; "
+                f"got {type(model).__name__!r}. Generic-model selector is a "
+                f"future extension (Phase 3 follow-up)."
+            )
+        if not isinstance(prior, NormalDistribution):
+            raise NotImplementedError(
+                f"NumericalEtaSelector currently requires a NormalDistribution "
+                f"prior; got {type(prior).__name__!r}."
+            )
+        return float(_weight(model.sigma, prior.scale))
+
+    def _eta_bounds(self, model: Model, prior: Prior) -> tuple[float, float]:
+        """η search bracket for `scipy.optimize.minimize_scalar`.
+
+        Internal helper — selectors no longer consult a public
+        `scheme.admissible_range`. The bracket is the closed-form
+        Normal-Normal `power_law` admissible range
+        `(-w/(1-w) + buffer, 1/(1-w) - buffer)` (also valid for
+        `ot` since `(0, 1) ⊂ (-w/(1-w), 1/(1-w))` for any
+        `w ∈ (0, 1)`); `scheme.tilted_pvalue` will raise
+        `TiltingDomainError` for any η in the bracket that the
+        scheme actually rejects, and `_make_*_objective` returns
+        `+inf` on that exception, so over-broad brackets are
+        self-correcting at the optimizer.
+        """
+        w = self._normal_normal_w(model, prior)
+        eta_lo = -w / (1.0 - w) + self.eta_min_buffer
+        eta_hi = 1.0 / (1.0 - w) - self.eta_min_buffer
+        return (eta_lo, eta_hi)
+
+    def select(
+        self,
+        scheme: TiltingScheme,
+        *,
+        data: np.ndarray | None = None,
+        model: Model | None = None,
+        prior: Prior | None = None,
+        alpha: float | None = None,
+        statistic: TestStatistic | None = None,
+    ) -> float:
+        """Pick η numerically per cell.
+
+        See class docstring for the two `objective` modes
+        (`static_width` vs `integrated_p`).
+        """
+        assert data is not None and model is not None and prior is not None
+        assert alpha is not None and statistic is not None
+        D = float(np.atleast_1d(np.asarray(data, dtype=np.float64)).mean())
+        return self._select_inner(
+            scheme,
+            D=D,
+            model=model,
+            prior=prior,
+            alpha=alpha,
+            statistic=statistic,
+        )
+
+    def _select_inner(self, scheme, *, D, model, prior, alpha, statistic):
+        eta_lo, eta_hi = self._eta_bounds(model, prior)
+        eta_hi = min(eta_hi, 1.0 - self.eta_min_buffer)
 
         if self.objective == "static_width":
             objective_fn = self._make_static_width_objective(
@@ -167,7 +257,7 @@ class NumericalEtaSelector:
                 D=D,
                 model=model,
                 prior=prior,
-                alpha=context.alpha,
+                alpha=alpha,
             )
         else:  # integrated_p
             objective_fn = self._make_integrated_p_objective(
@@ -217,7 +307,9 @@ class NumericalEtaSelector:
                 f"{type(scheme).__name__} does not implement "
                 f"`tilted_pvalue`; integrated_p mode requires it."
             )
-        half = self.search_mult * self.sigma
+        # Use the model's sigma for the search window (Normal-Normal scale).
+        sigma = float(model.sigma) if hasattr(model, "sigma") else 1.0
+        half = self.search_mult * sigma
         theta_grid = np.linspace(D - half, D + half, self.n_grid)
 
         def integrated_p(eta: float) -> float:
@@ -233,24 +325,32 @@ class NumericalEtaSelector:
 
     def select_grid(
         self,
-        abs_delta_grid,
+        grid,
         scheme: TiltingScheme,
         *,
         statistic: TestStatistic,
-        w: float,
+        model: Model,
+        prior: Prior,
         alpha: float,
     ):
-        """Vectorised: η* at every |Δ| in `abs_delta_grid`.
+        """Vectorised: η* at every θ in `grid` (θ-keyed).
 
-        Used by `dynamic_tilted_confidence_interval` to pre-compute a coarse
-        η*(|Δ|) lookup that is then interpolated across the fine θ-scan grid.
-        Repeating `optimize.minimize_scalar` for every fine-grid θ would be
-        prohibitively slow.
+        Each grid point is treated as a "data sufficient statistic" —
+        we call `self.select(scheme, data=[theta], ...)` for each θ.
+        This preserves the "static-η optimum at each θ" semantics
+        used by `DynamicNumericalEtaSelector`.
         """
-        out = np.empty(len(abs_delta_grid), dtype=np.float64)
-        for i, ad in enumerate(abs_delta_grid):
-            ctx = TiltingContext(w=w, abs_delta=float(ad), alpha=alpha)
-            out[i] = self.select(ctx, scheme, statistic=statistic)
+        theta_grid = np.asarray(grid, dtype=np.float64)
+        out = np.empty(len(theta_grid), dtype=np.float64)
+        for i, theta in enumerate(theta_grid):
+            out[i] = self.select(
+                scheme,
+                data=np.asarray([float(theta)]),
+                model=model,
+                prior=prior,
+                alpha=alpha,
+                statistic=statistic,
+            )
         return out
 
 
@@ -295,6 +395,10 @@ class DynamicNumericalEtaSelector:
     """
 
     name: ClassVar[str] = "dynamic_numerical"
+    # `sigma` and `mu0` are retained as informational fields for the
+    # legacy demos that still inspect them; new code paths never read
+    # them — model/prior come in at call time. They are no longer
+    # required to match the inference-time model/prior.
     sigma: float = 1.0
     mu0: float = 0.0
     eta_min_buffer: float = 1e-3
@@ -308,52 +412,82 @@ class DynamicNumericalEtaSelector:
     _cache: dict = field(default_factory=dict, compare=False, repr=False)
 
     def _inner(self) -> NumericalEtaSelector:
-        return NumericalEtaSelector(
-            sigma=self.sigma, mu0=self.mu0, eta_min_buffer=self.eta_min_buffer
-        )
+        return NumericalEtaSelector(eta_min_buffer=self.eta_min_buffer)
 
     def select(
-        self, context: TiltingContext, scheme: TiltingScheme, *, statistic: TestStatistic
+        self,
+        scheme: TiltingScheme,
+        *,
+        data: np.ndarray | None = None,
+        model: Model | None = None,
+        prior: Prior | None = None,
+        alpha: float | None = None,
+        statistic: TestStatistic | None = None,
     ) -> float:
         """Convenience: a single-context η* (delegates to the static inner)."""
-        return self._inner().select(context, scheme, statistic=statistic)
+        assert data is not None and model is not None and prior is not None
+        assert alpha is not None and statistic is not None
+        D = float(np.atleast_1d(np.asarray(data, dtype=np.float64)).mean())
+        out = self.select_grid(
+            np.asarray([D]),
+            scheme,
+            statistic=statistic,
+            model=model,
+            prior=prior,
+            alpha=alpha,
+        )
+        return float(out[0])
 
     def select_grid(
         self,
-        abs_delta_grid,
+        grid,
         scheme: TiltingScheme,
         *,
         statistic: TestStatistic,
-        w: float,
+        model: Model,
+        prior: Prior,
         alpha: float,
     ):
-        coarse_n = len(abs_delta_grid)
+        """Per-θ η* lookup with caching.
+
+        Cache key includes the θ-grid endpoints (1e-6-binned to absorb
+        tiny numerical drift) and the model/prior fingerprints so
+        different experiments do not collide.
+        """
         scheme_name = getattr(scheme, "name", type(scheme).__name__)
-        ad_max = float(np.asarray(abs_delta_grid).max())
-        # Bin `ad_max` to the next multiple of `cache_bin_width`. This
-        # makes the cached coarse grid `linspace(0, ad_max_bin, coarse_n)`
-        # deterministic given the bin — different `ad_max` values within
-        # the same bin produce identical grid points and η values.
-        # Multiple bins coexist in the cache.
-        ad_max_bin = float(
-            np.ceil(max(ad_max, self.cache_bin_width) / self.cache_bin_width) * self.cache_bin_width
+        coarse_n = len(grid)
+
+        theta_arr = np.asarray(grid, dtype=np.float64)
+        t_min_bin = float(np.round(theta_arr.min(), 6))
+        t_max_bin = float(np.round(theta_arr.max(), 6))
+        model_fp = getattr(model, "fingerprint", lambda: None)()
+        prior_fp = getattr(prior, "fingerprint", lambda: None)()
+        key = (
+            "theta",
+            alpha,
+            statistic.name,
+            scheme_name,
+            coarse_n,
+            t_min_bin,
+            t_max_bin,
+            tuple(model_fp) if model_fp is not None else None,
+            tuple(prior_fp) if prior_fp is not None else None,
         )
-        key = (w, alpha, statistic.name, scheme_name, coarse_n, ad_max_bin)
         cached = self._cache.get(key)
         if cached is None:
-            coarse_grid_full = np.linspace(0.0, ad_max_bin, coarse_n)
             eta_full = self._inner().select_grid(
-                coarse_grid_full,
+                theta_arr,
                 scheme,
-                statistic=statistic,
-                w=w,
+                model=model,
+                prior=prior,
                 alpha=alpha,
+                statistic=statistic,
             )
-            self._cache[key] = (coarse_grid_full, eta_full)
-            cached_grid, cached_eta = coarse_grid_full, eta_full
+            self._cache[key] = (theta_arr, eta_full)
+            cached_grid, cached_eta = theta_arr, eta_full
         else:
             cached_grid, cached_eta = cached
-        return np.interp(abs_delta_grid, cached_grid, cached_eta)
+        return np.interp(theta_arr, cached_grid, cached_eta)
 
 
 # Threshold for the runtime safety clamp in `LearnedDynamicEtaSelector`.
@@ -424,14 +558,16 @@ class LearnedDynamicEtaSelector:
         if not self._loaded:
             self.artifact.load()
             self._loaded = True
-            # Only Phase E (format v2) checkpoints are supported.
+            # Phase E checkpoints: legacy torch format v2 + post-port
+            # Equinox format v3 are both accepted (the on-disk schema
+            # changed; the in-memory metadata fields are compatible).
             from .._errors import MissingArtifactError
 
             meta = self.artifact.metadata
             v = meta.get("checkpoint_format_version", None)
-            if v != 2 or "experiment_config" not in meta:
+            if v not in (2, 3) or "experiment_config" not in meta:
                 raise MissingArtifactError(
-                    f"{self.artifact.name}: expected Phase E (v2) "
+                    f"{self.artifact.name}: expected Phase E (v2 or v3) "
                     f"checkpoint with `experiment_config`; got "
                     f"format_version={v!r}. Re-train via "
                     f"`python -m scripts.train_learned_eta --config "
@@ -477,38 +613,41 @@ class LearnedDynamicEtaSelector:
 
     def _check_experiment(
         self,
-        w: float,
+        w: float | None,
         model_fingerprint: tuple | None = None,
         prior_fingerprint: tuple | None = None,
+        model: Model | None = None,
+        prior: Prior | None = None,
     ) -> None:
         """Phase E: verify inference matches the trained experiment.
 
         Strict tuple-equal compare on (model.fingerprint(),
-        prior.fingerprint()) when both are plumbed through from the
-        caller. Falls back to a w-only derived check if not — this
-        catches gross mismatches but cannot distinguish two
-        ``(σ, σ₀)`` pairs giving the same ``w``.
+        prior.fingerprint()) is the primary safety check — and it
+        is sufficient: byte-equal fingerprints rule out any
+        cross-experiment use. The historical w-derived check (NN
+        only) and the NN-only model/prior gate are kept conditional
+        on ``trained_model_fp[0] == "normal_normal"`` and ``w is not
+        None``, so non-NN experiments (Bernoulli + Beta) can train
+        and load checkpoints through the same selector.
+
+        Phase 4 skeptic #6 (defense-in-depth on subclass collisions):
+        when the inference-time ``model`` / ``prior`` are passed and
+        the checkpoint records ``model_class`` / ``prior_class``
+        (post-Phase-4 checkpoints), reject if the class names differ.
+        Closes the "subclass with same fingerprint but overridden
+        ``logpdf``" silent-acceptance hole. Older checkpoints lacking
+        these keys preserve the legacy fingerprint-only check.
         """
         from .._errors import MissingArtifactError
 
         meta = self.artifact.metadata["experiment_config"]
         trained_model_fp = tuple(meta["model_fingerprint"])
         trained_prior_fp = tuple(meta["prior_fingerprint"])
-        # Normal-Normal-only inversion path today.
-        if trained_model_fp[0] != "normal_normal":
-            raise MissingArtifactError(
-                f"{self.artifact.name} trained on model "
-                f"{trained_model_fp[0]!r}; only Normal-Normal is "
-                f"supported by the Phase E inversion path."
-            )
-        if trained_prior_fp[0] != "normal":
-            raise MissingArtifactError(
-                f"{self.artifact.name} trained with prior "
-                f"{trained_prior_fp[0]!r}; only NormalDistribution is "
-                f"supported by the Phase E inversion path."
-            )
 
-        # Strict per-fingerprint compare when available.
+        # Strict per-fingerprint compare when available — this is the
+        # cross-experiment safety net. A byte-equal match rules out
+        # both NN/NN drift and any non-NN (Bernoulli/Beta, ...) cross-
+        # use; an unequal match refuses loudly.
         if model_fingerprint is not None and tuple(model_fingerprint) != trained_model_fp:
             raise MissingArtifactError(
                 f"{self.artifact.name} trained on model "
@@ -524,8 +663,41 @@ class LearnedDynamicEtaSelector:
                 f"checkpoint for this experiment."
             )
 
-        # Derived w check (catches rough mismatches even when
-        # fingerprints aren't plumbed through).
+        # Phase 4 skeptic #6: class-name compare guards subclass
+        # collisions where ``fingerprint()`` matches but ``logpdf`` /
+        # ``sample_data`` are overridden. Pre-Phase-4 checkpoints lack
+        # the class keys; treat absence as legacy (fingerprint-only).
+        trained_model_cls = meta.get("model_class")
+        trained_prior_cls = meta.get("prior_class")
+        if trained_model_cls is not None and model is not None:
+            if type(model).__name__ != trained_model_cls:
+                raise MissingArtifactError(
+                    f"{self.artifact.name} trained with "
+                    f"model class {trained_model_cls!r}, but inference "
+                    f"model is class {type(model).__name__!r}. The "
+                    f"fingerprint matches but a subclass with overridden "
+                    f"behaviour can produce different posteriors; refuse "
+                    f"rather than silently load."
+                )
+        if trained_prior_cls is not None and prior is not None:
+            if type(prior).__name__ != trained_prior_cls:
+                raise MissingArtifactError(
+                    f"{self.artifact.name} trained with "
+                    f"prior class {trained_prior_cls!r}, but inference "
+                    f"prior is class {type(prior).__name__!r}. The "
+                    f"fingerprint matches but a subclass with overridden "
+                    f"logpdf can produce different posteriors; refuse "
+                    f"rather than silently load."
+                )
+
+        # NN-specific w-derived sanity check — only applies when the
+        # trained checkpoint is NormalNormal + Normal prior AND the
+        # caller supplied a w. For non-NN models w is meaningless and
+        # the call passes ``w=None``.
+        if w is None:
+            return
+        if trained_model_fp[0] != "normal_normal" or trained_prior_fp[0] != "normal":
+            return
         sigma_trained = float(trained_model_fp[1])
         sigma0_trained = float(trained_prior_fp[2])
         w_trained = sigma0_trained**2 / (sigma_trained**2 + sigma0_trained**2)
@@ -538,128 +710,154 @@ class LearnedDynamicEtaSelector:
             )
         # Mirror the training-time degenerate-w guard so that hand-
         # edited or out-of-band checkpoints can't slip through with
-        # w → 0 / w → 1 (where the torch port's denom-clamp distorts
+        # w → 0 / w → 1 (where the JAX port's denom-clamp distorts
         # silently).
         _W_EPS = 1e-3
         if not (_W_EPS < w < 1.0 - _W_EPS):
             raise MissingArtifactError(
                 f"{self.artifact.name}: inference w={w:.6f} is outside "
-                f"({_W_EPS}, {1.0 - _W_EPS}); the torch port's "
+                f"({_W_EPS}, {1.0 - _W_EPS}); the JAX port's "
                 f"denom-clamp distorts silently in this regime."
             )
 
     def select(
         self,
-        context: TiltingContext,
         scheme: TiltingScheme,
         *,
-        statistic: TestStatistic,
-        model_fingerprint: tuple | None = None,
-        prior_fingerprint: tuple | None = None,
+        data: np.ndarray | None = None,
+        model: Model | None = None,
+        prior: Prior | None = None,
+        alpha: float | None = None,
+        statistic: TestStatistic | None = None,
     ) -> float:
-        """Single-context η. Convenience for non-dynamic callers.
-
-        ``model_fingerprint`` and ``prior_fingerprint`` are required for
-        the strict cross-experiment refusal contract documented in the
-        learned_eta brief. Callers must supply the trained-experiment
-        fingerprints; bare ``select(...)`` without them raises
-        ``ValueError`` rather than falling back to the w-only derived
-        check (which cannot distinguish two ``(σ, σ₀)`` pairs giving
-        the same ``w``).
-        """
-        if model_fingerprint is None or prior_fingerprint is None:
-            raise ValueError(
-                f"{type(self).__name__}.select requires explicit "
-                f"`model_fingerprint` and `prior_fingerprint` kwargs "
-                f"to enforce strict cross-experiment refusal. Pass "
-                f"`model.fingerprint()` and `prior.fingerprint()` from "
-                f"the inference call site."
-            )
+        """Single-context η. Convenience for non-dynamic callers."""
+        assert data is not None and model is not None and prior is not None
+        assert alpha is not None and statistic is not None
         self._ensure_loaded()
         self._check_scheme(scheme)
-        self._check_alpha(context.alpha)
+        self._check_alpha(alpha)
+        D = float(np.atleast_1d(np.asarray(data, dtype=np.float64)).mean())
         out = self.select_grid(
-            np.asarray([context.abs_delta]),
+            np.asarray([D]),
             scheme,
             statistic=statistic,
-            w=context.w,
-            alpha=context.alpha,
-            model_fingerprint=model_fingerprint,
-            prior_fingerprint=prior_fingerprint,
+            model=model,
+            prior=prior,
+            alpha=alpha,
         )
         return float(out[0])
 
     def select_grid(
         self,
-        abs_delta_grid,
+        grid,
         scheme: TiltingScheme,
         *,
         statistic: TestStatistic,
-        w: float,
+        model: Model,
+        prior: Prior,
         alpha: float,
-        model_fingerprint: tuple | None = None,
-        prior_fingerprint: tuple | None = None,
     ):
         """Per-θ η* lookup via the trained Phase E EtaNet.
 
-        Converts ``abs_delta_grid`` back to θ using the trained
-        config's μ₀ and σ (averaging the two θ branches for symmetric
-        Normal-Normal training), then calls ``EtaArtifact.predict_eta``.
-
-        ``model_fingerprint`` and ``prior_fingerprint`` are plumbed
-        through ``dynamic_ci_scan`` for strict cross-experiment
-        validation.
+        EtaNet receives θ directly (its natural input); no |Δ|
+        inversion / two-branch averaging.
         """
         self._ensure_loaded()
         self._check_scheme(scheme)
         self._check_alpha(alpha)
 
-        ad = np.asarray(abs_delta_grid, dtype=np.float64)
-
-        # Phase E: invert |Δ| → θ using trained (μ₀, σ).
+        theta_arr = np.asarray(grid, dtype=np.float64)
+        model_fp = getattr(model, "fingerprint", lambda: None)()
+        prior_fp = getattr(prior, "fingerprint", lambda: None)()
+        # w_eff is the data-weight ratio σ₀² / (σ² + σ₀²) — defined
+        # only for the (NormalNormal, NormalDistribution) pair. For
+        # non-NN experiments (Bernoulli + Beta) it is meaningless;
+        # pass None so `_check_experiment` skips the NN-derived
+        # sanity check and `_maybe_clamp_eta` skips the NN-specific
+        # admissibility window.
+        w_eff: float | None
+        if (
+            model_fp is not None and prior_fp is not None
+            and tuple(model_fp)[0] == "normal_normal"
+            and tuple(prior_fp)[0] == "normal"
+        ):
+            w_eff = float(prior.scale) ** 2 / (
+                float(model.sigma) ** 2 + float(prior.scale) ** 2
+            )
+        else:
+            w_eff = None
         self._check_experiment(
-            w,
-            model_fingerprint=model_fingerprint,
-            prior_fingerprint=prior_fingerprint,
+            w_eff,
+            model_fingerprint=tuple(model_fp) if model_fp is not None else None,
+            prior_fingerprint=tuple(prior_fp) if prior_fp is not None else None,
+            model=model,
+            prior=prior,
         )
-        meta = self.artifact.metadata["experiment_config"]
-        mu0 = float(meta["prior_fingerprint"][1])
-        sigma = float(meta["model_fingerprint"][1])
-        # |Δ| = (1-w)|μ₀ - θ|/σ has two θ-branches:
-        #   θ_lo = μ₀ - σ·|Δ|/(1-w)  (θ < μ₀)
-        #   θ_hi = μ₀ + σ·|Δ|/(1-w)  (θ > μ₀)
-        # The downstream `dynamic_ci_scan` indexes η by |Δ|, so we
-        # need η as a function of |Δ| — but EtaNet is θ-indexed.
-        # For Normal-Normal training (symmetric θ-distribution
-        # about μ₀), the optimal η(θ) is approximately symmetric;
-        # we average the two branches to get a symmetric η(|Δ|),
-        # which is what the contract demands. Bias is bounded by
-        # the deviation of the trained η(θ) from symmetry.
-        offset = sigma * ad / max(1.0 - w, 1e-12)
-        theta_lo = mu0 - offset
-        theta_hi = mu0 + offset
-        eta_lo = self.artifact.predict_eta(theta_lo)
-        eta_hi = self.artifact.predict_eta(theta_hi)
-        eta = 0.5 * (eta_lo + eta_hi)
+        eta = self.artifact.predict_eta(theta_arr)
+        return self._maybe_clamp_eta(eta, scheme=scheme, w=w_eff, alpha=alpha)
 
-        # Phase E has no architectural clamp on η — the boundary
-        # penalty during training keeps predictions inside the
-        # admissible range. A poorly-trained checkpoint can still
-        # drift past the boundary at extreme conflict; rather than
-        # crash mid-CI, clamp here with a RuntimeWarning. The
-        # fingerprint check above already refuses cross-experiment
-        # use; this safety net is for "this checkpoint hasn't
-        # trained enough", not for "this checkpoint is wrong".
-        ctx = TiltingContext(w=w, abs_delta=0.0, alpha=alpha)
-        # Catch only the documented protocol exception for invalid
-        # context; any other exception (TypeError from a buggy ctx,
-        # AttributeError from a stub scheme, etc.) should propagate
-        # so we don't silently disable the safety net by falling
-        # through to (-inf, inf).
-        try:
-            lo, hi = scheme.admissible_range(ctx)
-        except (ValueError, TiltingDomainError):
-            lo, hi = -np.inf, np.inf
+    def _maybe_clamp_eta(self, eta, *, scheme, w, alpha):
+        """Runtime safety net for predicted η outside admissible range.
+
+        For Normal-Normal experiments (``w`` is a finite float in
+        ``(0, 1)``) the admissible window is the closed-form
+        ``power_law`` bound ``(-w/(1-w) + buffer, 1/(1-w) - buffer)``
+        — a valid superset of ``ot``'s ``[0, 1]``.
+
+        For non-Normal-Normal experiments (``w is None``, e.g.
+        Bernoulli + Beta), the admissibility region is learned by
+        ``ValidityNet`` during training; the closed-form clamp is
+        not applicable. We fall back to the eta-explore-box recorded
+        in the checkpoint metadata (``eta_explore_box``), with a
+        small interior buffer.
+        """
+        del alpha  # bounds are α-independent
+        if w is None:
+            # Non-NN: rely on the checkpoint's eta_explore_box. This
+            # matches the training-time domain of ValidityNet, beyond
+            # which the artefact has no signal.
+            #
+            # Phase 4 skeptic #7: refuse when ``eta_explore_box`` is
+            # missing from the checkpoint metadata. The previous
+            # silent fallback (lo, hi) = (-inf, +inf) disabled
+            # clamping entirely — a checkpoint that drifted way
+            # outside training η ranges would pass through with no
+            # warning. Pre-Phase-4 (v2-torch / NN) checkpoints used a
+            # closed-form admissible window; only non-NN checkpoints
+            # need this metadata, and any non-NN checkpoint is post-
+            # Phase-4 by construction (the v0_smoke is the first one).
+            from .._errors import MissingArtifactError
+
+            box = self.artifact.metadata.get("experiment_config", {}).get(
+                "eta_explore_box"
+            )
+            if box is None:
+                raise MissingArtifactError(
+                    f"{self.artifact.name}: checkpoint metadata is missing "
+                    f"``eta_explore_box`` and the trained model is non-"
+                    f"Normal-Normal (no closed-form admissibility window). "
+                    f"Re-train via "
+                    f"`python -m scripts.train_learned_eta --config "
+                    f"<experiment.yaml>` (post-Phase-4 ExperimentConfig "
+                    f"persists eta_explore_box automatically)."
+                )
+            buffer = 1e-3
+            lo = float(box[0]) + buffer
+            hi = float(box[1]) - buffer
+        else:
+            try:
+                if not (0.0 < w < 1.0):
+                    raise ValueError(f"w must lie in (0, 1); got {w!r}")
+                buffer = 1e-3
+                if scheme.name == "ot":
+                    lo, hi = 0.0 + buffer, 1.0 - buffer
+                else:
+                    # power_law (and any other Normal-Normal scheme
+                    # using the same admissible window).
+                    lo = -w / (1.0 - w) + buffer
+                    hi = 1.0 / (1.0 - w) - buffer
+            except (ValueError, TiltingDomainError):
+                lo, hi = -np.inf, np.inf
         margin = 1e-6 * max(1.0, abs(hi - lo) if np.isfinite(hi - lo) else 1.0)
         lo_safe = lo + margin if np.isfinite(lo) else -np.inf
         hi_safe = hi - margin if np.isfinite(hi) else np.inf

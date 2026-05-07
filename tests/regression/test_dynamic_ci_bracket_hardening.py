@@ -25,8 +25,19 @@ class _AllAcceptSelector:
     name = "fixed_zero"
     is_dynamic = True
 
-    def select_grid(self, abs_delta_grid, scheme, *, statistic, w, alpha):
-        return np.zeros_like(np.asarray(abs_delta_grid, dtype=np.float64))
+    def select_grid(
+        self,
+        grid,
+        scheme,
+        *,
+        statistic,
+        model=None,
+        prior=None,
+        alpha=None,
+        w=None,
+    ):
+        # Phase 3a-1: accept both signatures during the transition.
+        return np.zeros_like(np.asarray(grid, dtype=np.float64))
 
 
 class _AlwaysAcceptScheme:

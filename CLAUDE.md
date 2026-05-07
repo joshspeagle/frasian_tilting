@@ -98,9 +98,13 @@ diagnostics, and writes a `manifest.json` with relative cache paths.
 | `normal_normal`| implemented   | 1D conjugate Gaussian; framework's sandbox |
 | `bernoulli`    | implemented   | Beta-conjugate; non-Normal protocol check  |
 
-Pairings of `bernoulli` with `Wald` / `WALDO` / `power_law` raise
-`NotImplementedError` (by design — the Normal-only methods name the
-restriction explicitly via `models/_dispatch.require_model`).
+Pairings of `bernoulli` with `Wald` and `WALDO` now run via the
+**generic numerical paths** added in Phase 2 (see `docs/methods/wald.md`
+and `waldo.md`): Wald uses `tau = (mle - theta)^2 * I(theta)` with
+chi^2_1 calibration; WALDO uses an MC reference distribution under
+H_0 sampled via `model.sample_data`. Pairings of `bernoulli` with
+`power_law` still raise `NotImplementedError` — generic tilting is
+Phase 3 work, separately tracked.
 
 ## Tilting Schemes (status)
 
@@ -172,7 +176,7 @@ a `-log P(valid | θ, η)` boundary penalty driven by Head B
 checkpoint is trained for one `(model, prior, scheme)` and the
 selector refuses cross-experiment use via tuple-equal fingerprint
 compare. Smoke fixtures live in
-`artifacts/learned_eta_<config_name>_v0_smoke.pt`; production v1
+`artifacts/learned_eta_<config_name>_v0_smoke.eqx`; production v1
 checkpoints are not committed (re-train via
 `scripts.train_learned_eta --config experiments/<config>.yaml`).
 Activate via env var:
@@ -182,15 +186,23 @@ export FRASIAN_DEFAULT_DYNAMIC_ETA=learned   # vs default "numerical"
 ```
 
 Headline empirical result on the canonical sandbox (w=0.5,
-n_reps=200, α=0.05; v0_smoke checkpoint):
+n_reps=200, α=0.05; v0_smoke checkpoint, post-Equinox-port):
 
 ```
                             θ=0    θ=1    θ=2    θ=3    θ=4
 Wald                        3.92   3.92   3.92   3.92   3.92
-bare WALDO                  3.32   3.44   3.75   4.24   4.85
-power_law[numerical]        3.35   3.50   3.92   4.53   5.23   ← legacy: inflates
-power_law[learned]          3.67   3.67   3.67   3.71   3.80   ← calibrated AND ≤ Wald
+bare WALDO                  3.33   3.43   3.75   4.23   4.78
+power_law[numerical]        3.36   3.49   3.91   4.54   5.24   ← legacy: inflates
+power_law[learned]          3.63   3.64   3.68   3.75   3.82   ← calibrated AND ≤ Wald
 ```
+
+Numbers are from the JAX/Equinox/Optax v0_smoke checkpoint
+(post-Phase-F port commit 3) and are **not bit-equal** to the
+pre-port torch numbers — JAX's PRNG primitive differs from torch's
+even at the same nominal seed, so retrained weights drift within
+~1× MC standard error (~0.05 across α=0.05 narrowness MC repeats).
+The pattern (calibrated AND ≤ Wald, narrow at conflict) is
+preserved.
 
 Single-seed v0_smoke checkpoint; standard error ≈ 0.05 across α=0.05
 narrowness MC repeats. v1 production retraining will produce
@@ -214,8 +226,8 @@ checkpoint for production-grade OT). See
 
 | Name          | Status        | Notes                                          |
 |---------------|---------------|------------------------------------------------|
-| `wald`        | implemented   | Closed-form CI: D ± z·σ; identity-tilting only |
-| `waldo`       | implemented   | p(θ) = Φ(b−a) + Φ(−a−b); numerical CI inversion |
+| `wald`        | implemented   | Closed-form CI on Normal-Normal: D ± z·σ; identity-tilting only. Generic path on any Model: τ=(mle−θ)²·I(θ), χ²₁ calibration. |
+| `waldo`       | implemented   | Closed-form on Normal-Normal+Normal: p(θ)=Φ(b−a)+Φ(−a−b). Generic path on any (Model, Prior): MC reference under H_0 via model.sample_data, knobs n_mc/seed (CRN across brentq). |
 | `lrt`         | stub          | -2 log Λ; on Normal-location reduces to Wald   |
 | `signed_root` | stub          | sign·√LRT; on Normal-location equals Wald      |
 | `bartlett`    | stub          | LRT/E[LRT]; decorator over base LRT (planned)  |

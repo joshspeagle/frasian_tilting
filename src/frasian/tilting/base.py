@@ -29,15 +29,6 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
-class TiltingContext:
-    """Non-η parameters that bound or describe a tilting choice."""
-
-    w: float
-    abs_delta: float
-    alpha: float
-
-
-@dataclass(frozen=True)
 class ParamSpec:
     """Description of a tilting scheme's η parameter space."""
 
@@ -59,9 +50,15 @@ class TiltingScheme(Protocol):
           distribution numerically equal to `posterior`.
         - `tilt(...).pdf` is non-negative and integrates to 1 (KS-tolerance).
         - `path(ts)` is continuous in t (W₁ Lipschitz bound).
-        - `admissible_range(context)` brackets the η values for which `tilt`
-          succeeds; outside this range the implementation MUST raise
-          `TiltingDomainError`, never return NaN.
+        - For η outside the scheme's admissible parameter region (e.g.
+          η that drives a variance non-positive on Normal-Normal),
+          `tilt` / `tilted_pvalue` MUST raise `TiltingDomainError`,
+          never return NaN. The admissible region is an *internal*
+          property of each implementation: the public protocol does
+          not expose it. Selectors that need η-bounds compute them
+          internally (`NumericalEtaSelector._eta_bounds`); learned
+          selectors enforce admissibility via the trained
+          `ValidityNet` boundary penalty.
     """
 
     @property
@@ -79,8 +76,6 @@ class TiltingScheme(Protocol):
     ) -> Iterable[Posterior]: ...
 
     def is_identity(self, eta: float) -> bool: ...
-
-    def admissible_range(self, context: TiltingContext) -> tuple[float, float]: ...
 
     def confidence_interval(
         self,
@@ -157,11 +152,61 @@ class EtaSelector(Protocol):
     Implementations: `NumericalEtaSelector` (Brent root-find on CI width),
     `ClosedFormEtaSelector` (analytic approximation), `LearnedEtaSelector`
     (wraps a `LearnedArtifact` such as the monotonic MLP).
+
+    The call surface is θ-space and model-agnostic. `data`, `model`,
+    `prior` and `alpha` are passed at call time; selectors do not
+    consume Normal-Normal-specific `|Δ|` summaries. Selectors that
+    need η-bounds (e.g. `NumericalEtaSelector`'s minimization
+    bracket) compute them internally; the protocol does not expose
+    a `TiltingContext` or `admissible_range` indirection.
     """
 
-    @property
-    def name(self) -> str: ...
+    name: str
+    is_dynamic: bool
 
     def select(
-        self, context: TiltingContext, scheme: TiltingScheme, *, statistic: TestStatistic
+        self,
+        scheme: TiltingScheme,
+        *,
+        data: NDArray[np.float64],
+        model: Model,
+        prior: Prior,
+        alpha: float,
+        statistic: TestStatistic,
     ) -> float: ...
+
+
+@runtime_checkable
+class DynamicEtaSelector(Protocol):
+    """Dynamic selectors expose `select_grid(theta_grid, ...)` returning
+    one η per θ.
+
+    `select(...)` on a dynamic selector returns the η at a representative
+    θ (e.g. the data sufficient statistic), preserved for callers that
+    need a single number.
+    """
+
+    name: str
+    is_dynamic: bool
+
+    def select(
+        self,
+        scheme: TiltingScheme,
+        *,
+        data: NDArray[np.float64],
+        model: Model,
+        prior: Prior,
+        alpha: float,
+        statistic: TestStatistic,
+    ) -> float: ...
+
+    def select_grid(
+        self,
+        theta_grid: NDArray[np.float64],
+        scheme: TiltingScheme,
+        *,
+        model: Model,
+        prior: Prior,
+        alpha: float,
+        statistic: TestStatistic,
+    ) -> NDArray[np.float64]: ...

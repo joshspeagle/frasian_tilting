@@ -3,15 +3,18 @@
 Extracted from ``train.py`` (Tier 1.2 §7 split). Three concerns:
 
 1. Width-loss adapter (``compose_width_loss``): wraps the
-   torch tilted-pvalue port + the chosen functional in
+   JAX tilted-pvalue port + the chosen functional in
    ``losses.py`` (``integrated_pvalue_loss`` / ``cd_variance_loss`` /
    ``static_width_loss``). Currently Normal-Normal only because
-   the torch ports are; the wrapper is the single place that
+   the JAX ports are; the wrapper is the single place that
    adapts ``(model, prior)`` → ``(w, mu0, sigma)``.
 
 2. Boundary penalty (``compose_boundary_penalty``): forwards
    ``(θ, η)`` through a parameter-detached ``ValidityNet`` so
    gradient flows back into Head A but not Head B's weights.
+   Implemented via ``eqx.partition`` + ``jax.lax.stop_gradient`` +
+   ``eqx.combine`` (the Equinox idiom that replaces the legacy
+   ``torch.func.functional_call(detached_params)``).
 
 3. λ schedule (``lambda_schedule``) and β schedule
    (``beta_schedule``) for the Head A loss components.
@@ -27,8 +30,12 @@ from __future__ import annotations
 import warnings
 from typing import Any
 
-import torch
+import equinox as eqx
+import jax
+import jax.numpy as jnp
+import numpy as np
 
+from ... import _jax_setup as _x64  # noqa: F401  — ensure float64 active
 from ...models.distributions import NormalDistribution
 from ...models.normal_normal import NormalNormalModel
 from .architecture import EtaNet, ValidityNet
@@ -38,8 +45,10 @@ from .losses import (
     integrated_pvalue_loss,
     static_width_loss,
 )
-from .pvalue_torch import get_torch_tilted_pvalue
+from .pvalue_jax import get_jax_tilted_pvalue
 from .sampling import ExperimentConfig
+
+_FORCE_X64 = _x64  # keep static-analysis from stripping the import
 
 # Default β-anneal endpoints. Per `audit/tier1/skeptic_learned_eta.md` S2
 # and `audit/tier1/nn_training.md` §1, β=200 → +0.4% bias at α=0.05;
@@ -54,12 +63,13 @@ def extract_normal_normal_params(
     model: Any,
     prior: Any,
 ) -> tuple[float, float, float]:
-    """Extract (w, mu0, sigma) for the existing torch tilted-pvalue ports.
+    """Extract (w, mu0, sigma) for the JAX tilted-pvalue ports.
 
-    The torch ports in ``pvalue_torch.py`` were written before Phase E
-    and take Normal-Normal coordinates ``(w, mu0, sigma)`` directly.
-    We adapt by deriving them from ``(model, prior)`` exactly here —
-    the rest of the training loop stays model-agnostic.
+    The JAX ports in ``pvalue_jax.py`` are direct equivalents of the
+    legacy torch ports and take Normal-Normal coordinates
+    ``(w, mu0, sigma)`` directly. We adapt by deriving them from
+    ``(model, prior)`` exactly here — the rest of the training loop
+    stays model-agnostic.
 
     Raises ``NotImplementedError`` for non-Normal-Normal experiments,
     consistent with the documented "model-agnostic in principle,
@@ -69,7 +79,7 @@ def extract_normal_normal_params(
         raise NotImplementedError(
             "Phase E training currently requires a NormalNormalModel; "
             f"got {type(model).__name__}. Extending to non-Normal-Normal "
-            f"requires registering a generic torch tilted_pvalue."
+            f"requires registering a generic JAX tilted_pvalue."
         )
     if not isinstance(prior, NormalDistribution):
         raise NotImplementedError(
@@ -82,7 +92,7 @@ def extract_normal_normal_params(
     w = sigma0**2 / (sigma**2 + sigma0**2)
     # Skeptic block #4: w → 0 (delta prior) and w → 1 (improper) put
     # the WALDO admissible range into degenerate territory and the
-    # torch-side `clamp(denom, min=1e-6)` silently distorts. Refuse.
+    # JAX-side `jnp.maximum(denom, 1e-6)` silently distorts. Refuse.
     _W_EPS = 1e-3
     if not (_W_EPS < w < 1.0 - _W_EPS):
         raise ValueError(
@@ -94,70 +104,303 @@ def extract_normal_normal_params(
     return w, mu0, sigma
 
 
+# Phase 4b: model-kind dispatch for the width-loss adapter.
+
+# Number of grid points used by the generic (grid-based) tilted pvalue
+# during TRAINING. Lower than inference (1024) since MC noise dominates
+# over grid-discretisation noise at training-time, and per-step cost is
+# the dominant wall-time of training. Bernoulli v0_smoke target is ~30 min
+# at this setting.
+_N_GRID_GENERIC_TRAINING: int = 512
+
+
+def _call_normal_normal_pvalue(
+    *,
+    eta_net: EtaNet,
+    theta_grid_t: jax.Array,
+    D_batch_t: jax.Array,
+    model: Any,
+    prior: Any,
+    statistic_name: str,
+    scheme_name: str,
+) -> jax.Array:
+    """Adapter: extract Normal-Normal (w, mu0, sigma) and call the
+    per-scheme JAX kernel (closed-form fast path).
+
+    Output is byte-identical to the pre-Phase-4b path on Normal-Normal —
+    same callable, same broadcasting, same JIT cache key. Pinned by
+    `test_fit_eta_artifact_byte_equality.py`.
+    """
+    w, mu0, sigma = extract_normal_normal_params(model, prior)
+    w_t = jnp.asarray(w)
+    mu0_t = jnp.asarray(mu0)
+    sigma_t = jnp.asarray(sigma)
+
+    if D_batch_t.ndim != 1:
+        raise NotImplementedError(
+            "Normal-Normal closed-form width-loss adapter expects scalar "
+            f"D per batch element (D.ndim == 1); got shape "
+            f"{tuple(D_batch_t.shape)}. n_data > 1 with a NormalNormalModel "
+            "must route through the generic grid path; route via "
+            "WIDTH_LOSS_DISPATCH[('<scheme>', 'generic')] instead."
+        )
+
+    eta_grid = eta_net(theta_grid_t)  # (G,)
+    tilted_pvalue = get_jax_tilted_pvalue(scheme_name, "normal_normal")
+    G = theta_grid_t.shape[0]
+    B = D_batch_t.shape[0]
+    return tilted_pvalue(
+        jnp.broadcast_to(theta_grid_t[None, :], (B, G)),
+        jnp.broadcast_to(D_batch_t[:, None], (B, G)),
+        w_t,
+        mu0_t,
+        sigma_t,
+        jnp.broadcast_to(eta_grid[None, :], (B, G)),
+        statistic_name,
+    )
+
+
+def precompute_generic_grids(
+    model: Any, prior: Any, n_grid: int = _N_GRID_GENERIC_TRAINING
+) -> tuple[jax.Array, jax.Array]:
+    """Precompute ``(support_theta_grid, log_p_prior_grid)`` once per
+    experiment (model + prior fixed across training).
+
+    Returns a pair of jnp arrays. Numpy-side computation; called
+    from outside the jit boundary (typically once at training start)
+    and the result is closed over by the per-step jit'd kernel.
+    """
+    if not hasattr(model, "support"):
+        raise NotImplementedError(
+            f"precompute_generic_grids requires `model.support()`; "
+            f"got {type(model).__name__!r} without it."
+        )
+    support_lo, support_hi = model.support()
+    support_lo_f = float(support_lo)
+    support_hi_f = float(support_hi)
+    if not (np.isfinite(support_lo_f) and np.isfinite(support_hi_f)):
+        raise NotImplementedError(
+            "precompute_generic_grids: unbounded support fallback not yet "
+            "wired (no current Phase 4 consumer needs it)."
+        )
+    # Pad inward to keep ``prior.logpdf`` finite on the grid (Bernoulli
+    # at θ ∈ {0, 1} with Beta(α<1, β<1) gives -inf). Phase 4 skeptic
+    # #10: previous fixed 1% pad silently truncated tails on priors
+    # with significant boundary mass (e.g. Beta(0.5, 0.5)); now we
+    # adapt — start at 1e-6, double the pad while the boundary
+    # log-prior is non-finite, cap at 5% of support.
+    width = support_hi_f - support_lo_f
+    pad = 1e-6 * width
+    pad_cap = 0.05 * width
+    lp_lo = lp_hi = float("-inf")
+    while pad <= pad_cap:
+        boundary_lo = support_lo_f + pad
+        boundary_hi = support_hi_f - pad
+        lp_lo = float(np.asarray(prior.logpdf(jnp.asarray([boundary_lo]))).item())
+        lp_hi = float(np.asarray(prior.logpdf(jnp.asarray([boundary_hi]))).item())
+        if np.isfinite(lp_lo) and np.isfinite(lp_hi):
+            break
+        pad *= 2.0
+    if not (np.isfinite(lp_lo) and np.isfinite(lp_hi)):
+        raise ValueError(
+            f"precompute_generic_grids: prior log-pdf non-finite at both "
+            f"grid endpoints even after padding to {pad_cap:.4f} "
+            f"({pad_cap / width * 100:.1f}% of support). The prior "
+            f"concentrates essentially all mass on the boundary; the "
+            f"learned-η training distribution is degenerate."
+        )
+    support_theta_grid = jnp.linspace(
+        support_lo_f + pad, support_hi_f - pad, n_grid
+    )
+    log_p_prior_grid = jnp.asarray(prior.logpdf(support_theta_grid))
+    if not bool(jnp.all(jnp.isfinite(log_p_prior_grid))):
+        raise ValueError(
+            f"precompute_generic_grids: prior log-pdf is non-finite at "
+            f"interior grid points (pad={pad:.4g}). The prior may have "
+            f"discontinuities or zero-density regions inside the support."
+        )
+    return support_theta_grid, log_p_prior_grid
+
+
+def compute_log_p_lik_grid_np(
+    model: Any, D_batch_np: np.ndarray, support_theta_grid_np: np.ndarray
+) -> np.ndarray:
+    """Build ``(B, N_grid)`` log-likelihood grid per batch element.
+
+    Numpy-side helper called from outside the jit boundary. ``D_batch_np``
+    can be ``(B,)`` (n_data == 1) or ``(B, n_data)`` (n_data > 1); each
+    row is an independent dataset for ``model.likelihood``.
+
+    Phase 4 skeptic #3 (per-step numpy loop overhead): benchmarked at
+    7.2 ms / step (B=8, n_data=16, n_grid=512) on dev hardware — ~213x
+    slower than a Bernoulli-specific vectorised form, but small in
+    absolute terms relative to the rest of the per-step cost
+    (validity fast path + jit kernel). Vectorising would require a
+    `model.loglik_grid_batched` protocol method — Phase 5+ work.
+    """
+    B = D_batch_np.shape[0]
+    N_grid = support_theta_grid_np.shape[0]
+    out = np.empty((B, N_grid), dtype=np.float64)
+    is_2d = D_batch_np.ndim == 2
+    for i in range(B):
+        d_i = D_batch_np[i] if is_2d else np.atleast_1d(D_batch_np[i])
+        likelihood_i = model.likelihood(np.asarray(d_i, dtype=np.float64))
+        out[i] = np.asarray(likelihood_i.loglik(support_theta_grid_np))
+    return out
+
+
+def _call_generic_grid_pvalue(
+    *,
+    eta_net: EtaNet,
+    theta_grid_t: jax.Array,
+    D_batch_t: jax.Array,
+    model: Any,
+    prior: Any,
+    statistic_name: str,
+    scheme_name: str,
+    log_p_lik_grid_t: jax.Array | None = None,
+    support_theta_grid_t: jax.Array | None = None,
+    log_p_prior_grid_t: jax.Array | None = None,
+) -> jax.Array:
+    """Adapter: call ``generic_grid_tilted_pvalue`` (Phase 4 generic path).
+
+    Requires pre-computed grids (`log_p_lik_grid_t`,
+    `support_theta_grid_t`, `log_p_prior_grid_t`) — these depend on
+    Python state (``model.likelihood``, ``prior.logpdf``,
+    ``model.support()``) that JAX cannot trace through. The caller
+    (``_training_step``) precomputes them numpy-side and passes them
+    in as jax arrays; the per-step jit kernel then closes over the
+    fixed prior+support grids and receives a fresh ``log_p_lik_grid``
+    each step.
+    """
+    from .pvalue_jax import generic_grid_tilted_pvalue
+
+    del D_batch_t, model, prior, scheme_name  # unused in the kernel call
+    if log_p_lik_grid_t is None or support_theta_grid_t is None or log_p_prior_grid_t is None:
+        raise ValueError(
+            "_call_generic_grid_pvalue requires pre-computed "
+            "log_p_lik_grid_t, support_theta_grid_t, and "
+            "log_p_prior_grid_t (compute via "
+            "`precompute_generic_grids` + `compute_log_p_lik_grid_np` "
+            "outside the jit boundary)."
+        )
+
+    eta_grid = eta_net(theta_grid_t)  # (G_test,)
+    G = theta_grid_t.shape[0]
+    B = log_p_lik_grid_t.shape[0]
+    return generic_grid_tilted_pvalue(
+        jnp.broadcast_to(theta_grid_t[None, :], (B, G)),  # (B, G_test)
+        jnp.broadcast_to(eta_grid[None, :], (B, G)),  # (B, G_test)
+        log_p_lik_grid_t,        # (B, N_grid)
+        log_p_prior_grid_t,      # (N_grid,)
+        support_theta_grid_t,    # (N_grid,)
+        statistic_name,
+    )
+
+
+# Width-loss dispatch keyed on (scheme_name, model_kind). Mirrors
+# JAX_TILTED_PVALUE but at the adapter level (extractor + kernel call).
+# Falls back to ("scheme", "generic") if specific (scheme, model_kind)
+# isn't registered — matches `get_jax_tilted_pvalue`'s pattern.
+WIDTH_LOSS_DISPATCH: dict[tuple[str, str], Any] = {
+    ("power_law", "normal_normal"): _call_normal_normal_pvalue,
+    ("ot", "normal_normal"): _call_normal_normal_pvalue,
+    ("power_law", "generic"): _call_generic_grid_pvalue,
+    # ("ot", "generic") deferred — see JAX_TILTED_PVALUE comment.
+}
+
+
+def _resolve_width_loss_adapter(
+    scheme_name: str, model_kind: str
+) -> Any:
+    """Look up the (scheme, model_kind) adapter, with `(scheme, "generic")`
+    fallback. Mirrors `get_jax_tilted_pvalue`."""
+    key = (scheme_name, model_kind)
+    if key in WIDTH_LOSS_DISPATCH:
+        return WIDTH_LOSS_DISPATCH[key]
+    generic_key = (scheme_name, "generic")
+    if generic_key in WIDTH_LOSS_DISPATCH:
+        return WIDTH_LOSS_DISPATCH[generic_key]
+    raise NotImplementedError(
+        f"Phase E training doesn't support cell (scheme={scheme_name!r}, "
+        f"model={model_kind!r}). Available cells: {sorted(WIDTH_LOSS_DISPATCH)}."
+    )
+
+
 def compose_width_loss(
     *,
     eta_net: EtaNet,
-    theta_grid_t: torch.Tensor,
-    D_batch_t: torch.Tensor,
+    theta_grid_t: jax.Array,
+    D_batch_t: jax.Array,
     config: ExperimentConfig,
     loss_kind: str,
     alpha: float | None,
     beta: float | None = None,
-) -> torch.Tensor:
+    log_p_lik_grid_t: jax.Array | None = None,
+    support_theta_grid_t: jax.Array | None = None,
+    log_p_prior_grid_t: jax.Array | None = None,
+) -> jax.Array:
     """Integrated-p (or variant) width loss averaged over a D batch.
 
-    Skeptic block #1: a single-D Monte Carlo estimator has too much
-    variance for both training and validation signal — val_width
-    oscillates with the per-step D draw. Vectorise over a (B,) D
-    tensor and average; gives an unbiased estimator with variance
-    ~1/B. The torch tilted-pvalue port broadcasts naturally so this
-    is one tensor call, not a Python loop.
+    Phase 4b: dispatches to a per-(scheme, model_kind) adapter that
+    extracts model-specific kwargs and calls the matching JAX kernel.
+    On Normal-Normal this routes through the closed-form fast path
+    (byte-identical to pre-Phase-4b output); on Bernoulli + power_law
+    it routes through the grid-based generic path.
 
-    The ``beta`` argument is forwarded to ``static_width_loss`` only
-    (the other two losses are α-marginalised and don't use a
-    sigmoid-relaxed indicator). For ``static_width`` it must be a
-    finite positive scalar; for the symmetric losses it is ignored
-    (passing a value emits no warning, but is dead code).
+    Generic-path inputs (``log_p_lik_grid_t``, ``support_theta_grid_t``,
+    ``log_p_prior_grid_t``) are pre-computed numpy-side outside the
+    jit boundary (see ``precompute_generic_grids`` and
+    ``compute_log_p_lik_grid_np``); they are unused by the NN
+    closed-form path.
+
+    The ``beta`` argument is forwarded to ``static_width_loss`` only.
     """
-    w, mu0, sigma = extract_normal_normal_params(config.model, config.prior)
-    w_t = torch.tensor(w, dtype=theta_grid_t.dtype, device=theta_grid_t.device)
-    mu0_t = torch.tensor(mu0, dtype=theta_grid_t.dtype, device=theta_grid_t.device)
-    sigma_t = torch.tensor(sigma, dtype=theta_grid_t.dtype, device=theta_grid_t.device)
+    if D_batch_t.ndim == 0:
+        D_batch_t = D_batch_t[None]
+    if D_batch_t.ndim not in (1, 2):
+        raise ValueError(
+            f"D_batch_t must be 0D, 1D, or 2D; got shape {tuple(D_batch_t.shape)}."
+        )
 
-    if D_batch_t.dim() == 0:
-        D_batch_t = D_batch_t.unsqueeze(0)  # (1,)
-    if D_batch_t.dim() != 1:
-        raise ValueError(f"D_batch_t must be 0D or 1D; got shape {tuple(D_batch_t.shape)}.")
-
-    eta_grid = eta_net(theta_grid_t)  # (G,)
-    tilted_pvalue = get_torch_tilted_pvalue(config.scheme_name)
-    # Broadcast: theta=(1, G), D=(B, 1), eta=(1, G) → p=(B, G).
+    model_kind = config.model.fingerprint()[0]
+    adapter = _resolve_width_loss_adapter(config.scheme_name, model_kind)
+    adapter_kwargs: dict[str, Any] = dict(
+        eta_net=eta_net,
+        theta_grid_t=theta_grid_t,
+        D_batch_t=D_batch_t,
+        model=config.model,
+        prior=config.prior,
+        statistic_name=config.statistic_name,
+        scheme_name=config.scheme_name,
+    )
+    if adapter is _call_generic_grid_pvalue:
+        adapter_kwargs.update(
+            log_p_lik_grid_t=log_p_lik_grid_t,
+            support_theta_grid_t=support_theta_grid_t,
+            log_p_prior_grid_t=log_p_prior_grid_t,
+        )
+    p_grid = adapter(**adapter_kwargs)
     G = theta_grid_t.shape[0]
     B = D_batch_t.shape[0]
-    p_grid = tilted_pvalue(
-        theta_grid_t.unsqueeze(0).expand(B, G),  # (B, G)
-        D_batch_t.unsqueeze(-1).expand(B, G),  # (B, G)
-        w_t,
-        mu0_t,
-        sigma_t,
-        eta_grid.unsqueeze(0).expand(B, G),  # (B, G)
-        config.statistic_name,
-    )  # (B, G)
-    # Skeptic caveat #12: float32 round-off in `_phi(b-a) + _phi(-a-b)`
+    # Skeptic caveat #12: float64 round-off in `_phi(b-a) + _phi(-a-b)`
     # can drift slightly outside [0, 1]. Warn (without breaking the
     # gradient) when drift exceeds tolerance — clamp would zero the
-    # gradient at the boundary. Mirrors the legacy guard.
-    if not torch.is_grad_enabled():
-        out_of_range = ((p_grid < -1e-5) | (p_grid > 1.0 + 1e-5)).any().item()
+    # gradient at the boundary. The legacy guard keyed on
+    # ``torch.is_grad_enabled``; in JAX we issue the check
+    # eagerly if the input is concrete (i.e., not tracer-backed),
+    # and skip the diagnostic during tracing.
+    if not isinstance(p_grid, jax.core.Tracer):
+        out_of_range = bool(((p_grid < -1e-5) | (p_grid > 1.0 + 1e-5)).any())
         if out_of_range:
             warnings.warn(
                 f"width-loss p-values drifted outside [0, 1] in "
                 f"{config.scheme_name}/{config.statistic_name}; "
-                f"consider float64 or tighter η bounds.",
+                f"consider tighter η bounds.",
                 RuntimeWarning,
                 stacklevel=2,
             )
-    theta_grid_b = theta_grid_t.unsqueeze(0).expand(B, G)  # (B, G)
+    theta_grid_b = jnp.broadcast_to(theta_grid_t[None, :], (B, G))  # (B, G)
 
     if loss_kind == "integrated_p":
         return integrated_pvalue_loss(p_grid, theta_grid_b)
@@ -180,21 +423,29 @@ def compose_width_loss(
 def compose_boundary_penalty(
     *,
     val_net: ValidityNet,
-    theta_batch_t: torch.Tensor,
-    eta_pred: torch.Tensor,
-) -> torch.Tensor:
+    theta_batch_t: jax.Array,
+    eta_pred: jax.Array,
+) -> jax.Array:
     """``-log P(valid | θ_batch, η_pred)`` with ValidityNet detached.
 
-    Uses ``torch.func.functional_call`` with detached params + buffers
-    so gradient flows from η_pred through the (θ, η) input into
-    EtaNet, but not into ValidityNet.
+    The legacy torch idiom ``torch.func.functional_call(val_net,
+    detached_params, inputs)`` is replaced by Equinox's
+    ``eqx.partition`` + ``jax.lax.stop_gradient`` + ``eqx.combine``
+    pattern. The detached module forwards the same logits but blocks
+    gradient flow into ValidityNet's parameters; gradient still flows
+    back through the (θ, η) input into EtaNet via ``eta_pred``.
     """
     from ._validity_data import validity_net_inputs
 
     inputs = validity_net_inputs(theta_batch_t, eta_pred)
-    v_p = {k: v.detach() for k, v in val_net.named_parameters()}
-    v_b = {k: v.detach() for k, v in val_net.named_buffers()}
-    logits = torch.func.functional_call(val_net, (v_p, v_b), (inputs,))
+    # Split the module into its array leaves vs static metadata, stop
+    # gradients on the array leaves, and recombine. The recombined
+    # module is a forward-equivalent ValidityNet whose parameters do
+    # not contribute to the autodiff graph.
+    params, static = eqx.partition(val_net, eqx.is_array)
+    params_detached = jax.tree.map(jax.lax.stop_gradient, params)
+    val_net_detached = eqx.combine(params_detached, static)
+    logits = val_net_detached(inputs)
     return boundary_penalty_from_validity(logits)
 
 

@@ -31,9 +31,13 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import ClassVar, cast
 
+import jax
+import jax.numpy as jnp
+import jax.scipy.stats as jsp_stats
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
+from .. import _jax_setup as _x64  # noqa: F401  — ensure float64 active
 from .._errors import TiltingDomainError
 from .._registry import register_tilting
 from ..config import Config
@@ -41,35 +45,605 @@ from ..models.base import Likelihood, Model, Posterior, Prior
 from ..models.distributions import GaussianLikelihood, NormalDistribution
 from ..models.normal_normal import weight as _weight
 from ..statistics.base import TestStatistic
-from .base import EtaSelector, ParamSpec, TiltingContext
+from .base import EtaSelector, ParamSpec
 from .eta_selectors import FixedEtaSelector
 
-_ETA_MIN_BUFFER = Config.default().eta_min_buffer
+_FORCE_X64 = _x64  # keep static-analysis from stripping the import
+
+
+from functools import partial
+
+# scipy: used by the numpy-eager scalar fast path inside tilted_pvalue.
+# JAX dispatch costs ~50-300 us per scalar call even with jit; numpy +
+# scipy.stats.norm is ~10 us. The bulk JAX kernel below handles the
+# array path (length >= 2) and is autodiff-clean for Phase 4.
+from scipy import stats as _scalar_scipy_stats
+
+
+def _tilted_pvalue_numpy_scalar(
+    theta_f: float,
+    eta_f: float,
+    D_f: float,
+    w: float,
+    mu0: float,
+    sigma: float,
+    statistic_name: str,
+) -> float:
+    """Numpy-eager scalar fast path. Mirrors `_tilted_pvalue_kernel` but
+    runs on Python floats + scipy.stats.norm. Used when caller passes
+    scalar (theta, eta, D) — the brentq inner-loop pattern. ~10 us/call.
+    """
+    denom = 1.0 - eta_f * (1.0 - w)
+    if statistic_name == "wald":
+        z = abs(D_f - theta_f) / sigma
+        return float(2.0 * _scalar_scipy_stats.norm.sf(z))
+    if statistic_name == "waldo":
+        mu_eta = (w * D_f + (1.0 - eta_f) * (1.0 - w) * mu0) / denom
+        norm_factor = w * sigma / denom
+        a_eta = abs(mu_eta - theta_f) / norm_factor
+        b_eta = (1.0 - eta_f) * (1.0 - w) * (mu0 - theta_f) / (denom * norm_factor)
+        return float(
+            _scalar_scipy_stats.norm.cdf(b_eta - a_eta)
+            + _scalar_scipy_stats.norm.cdf(-a_eta - b_eta)
+        )
+    raise NotImplementedError(
+        f"_tilted_pvalue_numpy_scalar not implemented for statistic={statistic_name!r}; "
+        f"supported: 'wald', 'waldo'."
+    )
+
+
+@partial(jax.jit, static_argnames=("statistic_name",))
+def _tilted_pvalue_kernel(
+    theta: jax.Array,
+    eta: jax.Array,
+    D: jax.Array,
+    w: float,
+    mu0: float,
+    sigma: float,
+    statistic_name: str,
+) -> jax.Array:
+    """Pure JAX arithmetic kernel for the tilted p-value.
+
+    Autodiff-clean (no validation, no Python control flow except the
+    static `statistic_name` dispatch). Phase 4's learned-eta `loss`
+    closes over this directly inside `@jax.jit`. The public
+    `PowerLawTilting.tilted_pvalue` validates inputs once, then
+    delegates here.
+
+    JIT note (style guide allows: profile shows it pays off): the bulk
+    path is called by `dynamic_ci_scan` (theta-grid shape (n_grid,))
+    and by selectors / experiments with a small set of recurring
+    shapes. JAX's jit cache is process-wide, so within one test sweep
+    the first call per (shape, statistic_name) pays ~150 ms compile
+    and every subsequent call is ~0.5 ms; eager mode without jit
+    would be ~2 ms per call regardless. Across the L0 sweep that
+    difference is the ~30 s vs >120 s gap.
+
+    Scalar inputs do NOT reach this kernel — the public method's
+    shape dispatch routes them to the numpy fast path (~10 us/call,
+    much faster than either jit'd or eager JAX would be on a 0-d).
+    """
+    denom = 1.0 - eta * (1.0 - w)
+    if statistic_name == "wald":
+        # eta-independent: 2 * (1 - Phi(|D - theta| / sigma)).
+        z = jnp.abs(D - theta) / sigma
+        return 2.0 * (1.0 - jsp_stats.norm.cdf(z))
+    if statistic_name == "waldo":
+        mu_eta = (w * D + (1.0 - eta) * (1.0 - w) * mu0) / denom
+        norm_factor = w * sigma / denom
+        a_eta = jnp.abs(mu_eta - theta) / norm_factor
+        b_eta = (1.0 - eta) * (1.0 - w) * (mu0 - theta) / (denom * norm_factor)
+        return jsp_stats.norm.cdf(b_eta - a_eta) + jsp_stats.norm.cdf(-a_eta - b_eta)
+    raise NotImplementedError(
+        f"_tilted_pvalue_kernel not implemented for statistic={statistic_name!r}; "
+        f"supported: 'wald', 'waldo'."
+    )
+
+
+def _is_gaussian_triple(
+    posterior: Posterior, prior: Prior, likelihood: Likelihood
+) -> bool:
+    """Return True iff (posterior, prior, likelihood) is the Normal-Normal triple
+    that admits the Theorem 6 closed form. Used to dispatch between the
+    closed-form fast path and the model-agnostic numerical path.
+    """
+    return (
+        isinstance(posterior, NormalDistribution)
+        and isinstance(prior, NormalDistribution)
+        and isinstance(likelihood, GaussianLikelihood)
+    )
 
 
 def _require_gaussian(
     posterior: Posterior, prior: Prior, likelihood: Likelihood
 ) -> tuple[NormalDistribution, NormalDistribution, GaussianLikelihood]:
-    """Recognize a Normal-Normal context. Raise if any input is not Gaussian."""
+    """Same as the isinstance check, but raises with the legacy error message.
+
+    Retained for the closed-form path's narrowing assertions; the public
+    `tilt()` method dispatches via `_is_gaussian_triple` and only this
+    function's raising is used post-dispatch (i.e. on the closed-form
+    branch where the inputs are already known to be Gaussian).
+    """
     if not isinstance(posterior, NormalDistribution):
         raise NotImplementedError(
-            "PowerLawTilting requires a NormalDistribution posterior; "
-            f"got {type(posterior).__name__!r}. Numerical fallback is a "
-            f"future extension."
+            "PowerLawTilting closed form requires a NormalDistribution posterior; "
+            f"got {type(posterior).__name__!r}."
         )
     if not isinstance(prior, NormalDistribution):
         raise NotImplementedError(
-            "PowerLawTilting requires a NormalDistribution prior; " f"got {type(prior).__name__!r}."
+            "PowerLawTilting closed form requires a NormalDistribution prior; "
+            f"got {type(prior).__name__!r}."
         )
     if not isinstance(likelihood, GaussianLikelihood):
         raise NotImplementedError(
-            "PowerLawTilting requires a GaussianLikelihood; " f"got {type(likelihood).__name__!r}."
+            "PowerLawTilting closed form requires a GaussianLikelihood; "
+            f"got {type(likelihood).__name__!r}."
         )
     return posterior, prior, likelihood
 
 
 def _denom(w: float, eta: float) -> float:
     return 1.0 - eta * (1.0 - w)
+
+
+# ----- Generic numerical path (any Distribution-conforming inputs) -----
+
+# Default grid parameters per the deriver's recommendation
+# (`/root/.claude/plans/...`, validated atol 1e-7 at N=1024 against
+# Theorem 6 on Normal-Normal). N=2048 + k=8 are mildly more conservative;
+# the suite picks N=1024 to keep per-call cost ~1 ms on Bernoulli.
+_GENERIC_TILT_N_GRID: int = 1024
+_GENERIC_TILT_HALF_WIDTH_K: float = 8.0
+_GENERIC_TILT_QUANTILE_EPS: float = 1e-4
+
+
+def _generic_tilt_grid_window(
+    posterior: Posterior,
+    prior: Prior,
+    *,
+    support: tuple[float, float],
+) -> tuple[float, float]:
+    """Pick the (theta_lo, theta_hi) integration window for `_generic_tilt`.
+
+    Strategy: union of the posterior's and prior's near-quantile windows,
+    clipped to `model.support()`. Quantile-based on bounded supports
+    (Bernoulli's `[0, 1]`, etc.) so we don't pick an arbitrary k·std
+    interval that overruns the support; ``mean ± k * std`` fallback
+    on unbounded supports where quantile inversion can be expensive
+    on a non-Gaussian posterior.
+
+    The window must contain enough mass of *both* the prior and the
+    likelihood-shaped posterior so the η ∈ [0, 1] sweep stays well-
+    integrated. Posterior alone undercovers at η→1; prior alone
+    undercovers at η→0; the union is robust at both ends.
+    """
+    eps = _GENERIC_TILT_QUANTILE_EPS
+    support_lo, support_hi = float(support[0]), float(support[1])
+
+    if np.isfinite(support_lo) and np.isfinite(support_hi):
+        # Bounded support: use quantile-based window on both endpoints.
+        # Skeptic finding #2: narrow the catch to specific exception types
+        # so genuine bugs in `quantile()` (e.g. shape mismatches, internal
+        # scipy errors) propagate cleanly. The `(ValueError, RuntimeError,
+        # NotImplementedError)` set covers the documented failure modes
+        # (improper shape parameters, numerical overflow on extreme Beta,
+        # missing quantile implementation).
+        try:
+            lo = min(
+                float(np.asarray(posterior.quantile(eps))),
+                float(np.asarray(prior.quantile(eps))),
+            )
+            hi = max(
+                float(np.asarray(posterior.quantile(1.0 - eps))),
+                float(np.asarray(prior.quantile(1.0 - eps))),
+            )
+        except (ValueError, RuntimeError, NotImplementedError):
+            # Documented fallback: full support window. Coarser than the
+            # quantile window, but still produces a valid integration.
+            # Coverage may degrade on very-skewed priors (Beta(101, 1));
+            # that's pinned by a regression test.
+            lo, hi = support_lo, support_hi
+        return (max(lo, support_lo), min(hi, support_hi))
+
+    # Unbounded support: use mean ± k * std for both, take the union.
+    try:
+        post_mu, post_sigma = float(posterior.mean()), float(np.sqrt(posterior.var()))
+        prior_mu, prior_sigma = float(prior.mean()), float(np.sqrt(prior.var()))
+    except (TypeError, ValueError, AttributeError) as e:
+        raise ValueError(
+            "PowerLawTilting._generic_tilt: posterior/prior must expose mean()+var() "
+            f"on unbounded supports; got {type(posterior).__name__!r}, "
+            f"{type(prior).__name__!r}."
+        ) from e
+    k = _GENERIC_TILT_HALF_WIDTH_K
+    lo = min(post_mu - k * post_sigma, prior_mu - k * prior_sigma)
+    hi = max(post_mu + k * post_sigma, prior_mu + k * prior_sigma)
+    return (max(lo, support_lo), min(hi, support_hi))
+
+
+def _generic_tilt(
+    posterior: Posterior,
+    prior: Prior,
+    likelihood: Likelihood,
+    eta: float,
+    *,
+    support: tuple[float, float],
+    n_grid: int = _GENERIC_TILT_N_GRID,
+):
+    """Numerical tilted distribution: log q(theta;eta) ∝ log L(theta) + (1-eta) log pi(theta).
+
+    The deriver verified (`/root/.claude/plans/.../`) that this formula
+    reduces to PowerLawTilting's Theorem 6 closed form on Normal-Normal,
+    atol 1e-7 at N=1024 — see `tests/regression/test_grid_distribution.py`
+    and the cross-check below in `test_power_law_generic_matches_closed_form.py`.
+
+    Returns a `GridDistribution` (conforms to the Distribution protocol).
+    """
+    from ._grid_distribution import grid_distribution_from_log_density
+
+    theta_lo, theta_hi = _generic_tilt_grid_window(
+        posterior, prior, support=support
+    )
+    if not (theta_lo < theta_hi):
+        raise ValueError(
+            f"PowerLawTilting._generic_tilt: degenerate grid window "
+            f"[{theta_lo}, {theta_hi}] (likely posterior collapsed onto "
+            f"support boundary or quantile inversion failed)."
+        )
+    theta_grid = np.linspace(theta_lo, theta_hi, n_grid)
+
+    # log q_tilt(theta; eta) = log L(theta) + (1-eta) * log pi(theta).
+    log_lik = np.asarray(likelihood.loglik(theta_grid), dtype=np.float64)
+    log_prior = np.asarray(prior.logpdf(theta_grid), dtype=np.float64)
+    log_q = log_lik + (1.0 - float(eta)) * log_prior
+
+    # Replace -inf entries (e.g. theta outside the prior's support on
+    # bounded models) with a finite floor so the trapezoidal Z is finite.
+    # The grid_distribution_from_log_density helper will exp(log_q -
+    # max(log_q)) which sends these to ~0 anyway.
+    log_q = np.where(np.isfinite(log_q), log_q, -1e300)
+
+    return grid_distribution_from_log_density(
+        theta_grid,
+        log_q,
+        metadata={
+            "scheme": "power_law",
+            "eta": float(eta),
+            "n_grid": int(n_grid),
+            "theta_lo": float(theta_lo),
+            "theta_hi": float(theta_hi),
+        },
+    )
+
+
+# Default knobs for the generic MC tilted-pvalue path. Used only on
+# non-Normal-Normal pairings (the closed-form Normal-Normal path
+# doesn't need MC). Keep these as module-level constants rather than
+# constructor args on PowerLawTilting so the closed-form fast path
+# doesn't carry unused knobs in its dataclass surface.
+# `_GENERIC_TILTED_PVALUE_BASE_SEED` is sourced from `_generic_pvalue`
+# so PowerLaw and OT share the same CRN seed at fixed (data, prior, eta,
+# alpha) — enables direct cross-scheme MC comparison in the smoothness
+# experiment.
+from ._generic_pvalue import _GENERIC_TILTED_PVALUE_BASE_SEED  # noqa: F401
+
+_GENERIC_TILTED_PVALUE_N_MC: int = 200
+# The MC inner-loop t-statistic uses a coarser grid than the observed
+# t_obs because (a) MC noise dominates over grid-discretisation noise
+# at any reasonable n_mc, and (b) per-MC-call cost is the dominant
+# wall-time of the CI inversion (~n_mc * brentq_iters * grid_n flops).
+# n_grid_mc=256 brings per-CI cost down ~4x with negligible coverage
+# impact at n_mc>=200.
+_GENERIC_TILTED_PVALUE_N_GRID_MC: int = 256
+
+
+def _stable_tilted_pvalue_seed(*args, **kwargs) -> int:
+    """Backwards-compatible alias for the module-level helper.
+
+    The implementation moved to `_generic_pvalue.py` in Phase 3d so
+    OTTilting can share it. This wrapper preserves the import path
+    that existing code uses (and keeps the in-file docstring nearby
+    for readability).
+    """
+    from ._generic_pvalue import _stable_tilted_pvalue_seed as _impl
+
+    return _impl(*args, **kwargs)
+
+
+def _resolve_support(*args, **kwargs) -> tuple[float, float]:
+    """Backwards-compatible alias; impl in `_generic_pvalue.py`."""
+    from ._generic_pvalue import _resolve_support as _impl
+
+    return _impl(*args, **kwargs)
+
+
+def _generic_tilted_moments(
+    posterior: Posterior,
+    prior: Prior,
+    likelihood: Likelihood,
+    eta: float,
+    *,
+    support: tuple[float, float],
+    n_grid: int = _GENERIC_TILT_N_GRID,
+) -> tuple[float, float]:
+    """Direct (mean, var) of the tilted distribution on a theta-grid.
+
+    Skips the GridDistribution materialisation (no cdf cache / quantile
+    interpolation / sample method) — computes only the first two
+    moments, which is all the t-statistic needs. Used as the hot
+    inner kernel of `_generic_tilted_pvalue`'s MC reference (called
+    n_mc * brentq_iters * 2 times per CI inversion).
+    """
+    theta_lo, theta_hi = _generic_tilt_grid_window(
+        posterior, prior, support=support
+    )
+    if not (theta_lo < theta_hi):
+        # Degenerate window: posterior collapsed onto support boundary.
+        # Return a sentinel that t-statistic computation handles cleanly.
+        return float(theta_lo), 0.0
+    theta_grid = np.linspace(theta_lo, theta_hi, n_grid)
+    log_lik = np.asarray(likelihood.loglik(theta_grid), dtype=np.float64)
+    log_prior = np.asarray(prior.logpdf(theta_grid), dtype=np.float64)
+    log_q = log_lik + (1.0 - float(eta)) * log_prior
+    # max-subtract for stability; -inf entries become 0 after exp.
+    log_q = np.where(np.isfinite(log_q), log_q, -1e300)
+    pdf_unnorm = np.exp(log_q - np.max(log_q))
+    Z = float(np.trapezoid(pdf_unnorm, theta_grid))
+    if Z <= 0.0 or not np.isfinite(Z):
+        return float(theta_lo), 0.0
+    pdf = pdf_unnorm / Z
+    mean = float(np.trapezoid(theta_grid * pdf, theta_grid))
+    m2 = float(np.trapezoid(theta_grid * theta_grid * pdf, theta_grid))
+    var = max(m2 - mean * mean, 0.0)
+    return mean, var
+
+
+def _generic_tilted_t_statistic(
+    theta_f: float,
+    data: NDArray[np.float64],
+    model: object,
+    prior: Prior,
+    eta: float,
+    *,
+    support: tuple[float, float],
+    n_grid: int = _GENERIC_TILT_N_GRID,
+) -> float:
+    """Compute t = (mu_tilted - theta)^2 / sigma_tilted^2 at observed data.
+
+    Calls `_generic_tilted_moments` (direct moments, no GridDistribution
+    materialisation) for speed in the MC inner loop.
+    """
+    posterior = model.posterior(data, prior)
+    likelihood = model.likelihood(data)
+    mu, var = _generic_tilted_moments(
+        posterior, prior, likelihood, eta, support=support, n_grid=n_grid
+    )
+    var_safe = max(var, 1e-300)
+    diff = mu - theta_f
+    return diff * diff / var_safe
+
+
+def _generic_tilted_pvalue(
+    theta: float,
+    data: NDArray[np.float64],
+    model: object,
+    prior: Prior,
+    eta: float,
+    statistic_name: str,
+    *,
+    n_mc: int = _GENERIC_TILTED_PVALUE_N_MC,
+    derived_seed: int | None = None,
+    alpha: float = 0.0,
+    base_seed: int = _GENERIC_TILTED_PVALUE_BASE_SEED,
+    obs_moments: tuple[float, float] | None = None,
+) -> float:
+    """Generic MC tilted p-value — works on any (model, prior) pair.
+
+    For ``statistic_name="wald"``: eta-independent, delegates to
+    ``WaldStatistic._generic_pvalue`` (the χ²₁-calibrated MLE-based path).
+
+    For ``statistic_name="waldo"``: compute the tilted-WALDO statistic
+    ``t(D, theta) = (mu_tilted - theta)^2 / sigma_tilted^2`` at observed
+    data D and at n_mc synthetic D' samples drawn from likelihood(.|theta).
+    Empirical tail probability with `(k+1)/(n+1)` smoothing.
+
+    The MC reference is **CRN-seeded** (same root cause + fix as the
+    Phase 2 WALDO blake2b fix): seed depends on data + fingerprints,
+    NOT on theta, so brentq probes share the same internal uniform
+    stream and `f(theta)` is a deterministic function of theta.
+    """
+    from ..statistics.wald import WaldStatistic
+    from ..models.distributions import BernoulliLikelihood, GaussianLikelihood
+
+    if statistic_name == "wald":
+        # Wald is eta-independent; delegate to the Phase 2 generic path.
+        # `data` is already a numpy array.
+        return float(np.asarray(WaldStatistic()._generic_pvalue(theta, data, model)))
+
+    if statistic_name != "waldo":
+        raise NotImplementedError(
+            f"Generic tilted_pvalue not implemented for statistic={statistic_name!r}; "
+            f"supported: 'wald', 'waldo'."
+        )
+
+    data_arr = np.atleast_1d(np.asarray(data, dtype=np.float64))
+    if data_arr.ndim != 1:
+        raise NotImplementedError(
+            "Generic tilted_pvalue currently expects 1-D data; got "
+            f"data.ndim={data_arr.ndim}."
+        )
+
+    support = _resolve_support(model, data_arr)
+
+    theta_f = float(theta)
+    eta_f = float(eta)
+
+    if derived_seed is None:
+        derived_seed = _stable_tilted_pvalue_seed(
+            data_arr, model, prior, eta_f, alpha, base_seed
+        )
+
+    # Observed tilted moments are theta-INDEPENDENT given the data;
+    # callers in a hot loop (CI inversion, per-theta pvalue) should
+    # hoist them and pass via `obs_moments` to skip the redundant
+    # recomputation per call. (Skeptic Phase 3 finding #3.)
+    if obs_moments is not None:
+        mu_obs, var_obs = obs_moments
+    else:
+        posterior_obs = model.posterior(data_arr, prior)
+        likelihood_obs = model.likelihood(data_arr)
+        mu_obs, var_obs = _generic_tilted_moments(
+            posterior_obs, prior, likelihood_obs, eta_f,
+            support=support, n_grid=_GENERIC_TILT_N_GRID,
+        )
+    var_obs_safe = max(var_obs, 1e-300)
+    diff_obs = mu_obs - theta_f
+    t_obs = diff_obs * diff_obs / var_obs_safe
+
+    # MC reference under H_0: theta_0 = theta. Coarser grid for speed —
+    # MC noise dominates over grid-discretisation noise at n_mc>=200.
+    rng = np.random.default_rng(derived_seed)
+    n_obs = int(data_arr.size)
+    t_samples = np.empty(n_mc, dtype=np.float64)
+    n_collapsed = 0
+    for i in range(n_mc):
+        D_prime = model.sample_data(theta_f, rng, n_obs)
+        try:
+            t_samples[i] = _generic_tilted_t_statistic(
+                theta_f, D_prime, model, prior, eta_f, support=support,
+                n_grid=_GENERIC_TILTED_PVALUE_N_GRID_MC,
+            )
+        except (ValueError, RuntimeError, ArithmeticError) as e:
+            # Skeptic finding #8 narrowing: catch only the documented
+            # failure modes (degenerate grid window from collapsed
+            # posterior on extreme MC draws; numerical issues in the
+            # trapezoidal Z). Bugs from elsewhere (TypeError, etc.) now
+            # propagate cleanly. Sentinel `t = 0` treats the draw as
+            # NOT more-extreme — biases the empirical p UP, i.e.
+            # CONSERVATIVE direction. The +1 smoothing keeps the result
+            # bounded below by 1/(n_mc+1).
+            del e  # explicit: discard the exception object
+            t_samples[i] = 0.0
+            n_collapsed += 1
+    if n_collapsed > n_mc // 2:
+        # More than half the MC samples collapsed — the conservative-
+        # direction bias is too large to be useful. Surface as a warning.
+        import warnings
+        warnings.warn(
+            f"_generic_tilted_pvalue: {n_collapsed}/{n_mc} MC samples "
+            f"collapsed (theta={theta_f}, eta={eta_f}); empirical p is "
+            f"strongly biased upward. Increase data size or reduce eta.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
+    # +1 smoothing: conservative empirical p-value (see Phase 2 WALDO).
+    p = (float(np.sum(t_samples >= t_obs)) + 1.0) / (float(n_mc) + 1.0)
+    return float(p)
+
+
+def _generic_tilted_confidence_interval(
+    alpha: float,
+    data: NDArray[np.float64],
+    model: object,
+    prior: Prior,
+    eta: float,
+    statistic_name: str,
+    *,
+    n_mc: int = _GENERIC_TILTED_PVALUE_N_MC,
+    base_seed: int = _GENERIC_TILTED_PVALUE_BASE_SEED,
+) -> tuple[float, float]:
+    """Generic CI inversion: invert `_generic_tilted_pvalue(...) >= alpha` via brentq.
+
+    Single seed per CI call (CRN); brentq sees a deterministic function
+    of theta. Bracket-doubling outward from `mu_tilted` (the natural
+    centre of the tilted-WALDO distribution at observed data); clamps
+    theta to model.support() so out-of-support brentq probes don't
+    raise inside `model.sample_data`.
+    """
+    from .._errors import BracketingFailed
+    from ._solvers import brentq_with_doubling
+
+    data_arr = np.atleast_1d(np.asarray(data, dtype=np.float64))
+    eta_f = float(eta)
+    derived_seed = _stable_tilted_pvalue_seed(
+        data_arr, model, prior, eta_f, alpha, base_seed
+    )
+
+    support = _resolve_support(model, data_arr)
+    support_lo, support_hi = support
+
+    # Hoist observed moments (skeptic finding #3): mu_obs, var_obs are
+    # theta-INDEPENDENT — compute once, reuse across every brentq probe
+    # via the `obs_moments` kwarg on `_generic_tilted_pvalue`. ~10x speedup
+    # on the brentq path.
+    posterior_at_obs = model.posterior(data_arr, prior)
+    likelihood_at_obs = model.likelihood(data_arr)
+    mu_obs, var_obs = _generic_tilted_moments(
+        posterior_at_obs, prior, likelihood_at_obs, eta_f,
+        support=support, n_grid=_GENERIC_TILT_N_GRID,
+    )
+    var_obs_safe = max(var_obs, 1e-300)
+    sigma_tilted = float(np.sqrt(var_obs_safe))
+
+    def f(theta_val: float) -> float:
+        # Clamp to support: brentq's bracket-doubling can probe out-of-
+        # support θ where `model.sample_data(theta, ...)` would raise.
+        # Clamping makes f flat outside support → BracketingFailed
+        # cleanly when the CI extends to the boundary.
+        theta_safe = max(support_lo, min(support_hi, float(theta_val)))
+        return _generic_tilted_pvalue(
+            theta_safe,
+            data_arr,
+            model,
+            prior,
+            eta_f,
+            statistic_name,
+            n_mc=n_mc,
+            derived_seed=derived_seed,
+            alpha=alpha,
+            base_seed=base_seed,
+            obs_moments=(mu_obs, var_obs),
+        ) - alpha
+
+    half = max(4.0 * sigma_tilted, 1e-3)
+
+    # Skeptic finding #1 — explicit boundary detection. If
+    # `f(support_lo) >= 0` (resp. `f(support_hi) >= 0`), the CI extends
+    # PAST that boundary. brentq-with-doubling on the clamped flat
+    # plateau would just exhaust its 16 doublings and raise
+    # BracketingFailed — caught and snapped to support, but with no
+    # telemetry. Detect the boundary case explicitly.
+    if np.isfinite(support_lo):
+        f_at_lower_support = f(support_lo)
+        ci_extends_below = (f_at_lower_support >= 0.0)
+    else:
+        ci_extends_below = False
+    if np.isfinite(support_hi):
+        f_at_upper_support = f(support_hi)
+        ci_extends_above = (f_at_upper_support >= 0.0)
+    else:
+        ci_extends_above = False
+
+    if ci_extends_below:
+        lower = support_lo
+    else:
+        try:
+            lower = brentq_with_doubling(
+                f, midpoint=mu_obs, initial_half_width=half, direction=-1
+            )
+        except BracketingFailed:
+            lower = support_lo
+    if ci_extends_above:
+        upper = support_hi
+    else:
+        try:
+            upper = brentq_with_doubling(
+                f, midpoint=mu_obs, initial_half_width=half, direction=+1
+            )
+        except BracketingFailed:
+            upper = support_hi
+    return (max(lower, support_lo), min(upper, support_hi))
 
 
 def _data_to_scalar_D(data: NDArray[np.float64]) -> float:
@@ -136,10 +710,35 @@ class PowerLawTilting:
 
     def tilt(
         self, posterior: Posterior, prior: Prior, likelihood: Likelihood, eta: ArrayLike
-    ) -> NormalDistribution:
-        """Closed-form tilted Normal posterior (Theorem 6 in legacy docs)."""
-        post, pri, lik = _require_gaussian(posterior, prior, likelihood)
+    ) -> Posterior:
+        """Tilted distribution `q(theta; eta) ∝ L(theta) * pi(theta)^(1-eta)`.
 
+        Dispatch:
+          - **Normal-Normal closed form (Theorem 6)** when (posterior, prior,
+            likelihood) is the (NormalDistribution, NormalDistribution,
+            GaussianLikelihood) triple. Returns a `NormalDistribution`.
+          - **Generic numerical fallback** otherwise. Builds the tilted
+            log-density `log L(theta) + (1-eta) * log pi(theta)` on a 1024-
+            point theta grid sized from the union of posterior and prior
+            quantile windows (clipped to `model.support()`), normalises
+            via trapezoidal Z, and wraps the result as a `GridDistribution`.
+            Requires `model.support()` to be supplied via the `_support`
+            attribute or attribute-of-likelihood; pass through the
+            `confidence_regions` / `pvalue` consumer paths instead of
+            calling directly when possible.
+
+        Generic-vs-closed-form agreement on Normal-Normal: atol 1e-7 at
+        N=1024 (per the deriver-verified Theorem-6 reduction; cross-checked
+        in `tests/regression/test_power_law_generic_matches_closed_form.py`).
+
+        Backward-compat note: ``tilt()`` previously returned only
+        `NormalDistribution`; the return type widens to `Posterior`
+        (the Distribution protocol). Callers that rely on the concrete
+        `NormalDistribution` API (`.loc`, `.scale`) on Normal-Normal
+        inputs continue to work unchanged — the closed-form branch
+        still returns `NormalDistribution`. Generic-path consumers
+        must use the protocol surface (`pdf`, `cdf`, `mean`, `var`).
+        """
         eta_arr = np.asarray(eta, dtype=np.float64)
         if eta_arr.ndim != 0:
             raise NotImplementedError(
@@ -148,19 +747,36 @@ class PowerLawTilting:
             )
         eta_f = float(eta_arr)
 
-        w = _weight(lik.sigma, pri.scale)
-        denom = _denom(w, eta_f)
-        if denom <= 0.0:
-            raise TiltingDomainError(
-                f"eta={eta_f!r} drives the tilted-posterior denominator to "
-                f"{denom!r} <= 0 with w={w!r}; admissible range is "
-                f"({-w/(1-w):+.6g}, inf)."
-            )
+        if _is_gaussian_triple(posterior, prior, likelihood):
+            # Closed-form Theorem-6 fast path.
+            post, pri, lik = _require_gaussian(posterior, prior, likelihood)
+            w = _weight(lik.sigma, pri.scale)
+            denom = _denom(w, eta_f)
+            if denom <= 0.0:
+                raise TiltingDomainError(
+                    f"eta={eta_f!r} drives the tilted-posterior denominator "
+                    f"to {denom!r} <= 0 with w={w!r}; admissible range is "
+                    f"({-w/(1-w):+.6g}, inf)."
+                )
+            mu_eta = (w * lik.D + (1.0 - eta_f) * (1.0 - w) * pri.loc) / denom
+            sigma_eta_sq = w * lik.sigma**2 / denom
+            sigma_eta = float(np.sqrt(sigma_eta_sq))
+            return NormalDistribution(loc=float(mu_eta), scale=sigma_eta)
 
-        mu_eta = (w * lik.D + (1.0 - eta_f) * (1.0 - w) * pri.loc) / denom
-        sigma_eta_sq = w * lik.sigma**2 / denom
-        sigma_eta = float(np.sqrt(sigma_eta_sq))
-        return NormalDistribution(loc=float(mu_eta), scale=sigma_eta)
+        # Generic numerical fallback. Centralised support resolution
+        # via `_resolve_support` (works for any model that conforms to
+        # the protocol's `support()` plus a likelihood-class fallback).
+        from ..models.distributions import BernoulliLikelihood, GaussianLikelihood
+        if isinstance(likelihood, BernoulliLikelihood):
+            support_attr = (0.0, 1.0)
+        elif isinstance(likelihood, GaussianLikelihood):
+            support_attr = (-float("inf"), float("inf"))
+        else:
+            support_attr = (-float("inf"), float("inf"))
+
+        return _generic_tilt(
+            posterior, prior, likelihood, eta_f, support=support_attr
+        )
 
     def path(
         self, posterior: Posterior, prior: Prior, likelihood: Likelihood, ts: NDArray[np.float64]
@@ -170,16 +786,6 @@ class PowerLawTilting:
 
     def is_identity(self, eta: float) -> bool:
         return eta == self.param_space.eta_identity
-
-    def admissible_range(self, context: TiltingContext) -> tuple[float, float]:
-        w = context.w
-        if not (0.0 < w < 1.0):
-            raise ValueError(f"context.w must lie in (0, 1), got {w!r}")
-        # denom = 1 - eta*(1 - w) > 0  ⇔  eta < 1/(1 - w); also eta > -w/(1-w)
-        # for the equivalent variance-positivity condition with the buffer.
-        eta_low = -w / (1.0 - w) + _ETA_MIN_BUFFER
-        eta_high = 1.0 / (1.0 - w) - _ETA_MIN_BUFFER
-        return (eta_low, eta_high)
 
     # ----- (TiltingScheme, TestStatistic) cross-product specialisations -----
     #
@@ -199,7 +805,7 @@ class PowerLawTilting:
         prior: NormalDistribution,
         eta: ArrayLike,
         statistic_name: str,
-    ) -> NDArray[np.float64]:
+    ) -> jax.Array:
         """p-value of `statistic_name` evaluated against the tilted posterior.
 
         Specialized for (power_law, waldo) — Theorem 8 closed form — and
@@ -208,15 +814,23 @@ class PowerLawTilting:
         ``eta`` accepts either a scalar (the historical contract) or an
         array broadcastable to ``theta``. The array path is what
         ``dynamic_ci_scan`` (and ``dynamic_tilted_pvalue``) use to evaluate
-        a per-θ varying η in one bulk numpy call (Tier 1.3 N1/N3).
+        a per-θ varying η in one bulk JAX call (Tier 1.3 N1/N3).
 
         ``D`` accepts either a scalar (the historical contract) or an
-        array broadcastable to ``theta_arr``. The array path is exercised
-        by ``compute_pvalues_per_sample`` in the Phase E training loop,
-        which packs per-sample ``D`` values alongside ``theta`` and
-        ``eta``. The closed-form formulas are pure numpy arithmetic so
-        they broadcast naturally; this annotation documents that
-        contract instead of relying on duck-typing.
+        array broadcastable to ``theta_arr``. The closed-form formulas
+        are pure broadcasting arithmetic.
+
+        Returns ``jax.Array`` for bulk inputs (length >= 2 in any of
+        theta/eta/D); returns Python float for the all-scalar fast
+        path. The relaxed scalar return type is deliberate: wrapping a
+        scalar in ``jnp.asarray(...)`` costs ~200 us (dwarfs the ~10 us
+        scalar arithmetic), defeating the dispatch. Callers that need
+        a uniform return type wrap in ``float(...)`` or
+        ``jnp.asarray(...)`` at their own boundary; this is what the
+        brentq closures in ``tilted_confidence_interval`` and
+        ``dynamic_tilted_confidence_interval`` already do, and what
+        ``dynamic_tilted_pvalue`` already does via ``np.asarray(...)``.
+        See ``docs/jax_style.md``.
         """
         from ..models.normal_normal import NormalNormalModel
 
@@ -234,62 +848,66 @@ class PowerLawTilting:
         sigma0 = prior.scale
         w = sigma0**2 / (sigma**2 + sigma0**2)
 
-        theta_arr = np.asarray(theta, dtype=np.float64)
-        eta_arr = np.asarray(eta, dtype=np.float64)
-
-        # Pre-check for NaN/Inf η: `denom = 1 - eta*(1-w)` is NaN when
-        # eta is NaN, and `NaN <= 0.0` is False, so the strict raise
-        # check below would silently propagate NaN p-values. Mirror
-        # `OTTilting.tilted_pvalue`'s explicit finiteness guard here so
-        # both schemes raise consistently on NaN eta with the offending
-        # index identified.
-        mask_invalid = ~np.isfinite(eta_arr)
+        # Validation runs in numpy (JAX can't raise mid-trace; validation
+        # lives outside the autodiff-clean kernel). Convert eta to numpy
+        # exactly once for the finiteness + admissibility checks; the
+        # JAX kernel re-asarrays internally.
+        eta_np = np.asarray(eta, dtype=np.float64)
+        mask_invalid = ~np.isfinite(eta_np)
         if np.any(mask_invalid):
             bad_idx = int(np.argmax(mask_invalid))
             raise TiltingDomainError(
                 f"PowerLawTilting.tilted_pvalue requires finite eta; "
                 f"offending index {bad_idx} eta="
-                f"{float(eta_arr.flat[bad_idx])!r}"
+                f"{float(eta_np.flat[bad_idx])!r}"
             )
-
-        # Vectorised admissibility: denom = 1 - eta(1-w) > 0. Scalar eta
-        # produces a 0-d array and the same logic applies; raising surfaces
-        # the offending value either way.
-        denom = 1.0 - eta_arr * (1.0 - w)
-        if np.any(denom <= 0.0):
-            if eta_arr.ndim == 0:
+        denom_np = 1.0 - eta_np * (1.0 - w)
+        if np.any(denom_np <= 0.0):
+            if eta_np.ndim == 0:
                 raise TiltingDomainError(
-                    f"eta={float(eta_arr)!r} drives denom to "
-                    f"{float(denom)!r} <= 0 with w={w!r}."
+                    f"eta={float(eta_np)!r} drives denom to "
+                    f"{float(denom_np)!r} <= 0 with w={w!r}."
                 )
-            bad = int(np.argmax(denom <= 0.0))
+            bad = int(np.argmax(denom_np <= 0.0))
             raise TiltingDomainError(
                 f"PowerLawTilting.tilted_pvalue: eta drives denom <= 0 at "
-                f"index {bad} (eta={float(eta_arr.flat[bad])!r}, "
-                f"denom={float(np.asarray(denom).flat[bad])!r}, w={w!r})."
+                f"index {bad} (eta={float(eta_np.flat[bad])!r}, "
+                f"denom={float(np.asarray(denom_np).flat[bad])!r}, w={w!r})."
             )
 
-        if statistic_name == "wald":
-            # Wald is eta-independent: 2 * (1 - Phi(|D - theta| / sigma)).
-            from scipy import stats as _stats
-
-            z = np.abs(D - theta_arr) / sigma
-            return np.asarray(2.0 * _stats.norm.sf(z), dtype=np.float64)
-        if statistic_name == "waldo":
-            from scipy import stats as _stats
-
-            mu_eta = (w * D + (1.0 - eta_arr) * (1.0 - w) * mu0) / denom
-            norm_factor = w * sigma / denom
-            a_eta = np.abs(mu_eta - theta_arr) / norm_factor
-            b_eta = (1.0 - eta_arr) * (1.0 - w) * (mu0 - theta_arr) / (denom * norm_factor)
-            return np.asarray(
-                _stats.norm.cdf(b_eta - a_eta) + _stats.norm.cdf(-a_eta - b_eta),
-                dtype=np.float64,
+        # Shape dispatch: scalar inputs route through the numpy fast path
+        # (~10 us per call), bulk inputs through the autodiff-clean JAX
+        # kernel (~10 us per call after jit warmup; the first call per
+        # unique shape pays a ~50 ms compile). The criterion is "all of
+        # theta, eta, D are scalar" — when even one is an array, the JAX
+        # broadcast handles the result. Both branches return jax.Array.
+        theta_np = np.asarray(theta, dtype=np.float64)
+        D_np = np.asarray(D, dtype=np.float64)
+        if theta_np.size == 1 and eta_np.size == 1 and D_np.size == 1:
+            # Scalar fast path: return Python float directly, NOT
+            # jnp.asarray(float). Wrapping in jnp.asarray would cost
+            # ~200 us per call (dwarfing the ~10 us scalar arithmetic
+            # below) and defeat the dispatch. Callers wrap in float()
+            # or jnp.asarray() at their own boundary; the protocol's
+            # nominal jax.Array return type is honoured by the bulk
+            # path and explicitly relaxed for this scalar fast path
+            # (documented in the docstring above).
+            return _tilted_pvalue_numpy_scalar(  # type: ignore[return-value]
+                # .item() handles shape-(), shape-(1,), shape-(1,1) uniformly;
+                # plain float(arr) fails on >0-d single-element arrays.
+                float(theta_np.item()),
+                float(eta_np.item()),
+                float(D_np.item()),
+                w,
+                mu0,
+                sigma,
+                statistic_name,
             )
-        raise NotImplementedError(
-            f"PowerLawTilting.tilted_pvalue not implemented for "
-            f"statistic={statistic_name!r}; supported: 'wald', 'waldo'."
-        )
+        # Bulk JAX kernel — autodiff-clean, no Python control flow.
+        theta_arr = jnp.asarray(theta, dtype=jnp.float64)
+        eta_arr = jnp.asarray(eta, dtype=jnp.float64)
+        D_arr = jnp.asarray(D, dtype=jnp.float64)
+        return _tilted_pvalue_kernel(theta_arr, eta_arr, D_arr, w, mu0, sigma, statistic_name)
 
     def dynamic_tilted_pvalue(
         self,
@@ -314,11 +932,12 @@ class PowerLawTilting:
                 f"theta and eta_at_theta must have the same shape; got "
                 f"{theta_arr.shape!r} and {eta_arr.shape!r}."
             )
-        # Vectorised path: `tilted_pvalue` now broadcasts over array eta,
-        # so one bulk call replaces the scalar Python loop. Behaviour is
-        # byte-identical to the previous per-element evaluation; an
-        # invalid eta in any slot still raises TiltingDomainError with
-        # the offending index identified (Tier 1.3 N3).
+        # Vectorised path: `tilted_pvalue` now returns jax.Array; convert
+        # to numpy at the boundary because `_dynamic.py`'s scan algorithm
+        # is numpy-only by design (Brent root-find inner loops). One bulk
+        # call replaces the scalar Python loop; an invalid eta in any
+        # slot still raises TiltingDomainError with the offending index
+        # identified (Tier 1.3 N3).
         out = np.asarray(
             self.tilted_pvalue(theta_arr, D, model, prior, eta_arr, statistic_name),
             dtype=np.float64,
@@ -398,11 +1017,20 @@ class PowerLawTilting:
             search_mult=search_mult,
             model_fingerprint=model.fingerprint(),
             prior_fingerprint=prior.fingerprint(),
+            model=model,
+            prior=prior,
         )
 
     # ----- Uniform CI / regions / pvalue interface (called by experiments) -----
 
     def _require_normal_sandbox(self, model: Model, prior: Prior) -> None:
+        """Enforce Normal-Normal sandbox. Used by paths that have no
+        generic fallback (currently the dynamic-η selector path —
+        `dynamic_ci_scan` builds its θ-window from `D ± search_mult * sigma`
+        which is Normal-Normal-flavoured. The static-selector path
+        in `confidence_regions` / `confidence_interval` / `pvalue`
+        dispatches to `_generic_tilted_*` for non-Normal pairings.)
+        """
         from ..models.normal_normal import NormalNormalModel
 
         if not isinstance(model, NormalNormalModel):
@@ -414,6 +1042,15 @@ class PowerLawTilting:
                 "PowerLawTilting requires a NormalDistribution prior; "
                 f"got {type(prior).__name__!r}."
             )
+
+    @staticmethod
+    def _is_normal_normal_pair(model: Model, prior: Prior) -> bool:
+        """Predicate-only counterpart to `_require_normal_sandbox` for
+        `confidence_regions` etc. to dispatch between closed-form fast
+        path and generic numerical fallback."""
+        from ..models.normal_normal import NormalNormalModel
+
+        return isinstance(model, NormalNormalModel) and isinstance(prior, NormalDistribution)
 
     def confidence_regions(
         self,
@@ -429,6 +1066,13 @@ class PowerLawTilting:
         multi-element for dynamic selectors at conflict-band D where the
         dynamic p-value is multimodal.
 
+        Phase 3c: non-Normal-Normal pairings are now supported via the
+        generic numerical path, but ONLY with a static selector. Dynamic
+        selectors still require the Normal-Normal sandbox (the dynamic
+        scanner builds its θ-window from ``D ± search_mult * sigma``,
+        which is Normal-Normal-flavoured; generalising it is a
+        separate research item).
+
         ``config`` (optional, kw-only): when supplied, the dynamic-CI
         scan reads ``n_grid`` / ``coarse_n`` / ``search_mult`` from
         ``Config.dynamic_*``. When ``None`` (default), falls back to
@@ -438,6 +1082,34 @@ class PowerLawTilting:
         Config fields fed only the cache fingerprint, never the
         runtime path; ``config`` plumbing closes that gap.
         """
+        # Phase 3c: dispatch on (model, prior) — generic for non-Normal-Normal,
+        # closed-form for Normal-Normal. Dynamic selectors still require NN.
+        if not self._is_normal_normal_pair(model, prior):
+            if getattr(self.selector, "is_dynamic", False):
+                raise NotImplementedError(
+                    "PowerLawTilting dynamic-η selector currently requires "
+                    "NormalNormalModel + NormalDistribution prior (the dynamic "
+                    "scanner is Normal-Normal-flavoured). Use a static selector "
+                    "(FixedEtaSelector) for non-Normal-Normal pairings, or "
+                    "generalise dynamic_ci_scan to θ-only inputs as a follow-up."
+                )
+            # Static-selector generic path: pick η, invert tilted-pvalue
+            # via brentq with CRN, return single region.
+            eta = float(
+                self.selector.select(
+                    self,
+                    data=data,
+                    model=model,
+                    prior=prior,
+                    alpha=alpha,
+                    statistic=statistic,
+                )
+            )
+            lo, hi = _generic_tilted_confidence_interval(
+                alpha, data, model, prior, eta, statistic.name
+            )
+            return [(lo, hi)]
+
         self._require_normal_sandbox(model, prior)
         # Narrow types after the dispatch check (mypy can't infer through it).
         # `cast` is `-O`-safe; the runtime gate is `_require_normal_sandbox` above.
@@ -449,8 +1121,6 @@ class PowerLawTilting:
         sigma = model.sigma
         sigma0 = prior.scale
         w = sigma0**2 / (sigma**2 + sigma0**2)
-        abs_delta = abs((1.0 - w) * (prior.loc - D) / sigma)
-        ctx = TiltingContext(w=w, abs_delta=abs_delta, alpha=alpha)
 
         if getattr(self.selector, "is_dynamic", False):
             # Config wins when supplied; selector attrs are the legacy
@@ -479,7 +1149,16 @@ class PowerLawTilting:
                 raise RuntimeError(f"dynamic CI inversion produced no regions at D={D!r}")
             return regions
 
-        eta = float(self.selector.select(ctx, self, statistic=statistic))
+        eta = float(
+            self.selector.select(
+                self,
+                data=data,
+                model=model,
+                prior=prior,
+                alpha=alpha,
+                statistic=statistic,
+            )
+        )
         return [
             self.tilted_confidence_interval(
                 alpha,
@@ -538,7 +1217,48 @@ class PowerLawTilting:
         `Config.default().alpha` (= 0.05) — overridable via
         `metadata={'alpha': ...}` on the prior or via subclassing if a
         downstream consumer needs different per-α p-value evaluation.
+
+        Phase 3c: non-Normal-Normal pairings supported via the generic
+        path with a STATIC selector. Dynamic selectors remain Normal-
+        Normal-only here too.
         """
+        # Phase 3c: dispatch generic path for non-Normal-Normal pairings.
+        if not self._is_normal_normal_pair(model, prior):
+            if getattr(self.selector, "is_dynamic", False):
+                raise NotImplementedError(
+                    "PowerLawTilting.pvalue dynamic-η selector currently "
+                    "requires NormalNormalModel + NormalDistribution prior."
+                )
+            from ..config import Config as _Config
+            alpha = float(_Config.default().alpha)
+            eta = float(
+                self.selector.select(
+                    self,
+                    data=data,
+                    model=model,
+                    prior=prior,
+                    alpha=alpha,
+                    statistic=statistic,
+                )
+            )
+            theta_arr = np.atleast_1d(np.asarray(theta, dtype=np.float64))
+            data_arr = np.atleast_1d(np.asarray(data, dtype=np.float64))
+            # Compute generic tilted pvalue per θ. CRN seed depends on
+            # data + fingerprints + eta + alpha (NOT theta), so the
+            # per-θ MC samples share the same uniform stream and are
+            # comparable across θ.
+            derived_seed = _stable_tilted_pvalue_seed(
+                data_arr, model, prior, eta, alpha,
+                _GENERIC_TILTED_PVALUE_BASE_SEED,
+            )
+            out = np.empty(theta_arr.shape, dtype=np.float64)
+            for i, th in enumerate(theta_arr):
+                out[i] = _generic_tilted_pvalue(
+                    float(th), data_arr, model, prior, eta, statistic.name,
+                    derived_seed=derived_seed, alpha=alpha,
+                )
+            return out
+
         self._require_normal_sandbox(model, prior)
         # Narrow types after the dispatch check (mypy can't infer through it).
         # `cast` is `-O`-safe; the runtime gate is `_require_normal_sandbox` above.
@@ -557,35 +1277,25 @@ class PowerLawTilting:
         w = sigma0**2 / (sigma**2 + sigma0**2)
 
         if getattr(self.selector, "is_dynamic", False):
-            # Per-θ |Δ_θ| values, then interpolate η*(|Δ|) onto them.
-            abs_delta_theta = np.abs((1.0 - w) * (prior.loc - theta_arr) / sigma)
+            # Phase 3a-1: dynamic selectors are θ-indexed natively. Build a
+            # coarse θ-grid spanning the inference θ values and call
+            # `select_grid(theta_grid, model=, prior=, ...)` directly.
             coarse_n = int(getattr(self.selector, "coarse_n", 25))
-            ad_max = float(abs_delta_theta.max()) + 1e-6
-            coarse_grid = np.linspace(0.0, ad_max, coarse_n)
-            # Plumb fingerprints so the Phase E selector applies the
-            # strict cross-experiment check; legacy selectors ignore
-            # the kwargs.
-            select_kwargs = dict(
-                statistic=_NamedStatistic(statistic.name),
-                w=w,
-                alpha=alpha,
-            )
-            try:
-                import inspect
-
-                sig = inspect.signature(self.selector.select_grid)  # type: ignore[attr-defined]
-                if "model_fingerprint" in sig.parameters:
-                    select_kwargs["model_fingerprint"] = model.fingerprint()
-                if "prior_fingerprint" in sig.parameters:
-                    select_kwargs["prior_fingerprint"] = prior.fingerprint()
-            except (TypeError, ValueError):
-                pass
+            theta_lo = float(theta_arr.min())
+            theta_hi = float(theta_arr.max())
+            # Pad the bounds slightly so np.interp at the extremes does
+            # not extrapolate.
+            half_pad = 1e-6 * max(1.0, abs(theta_hi - theta_lo))
+            coarse_grid = np.linspace(theta_lo - half_pad, theta_hi + half_pad, coarse_n)
             coarse_eta = self.selector.select_grid(  # type: ignore[attr-defined]
                 coarse_grid,
                 self,
-                **select_kwargs,
+                model=model,
+                prior=prior,
+                alpha=alpha,
+                statistic=_NamedStatistic(statistic.name),
             )
-            eta_at_theta = np.interp(abs_delta_theta, coarse_grid, coarse_eta)
+            eta_at_theta = np.interp(theta_arr, coarse_grid, coarse_eta)
             return self.dynamic_tilted_pvalue(
                 theta_arr,
                 D,
@@ -596,9 +1306,16 @@ class PowerLawTilting:
             )
 
         # Static selector: single η for the whole evaluation.
-        abs_delta = abs((1.0 - w) * (prior.loc - D) / sigma)
-        ctx = TiltingContext(w=w, abs_delta=abs_delta, alpha=alpha)
-        eta = float(self.selector.select(ctx, self, statistic=statistic))
+        eta = float(
+            self.selector.select(
+                self,
+                data=data,
+                model=model,
+                prior=prior,
+                alpha=alpha,
+                statistic=statistic,
+            )
+        )
         return self.tilted_pvalue(theta_arr, D, model, prior, eta, statistic.name)
 
     def tilted_confidence_interval(

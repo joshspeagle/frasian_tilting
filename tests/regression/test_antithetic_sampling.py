@@ -60,6 +60,52 @@ def test_antithetic_pair_shape_check_raises_on_mismatch():
         antithetic_pair(theta, D)
 
 
+@pytest.mark.L0
+def test_sample_data_per_theta_n_data_default_returns_1d():
+    """Default ``n_data == 1`` returns a 1-D ``(N,)`` array — preserves
+    Phase E byte-equality with the pre-Phase-4c Normal-Normal pipeline."""
+
+    class _StubModel:
+        def sample_data(self, theta_scalar, rng, n=1):
+            return np.full(n, theta_scalar + 0.1, dtype=np.float64)
+
+    theta = np.array([-1.0, 0.0, 1.0])
+    rng = np.random.default_rng(seed=11)
+    out = sample_data_per_theta(_StubModel(), theta, rng)  # n_data=1 default
+    assert out.shape == (3,)
+
+
+@pytest.mark.L0
+def test_sample_data_per_theta_n_data_gt1_returns_2d():
+    """``n_data > 1`` returns a 2-D ``(N, n_data)`` array."""
+
+    class _StubModel:
+        def sample_data(self, theta_scalar, rng, n=1):
+            return rng.standard_normal(n) + theta_scalar
+
+    theta = np.array([-1.0, 0.0, 1.0])
+    rng = np.random.default_rng(seed=11)
+    out = sample_data_per_theta(_StubModel(), theta, rng, n_data=4)
+    assert out.shape == (3, 4)
+
+
+@pytest.mark.L0
+def test_sample_data_per_theta_antithetic_with_n_data_gt1_raises():
+    """``antithetic=True`` + ``n_data > 1`` must raise — the
+    antithetic ``2θ − D`` partner is a Normal-Normal scalar
+    construction; refusing loudly is better than silently producing
+    meaningless reflected pairs."""
+
+    class _StubModel:
+        def sample_data(self, theta_scalar, rng, n=1):
+            return rng.standard_normal(n) + theta_scalar
+
+    theta = np.array([0.0, 1.0])
+    rng = np.random.default_rng(seed=11)
+    with pytest.raises(ValueError, match="antithetic=True requires n_data == 1"):
+        sample_data_per_theta(_StubModel(), theta, rng, antithetic=True, n_data=2)
+
+
 @pytest.mark.L1
 def test_sample_data_per_theta_antithetic_returns_2N():
     """``antithetic=True`` returns a (2N,) array with the second half

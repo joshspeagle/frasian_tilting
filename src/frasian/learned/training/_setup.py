@@ -1,11 +1,13 @@
-"""Pre-flight helpers for ``fit_eta_artifact`` (Phase 4 skeptic §8 split).
+"""Pre-flight helpers for ``fit_eta_artifact``.
 
 These four functions resolve the runtime environment before any
 training-side state is created:
 
-- ``resolve_device`` — ``"auto"`` → ``"cuda"``/``"cpu"``.
-- ``enable_determinism`` — ``torch.use_deterministic_algorithms`` +
-  ``cudnn.deterministic`` + seed numpy and torch.
+- ``resolve_device`` — ``"auto"`` → ``"gpu"`` if a JAX GPU device is
+  visible else ``"cpu"``; pass-through otherwise.
+- ``enable_determinism`` — JAX is bit-deterministic on CPU at a fixed
+  PRNG key, so this is a near no-op: it seeds the global numpy RNG
+  for any numpy-side randomness and returns the JAX root key.
 - ``validate_loss_kind`` — refuse unknown ``loss_kind`` and the
   ``static_width`` requires-α / ``integrated_p`` forbids-α matrix.
 - ``spawn_rngs`` — sub-spawn 4 independent ``np.random.Generator``s.
@@ -17,36 +19,46 @@ the orchestrator calls them in order at the top of
 
 from __future__ import annotations
 
-import os as _os
-
+import jax
 import numpy as np
-import torch
+
+from ... import _jax_setup as _x64  # noqa: F401  — ensure float64 active
+
+_FORCE_X64 = _x64  # keep static-analysis from stripping the import
 
 _LOSS_KINDS = ("integrated_p", "cd_variance", "static_width")
 
 
 def resolve_device(device: str) -> str:
-    """``"auto"`` → ``"cuda"`` if available else ``"cpu"``; pass through otherwise."""
+    """``"auto"`` → ``"gpu"`` if a JAX GPU device is visible else ``"cpu"``.
+
+    Pass-through for any non-``"auto"`` value (the caller may force
+    ``"cpu"`` even on a GPU host).
+    """
     if device != "auto":
         return device
-    return "cuda" if torch.cuda.is_available() else "cpu"
+    try:
+        gpus = jax.devices("gpu")
+    except RuntimeError:
+        gpus = []
+    return "gpu" if gpus else "cpu"
 
 
-def enable_determinism(seed: int) -> None:
-    """Enable deterministic torch + numpy paths.
+def enable_determinism(seed: int) -> jax.Array:
+    """Return a deterministic JAX root key + seed numpy.
 
-    Called at the top of ``fit_eta_artifact`` before any torch-side
-    state is created. CUBLAS deterministic mode requires the
-    workspace config env var; we set it lazily so users who don't
-    care about CUDA are unaffected.
+    JAX is bit-deterministic on CPU at a fixed ``jax.random.PRNGKey``
+    (no global state, no nondeterministic kernels). We do not need
+    the legacy torch ``use_deterministic_algorithms`` /
+    ``CUBLAS_WORKSPACE_CONFIG`` ceremony.
+
+    Numpy's global RNG is still seeded for any numpy-side randomness
+    that isn't routed through ``np.random.default_rng(seed)`` (most
+    of the loop is, but a stray ``np.random.*`` call from a third-
+    party dependency would otherwise drift across runs).
     """
-    _os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
-    torch.use_deterministic_algorithms(True, warn_only=True)
-    if hasattr(torch.backends, "cudnn"):
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
-    torch.manual_seed(seed)
-    np.random.seed(seed)
+    np.random.seed(int(seed))
+    return jax.random.PRNGKey(int(seed))
 
 
 def validate_loss_kind(loss_kind: str, alpha: float | None) -> None:

@@ -26,6 +26,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
+from frasian.models.distributions import NormalDistribution
+from frasian.models.normal_normal import NormalNormalModel
 from frasian.tilting.eta_selectors import (
     DynamicNumericalEtaSelector,
     LearnedDynamicEtaSelector,
@@ -39,8 +41,8 @@ def _ensure_phase_e_checkpoint(smoke: bool) -> Path:
     # Anchor at project root so paths don't depend on CWD.
     project_root = Path(__file__).resolve().parents[4]
     candidates = [
-        project_root / "artifacts" / "learned_eta_canonical_normal_normal_powerlaw_v0_smoke.pt",
-        project_root / "artifacts" / "learned_eta_canonical_normal_normal_powerlaw_v1.pt",
+        project_root / "artifacts" / "learned_eta_canonical_normal_normal_powerlaw_v0_smoke.eqx",
+        project_root / "artifacts" / "learned_eta_canonical_normal_normal_powerlaw_v1.eqx",
     ]
     for c in candidates:
         if c.exists():
@@ -66,7 +68,7 @@ def _ensure_phase_e_checkpoint(smoke: bool) -> Path:
             eta_explore_box=cfg.eta_explore_box,
             seed=cfg.seed,
         )
-    out = project_root / "artifacts" / "learned_eta_canonical_normal_normal_powerlaw_v0_smoke.pt"
+    out = project_root / "artifacts" / "learned_eta_canonical_normal_normal_powerlaw_v0_smoke.eqx"
     fit_eta_artifact(
         config=cfg,
         out_path=out,
@@ -116,17 +118,19 @@ def main(smoke: bool = False, out: Path | None = None) -> Path:
 
     n_grid = 51 if smoke else 201
     theta_grid = np.linspace(theta_lo, theta_hi, n_grid)
-    abs_delta_grid = np.abs((1.0 - w_trained) * (mu0 - theta_grid) / sigma)
 
     fig, (ax_eta, ax_boundary) = plt.subplots(1, 2, figsize=(12.0, 4.5))
 
     # Panel A — η(θ) curves.
     eta_learned = artifact.predict_eta(theta_grid)
+    demo_model = NormalNormalModel(sigma=sigma)
+    demo_prior = NormalDistribution(loc=mu0, scale=sigma0)
     eta_legacy = legacy_selector.select_grid(
-        abs_delta_grid,
+        theta_grid,
         scheme,
         statistic=_NamedStatistic("waldo"),  # type: ignore[arg-type]
-        w=w_trained,
+        model=demo_model,
+        prior=demo_prior,
         alpha=alpha,
     )
     ax_eta.plot(
@@ -193,9 +197,10 @@ if __name__ == "__main__":
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args()
     try:
-        import torch  # noqa: F401
+        import jax  # noqa: F401
+        import equinox  # noqa: F401
     except ImportError:
-        print("learned_eta_demo: torch not available; skipping.")
+        print("learned_eta_demo: jax/equinox not available; skipping.")
         raise SystemExit(0) from None
     path = main(smoke=args.smoke, out=args.out)
     print(f"wrote {path}")

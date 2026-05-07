@@ -1,19 +1,36 @@
 """Checkpoint save/load helpers for the Phase E learned-η selector.
 
-Extracted from ``train.py`` (Tier 1.2 §7 split) and
-``eta_artifact.py`` (Tier 1.4 S3). Two concerns:
+Two concerns:
 
-1. ``save_checkpoint``: assemble the metadata dict, write atomically
-   via ``.tmp`` + ``os.replace`` so a crashed training run never
-   leaves a corrupt ``.pt`` on disk.
+1. ``save_checkpoint``: assemble the metadata dict, serialise both
+   nets via ``equinox.tree_serialise_leaves`` into a single ``.eqx``
+   file with a length-prefixed JSON metadata blob followed by the
+   net leaves; write atomically via ``.tmp`` + ``os.replace`` so a
+   crashed training run never leaves a corrupt file on disk.
 
 2. ``arch_spec_sha``: SHA-256 over the architecture spec
    (hidden widths, depth, theta_dim, output dim). Recorded in the
    checkpoint and re-checked at load time; mismatch → RuntimeWarning.
 
-The torch version is also recorded at save time. Both checks are
+The Equinox version is also recorded at save time. Both checks are
 **warnings, not errors**: the user gets a heads-up but can still
 override and load.
+
+Format
+------
+``.eqx`` files written here are a thin custom container, not raw
+``equinox.tree_serialise_leaves`` output (which only carries leaves,
+no metadata). Layout:
+
+    [4 bytes BE uint32: len(meta_json)]
+    [meta_json bytes]                          # JSON metadata blob
+    [equinox.tree_serialise_leaves(eta_net)]   # variable length
+    [equinox.tree_serialise_leaves(val_net)]   # variable length
+
+The eqx-leaves boundary is determined by the eta_net's PyTree
+structure (passed in at load time as a fresh skeleton). Equinox's
+serialiser writes one length-prefixed block per leaf and stops at
+the right offset, so reading proceeds in order.
 """
 
 from __future__ import annotations
@@ -22,6 +39,7 @@ import datetime as _dt
 import hashlib
 import json
 import os as _os
+import struct
 import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -30,38 +48,36 @@ if TYPE_CHECKING:
     from .architecture import EtaNet, ValidityNet
 
 
+CHECKPOINT_FORMAT_VERSION = 3  # bumped from 2 for the Equinox port.
+
+
 def _architecture_version() -> str:
     """Return the architecture-spec version string.
 
-    Lives here (not in ``architecture.py``) so ``arch_spec_sha`` stays
-    torch-free — ``architecture.py`` imports torch at module top, but
-    the sha helper must remain importable in environments without
-    torch (the audit env, the metadata-compat tests).
-
-    Bump rule: on any breaking change to ``EtaNet`` / ``ValidityNet``
-    that does NOT change parameter-tensor shapes — e.g., swapping the
-    activation, changing the weight-init scheme, inserting a Dropout
-    layer between linear+activation. Shape-only changes (hidden width,
-    depth, theta_dim) are already covered by ``architecture_kwargs()``
-    so they don't need a bump.
-
-    Hashed into ``arch_spec_sha`` so a mismatch warns at load time.
+    Lives here so ``arch_spec_sha`` stays import-light; bumping the
+    string flips the sha and triggers ``warn_on_metadata_mismatch``
+    even when parameter shapes are unchanged (e.g., on a future
+    architecture refactor that swaps the activation).
     """
     return "1.0"
 
 
-def _torch_version() -> str | None:
-    """Return ``torch.__version__`` if torch is importable, else None.
-
-    Local-import keeps ``arch_spec_sha`` and
-    ``warn_on_metadata_mismatch`` torch-free so they can be unit-
-    tested without torch installed (the audit env is torch-free).
-    """
+def _equinox_version() -> str | None:
+    """Return ``equinox.__version__`` if equinox is importable, else None."""
     try:
-        import torch as _torch
+        import equinox as _eqx
     except ImportError:  # pragma: no cover
         return None
-    return str(_torch.__version__)
+    return str(_eqx.__version__)
+
+
+def _jax_version() -> str | None:
+    """Return ``jax.__version__`` if jax is importable, else None."""
+    try:
+        import jax as _jax
+    except ImportError:  # pragma: no cover
+        return None
+    return str(_jax.__version__)
 
 
 def arch_spec_sha(
@@ -74,9 +90,7 @@ def arch_spec_sha(
     plus ``architecture.__version__`` — together this identifies the
     parameter-tensor shapes AND the activation / init / layer types.
     Used to detect architecture drift between training time and
-    inference time (e.g., training on a future torch where
-    ``architecture.py`` swapped GELU for LeakyReLU; the shape-only
-    sha would not have caught that).
+    inference time.
     """
     blob = {
         "eta": _stable_kwargs(eta_kwargs),
@@ -98,11 +112,59 @@ def _stable_kwargs(kw: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _write_eqx_file(
+    out_path: Path,
+    metadata: dict[str, Any],
+    eta_net: "EtaNet",
+    val_net: "ValidityNet",
+) -> None:
+    """Atomically write the (metadata + eta_net + val_net) .eqx container.
+
+    Layout described in the module docstring. Atomic via ``.tmp`` +
+    ``os.replace`` so a crashed run never leaves a corrupt checkpoint.
+    """
+    import equinox as eqx
+
+    meta_bytes = json.dumps(metadata, sort_keys=True).encode("utf-8")
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
+    with open(tmp_path, "wb") as fh:
+        fh.write(struct.pack(">I", len(meta_bytes)))
+        fh.write(meta_bytes)
+        eqx.tree_serialise_leaves(fh, eta_net)
+        eqx.tree_serialise_leaves(fh, val_net)
+    _os.replace(tmp_path, out_path)
+
+
+def read_eqx_file(
+    in_path: Path,
+    eta_skeleton: "EtaNet",
+    val_skeleton: "ValidityNet",
+) -> tuple[dict[str, Any], "EtaNet", "ValidityNet"]:
+    """Read a .eqx container; return (metadata, eta_net, val_net).
+
+    The skeletons are required by ``equinox.tree_deserialise_leaves`` —
+    they describe the PyTree structure into which the leaves are
+    deserialised. Construct them with the same ``architecture_kwargs``
+    the checkpoint was saved with.
+    """
+    import equinox as eqx
+
+    with open(in_path, "rb") as fh:
+        (meta_len,) = struct.unpack(">I", fh.read(4))
+        metadata_bytes = fh.read(meta_len)
+        metadata = json.loads(metadata_bytes.decode("utf-8"))
+        eta_net = eqx.tree_deserialise_leaves(fh, eta_skeleton)
+        val_net = eqx.tree_deserialise_leaves(fh, val_skeleton)
+    return metadata, eta_net, val_net
+
+
 def save_checkpoint(
     *,
     out_path: Path,
-    eta_net: EtaNet,
-    val_net: ValidityNet,
+    eta_net: "EtaNet",
+    val_net: "ValidityNet",
     config: Any,  # ExperimentConfig
     loss_kind: str,
     alpha: float | None,
@@ -133,25 +195,23 @@ def save_checkpoint(
 ) -> dict[str, Any]:
     """Assemble + atomically write the checkpoint. Returns the metadata dict.
 
-    The full state dict is in ``state["eta_state_dict"]`` /
-    ``["validity_state_dict"]``; the returned dict strips those for
-    the caller's metadata snapshot.
+    The two nets are serialised via ``equinox.tree_serialise_leaves``;
+    the metadata dict carries everything else (loss schedules,
+    fingerprints, training stats, framework versions). Returns the
+    metadata dict for the caller's snapshot.
     """
-    import torch
-
     eta_kwargs = eta_net.architecture_kwargs()
     validity_kwargs = val_net.architecture_kwargs()
     sha = arch_spec_sha(eta_kwargs, validity_kwargs)
 
-    state: dict[str, Any] = {
-        "checkpoint_format_version": 2,  # E.2 bump
+    metadata: dict[str, Any] = {
+        "checkpoint_format_version": CHECKPOINT_FORMAT_VERSION,
         "architecture": "EtaNet+ValidityNet",
         "arch_sha": sha,
-        "torch_version": torch.__version__,
+        "equinox_version": _equinox_version(),
+        "jax_version": _jax_version(),
         "eta_architecture_kwargs": eta_kwargs,
         "validity_architecture_kwargs": validity_kwargs,
-        "eta_state_dict": eta_net.state_dict(),
-        "validity_state_dict": val_net.state_dict(),
         "experiment_config": config.to_dict(),
         "loss_kind": loss_kind,
         "alpha": alpha,
@@ -182,16 +242,8 @@ def save_checkpoint(
         "final_eta_pred_valid_rate": final_eta_pred_valid_rate,
     }
 
-    out_path = Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    # Skeptic block #8: atomic write.
-    tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
-    torch.save(state, str(tmp_path))
-    _os.replace(tmp_path, out_path)  # atomic
-
-    return {
-        k: v for k, v in state.items() if k not in ("eta_state_dict", "validity_state_dict")
-    }
+    _write_eqx_file(Path(out_path), metadata, eta_net, val_net)
+    return metadata
 
 
 def warn_on_metadata_mismatch(
@@ -199,38 +251,37 @@ def warn_on_metadata_mismatch(
     *,
     artifact_path: Path | str = "",
 ) -> None:
-    """Emit a ``RuntimeWarning`` if the checkpoint's torch_version /
-    arch_sha differ from the current environment.
+    """Emit a ``RuntimeWarning`` if the checkpoint's framework versions
+    or arch_sha differ from the current environment.
 
     Both checks are warnings (not raises) so the user can still load
-    the checkpoint and decide whether to retrain. A *missing* torch
-    version or arch_sha key (from a pre-1.4-S3 checkpoint) is also
-    warned about, once.
+    the checkpoint and decide whether to retrain. A *missing*
+    framework-version or arch_sha key is also warned about, once.
 
     Parameters
     ----------
     state
-        The loaded checkpoint dict.
+        The loaded checkpoint metadata dict.
     artifact_path
         Path to display in the warning message; purely cosmetic.
     """
-    cur_torch = _torch_version()
-    saved_torch = state.get("torch_version")
-    if saved_torch is None:
+    cur_eqx = _equinox_version()
+    saved_eqx = state.get("equinox_version")
+    if saved_eqx is None:
         warnings.warn(
             f"EtaArtifact at {artifact_path}: checkpoint has no "
-            f"`torch_version` field (pre-1.4-S3 checkpoint). Loading "
-            f"with current torch={cur_torch}; semantics may have "
-            f"drifted if the saved torch was very different.",
+            f"`equinox_version` field (pre-port checkpoint). Loading "
+            f"with current equinox={cur_eqx}; semantics may have "
+            f"drifted if the saved equinox was very different.",
             RuntimeWarning,
             stacklevel=3,
         )
-    elif saved_torch != cur_torch:
+    elif saved_eqx != cur_eqx:
         warnings.warn(
-            f"EtaArtifact at {artifact_path}: torch version mismatch. "
-            f"Saved with torch={saved_torch}, loading with "
-            f"torch={cur_torch}. Loading anyway; if you hit a "
-            f"`Missing key(s)` or shape-mismatch error, retrain via "
+            f"EtaArtifact at {artifact_path}: equinox version mismatch. "
+            f"Saved with equinox={saved_eqx}, loading with "
+            f"equinox={cur_eqx}. Loading anyway; if you hit a "
+            f"deserialisation error, retrain via "
             f"`scripts.train_learned_eta`.",
             RuntimeWarning,
             stacklevel=3,
@@ -240,7 +291,7 @@ def warn_on_metadata_mismatch(
     if saved_sha is None:
         warnings.warn(
             f"EtaArtifact at {artifact_path}: checkpoint has no "
-            f"`arch_sha` field (pre-1.4-S3 checkpoint). Cannot verify "
+            f"`arch_sha` field (pre-port checkpoint). Cannot verify "
             f"that the architecture spec matches the current "
             f"`architecture.py`.",
             RuntimeWarning,

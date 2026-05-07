@@ -26,10 +26,9 @@ from __future__ import annotations
 
 import math
 
+import jax.numpy as jnp
 import numpy as np
 import pytest
-
-torch = pytest.importorskip("torch")
 
 from frasian.learned.training._losses_compose import (
     BETA_MAX,
@@ -52,15 +51,20 @@ def _true_width(p: np.ndarray, theta_grid: np.ndarray, alpha: float) -> float:
     return float(np.trapezoid(indicator, theta_grid))
 
 
-def _relaxed_width_torch(
+def _relaxed_width_jax(
     p: np.ndarray, theta_grid: np.ndarray, alpha: float, beta: float
 ) -> float:
-    """``static_width_loss`` evaluated on a single-sample (1, N) batch."""
-    p_t = torch.as_tensor(p, dtype=torch.float64).unsqueeze(0)
-    theta_t = torch.as_tensor(theta_grid, dtype=torch.float64)
-    with torch.no_grad():
-        loss = static_width_loss(p_t, theta_t, alpha=alpha, sharpness=beta)
-    return float(loss.item())
+    """``static_width_loss`` evaluated on a single-sample (1, N) batch.
+
+    Phase F port commit 2: ``static_width_loss`` is now a JAX kernel,
+    so the tensor packaging mirrors the production training path
+    (numpy arrays → ``jnp.asarray`` at the boundary). No autograd is
+    needed for this regression — we read out the scalar value only.
+    """
+    p_t = jnp.asarray(p)[None, :]
+    theta_t = jnp.asarray(theta_grid)
+    loss = static_width_loss(p_t, theta_t, alpha=alpha, sharpness=beta)
+    return float(loss)
 
 
 @pytest.mark.L2
@@ -78,7 +82,7 @@ def test_relaxed_bias_below_one_percent_at_beta_500(alpha):
     p = _wald_pvalue_grid(theta_grid, D, sigma)
 
     truth = _true_width(p, theta_grid, alpha)
-    relaxed = _relaxed_width_torch(p, theta_grid, alpha, beta=500.0)
+    relaxed = _relaxed_width_jax(p, theta_grid, alpha, beta=500.0)
     bias = abs(relaxed - truth) / max(truth, 1e-12)
     assert bias < 0.01, (
         f"β=500 relaxed-width bias {bias:.4f} ≥ 0.01 at α={alpha}; "
@@ -96,8 +100,8 @@ def test_beta_50_is_meaningfully_more_biased_than_beta_500():
     p = _wald_pvalue_grid(theta_grid, D, sigma)
 
     truth = _true_width(p, theta_grid, alpha)
-    rel_50 = _relaxed_width_torch(p, theta_grid, alpha, beta=50.0)
-    rel_500 = _relaxed_width_torch(p, theta_grid, alpha, beta=500.0)
+    rel_50 = _relaxed_width_jax(p, theta_grid, alpha, beta=50.0)
+    rel_500 = _relaxed_width_jax(p, theta_grid, alpha, beta=500.0)
 
     bias_50 = abs(rel_50 - truth) / truth
     bias_500 = abs(rel_500 - truth) / truth

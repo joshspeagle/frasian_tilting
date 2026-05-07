@@ -31,7 +31,7 @@ from ..diagnostics.smoothness_metrics import SmoothnessDiagnostic
 from ..models.distributions import NormalDistribution
 from ..models.normal_normal import NormalNormalModel
 from ..statistics.base import TestStatistic
-from ..tilting.base import TiltingContext, TiltingScheme
+from ..tilting.base import TiltingScheme
 from ..tilting.eta_selectors import NumericalEtaSelector, _D_from_abs_delta
 from .base import ExperimentContext, RawResult
 
@@ -138,10 +138,16 @@ class SmoothnessExperiment:
         selector = NumericalEtaSelector(sigma=self.sigma, mu0=self.mu0)
 
         for i, abs_delta in enumerate(delta_grid):
-            ctx_i = TiltingContext(w=self.w, abs_delta=float(abs_delta), alpha=alpha)
             try:
-                eta = selector.select(ctx_i, tilting, statistic=statistic)
                 D = _D_from_abs_delta(float(abs_delta), self.w, self.sigma, self.mu0)
+                eta = selector.select(
+                    tilting,
+                    data=np.asarray([D]),
+                    model=model,
+                    prior=prior,
+                    alpha=alpha,
+                    statistic=statistic,
+                )
                 lo, hi = tilting.tilted_confidence_interval(
                     alpha,
                     D,

@@ -219,6 +219,16 @@ class ExperimentConfig:
     seed: int = 42
     name: str = ""
     description: str = ""
+    # Number of likelihood draws ``D`` per θ used in the training-time
+    # MC width-loss sample. Default 1 preserves byte-equality with the
+    # pre-Phase-4c Normal-Normal pipeline (where each θ in the
+    # minibatch is paired with one D draw). For non-Normal models the
+    # likelihood from a single observation is too diffuse to yield a
+    # discriminating learned-η selector — Bernoulli + Beta in
+    # particular requires ``n_data`` of order ~16-64. The setting is
+    # part of the ExperimentConfig fingerprint round-trip so the
+    # selector can refuse a checkpoint trained at a different ``n_data``.
+    n_data: int = 1
 
     def __post_init__(self) -> None:
         if self.scheme_name not in _registry.tiltings:
@@ -242,6 +252,11 @@ class ExperimentConfig:
                 f"n_lhs must be >= 20 (training carves off 10% for "
                 f"held-out validation; below this the loop trains on "
                 f"essentially nothing); got {self.n_lhs}."
+            )
+        if self.n_data < 1:
+            raise ValueError(
+                f"n_data must be >= 1 (number of likelihood draws per θ "
+                f"in the MC width loss); got {self.n_data}."
             )
         lo, hi = self.eta_explore_box
         if not (np.isfinite(lo) and np.isfinite(hi) and hi > lo):
@@ -298,6 +313,7 @@ class ExperimentConfig:
             "theta_distribution": _theta_distribution_to_dict(self.theta_distribution),
             "n_grid": self.n_grid,
             "n_lhs": self.n_lhs,
+            "n_data": self.n_data,
             "eta_explore_box": list(self.eta_explore_box),
             "seed": self.seed,
             "name": self.name,
@@ -306,6 +322,14 @@ class ExperimentConfig:
             "prior_fingerprint": list(self.prior.fingerprint()),
             "model_fingerprint": list(self.model.fingerprint()),
             "theta_distribution_fingerprint": list(self.theta_distribution.fingerprint()),
+            # Class-name defense-in-depth: closes skeptic Phase 4 #6 —
+            # a subclass with same fingerprint but custom ``logpdf`` /
+            # ``sample_data`` no longer slips through the strict tuple-
+            # equal compare. Pre-Phase-4-refresh checkpoints lack these
+            # keys; ``_check_experiment`` treats absence as legacy and
+            # warns rather than refusing.
+            "prior_class": type(self.prior).__name__,
+            "model_class": type(self.model).__name__,
         }
 
     @classmethod
@@ -323,6 +347,7 @@ class ExperimentConfig:
             "theta_distribution",
             "n_grid",
             "n_lhs",
+            "n_data",
             "eta_explore_box",
             "seed",
             "name",
@@ -330,6 +355,8 @@ class ExperimentConfig:
             "prior_fingerprint",
             "model_fingerprint",
             "theta_distribution_fingerprint",
+            "prior_class",
+            "model_class",
         }
         extras = set(d.keys()) - allowed
         if extras:
@@ -345,6 +372,7 @@ class ExperimentConfig:
             theta_distribution=_build_theta_distribution_from_dict(d["theta_distribution"]),
             n_grid=int(d.get("n_grid", 401)),
             n_lhs=int(d.get("n_lhs", 10000)),
+            n_data=int(d.get("n_data", 1)),
             eta_explore_box=tuple(d.get("eta_explore_box", (-5.0, 5.0))),
             seed=int(d.get("seed", 42)),
             name=str(d.get("name", "")),

@@ -1,11 +1,11 @@
-"""Regression: EtaArtifact warns on torch_version / arch_sha mismatch.
+"""Regression: EtaArtifact warns on equinox_version / arch_sha mismatch.
 
 Closes audit findings 1.4-S3 and 1.2-NN3 (the metadata side).
 
 We directly drive ``warn_on_metadata_mismatch`` with mocked
-checkpoint-state dicts so this test doesn't require torch installed.
-The end-to-end ``EtaArtifact.load`` plumbing is exercised by the
-torch-gated calibration regression tests.
+checkpoint-state dicts so this test doesn't require a heavy
+training stack. The end-to-end ``EtaArtifact.load`` plumbing is
+exercised by the calibration regression tests.
 """
 
 from __future__ import annotations
@@ -20,11 +20,12 @@ from frasian.learned.training._checkpoint import (
 )
 
 
-def _matching_state(torch_version: str = "2.0.0") -> dict:
+def _matching_state(equinox_version: str = "0.11.0") -> dict:
     eta_kwargs = {"theta_dim": 1, "hidden_sizes": (64, 64)}
     validity_kwargs = {"theta_dim": 1, "hidden_sizes": (64, 64)}
     return {
-        "torch_version": torch_version,
+        "equinox_version": equinox_version,
+        "jax_version": "0.4.0",
         "arch_sha": arch_spec_sha(eta_kwargs, validity_kwargs),
         "eta_architecture_kwargs": eta_kwargs,
         "validity_architecture_kwargs": validity_kwargs,
@@ -32,82 +33,82 @@ def _matching_state(torch_version: str = "2.0.0") -> dict:
 
 
 def test_no_warning_when_metadata_matches(monkeypatch):
-    """Matching torch_version + arch_sha → silent."""
+    """Matching equinox_version + arch_sha → silent."""
     monkeypatch.setattr(
-        "frasian.learned.training._checkpoint._torch_version",
-        lambda: "2.0.0",
+        "frasian.learned.training._checkpoint._equinox_version",
+        lambda: "0.11.0",
     )
-    state = _matching_state(torch_version="2.0.0")
+    state = _matching_state(equinox_version="0.11.0")
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        warn_on_metadata_mismatch(state, artifact_path="/dummy/foo.pt")
+        warn_on_metadata_mismatch(state, artifact_path="/dummy/foo.eqx")
     assert not caught, f"unexpected warnings: {[str(w.message) for w in caught]}"
 
 
-def test_warns_when_torch_version_mismatches(monkeypatch):
-    """Torch-version mismatch → RuntimeWarning with both versions named."""
+def test_warns_when_equinox_version_mismatches(monkeypatch):
+    """Equinox-version mismatch → RuntimeWarning with both versions named."""
     monkeypatch.setattr(
-        "frasian.learned.training._checkpoint._torch_version",
+        "frasian.learned.training._checkpoint._equinox_version",
         lambda: "9.9.9",
     )
-    state = _matching_state(torch_version="2.0.0")
+    state = _matching_state(equinox_version="0.11.0")
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        warn_on_metadata_mismatch(state, artifact_path="/dummy/foo.pt")
+        warn_on_metadata_mismatch(state, artifact_path="/dummy/foo.eqx")
     msgs = [str(w.message) for w in caught if issubclass(w.category, RuntimeWarning)]
     assert any(
-        "torch version mismatch" in m and "2.0.0" in m and "9.9.9" in m for m in msgs
-    ), f"expected a torch-version mismatch warning; got {msgs!r}"
+        "equinox version mismatch" in m and "0.11.0" in m and "9.9.9" in m for m in msgs
+    ), f"expected an equinox-version mismatch warning; got {msgs!r}"
 
 
 def test_warns_when_arch_sha_mismatches(monkeypatch):
     """arch_sha mismatch → RuntimeWarning."""
     monkeypatch.setattr(
-        "frasian.learned.training._checkpoint._torch_version",
-        lambda: "2.0.0",
+        "frasian.learned.training._checkpoint._equinox_version",
+        lambda: "0.11.0",
     )
-    state = _matching_state(torch_version="2.0.0")
+    state = _matching_state(equinox_version="0.11.0")
     state["arch_sha"] = "deadbeef" * 3  # 24 chars; not the real sha
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        warn_on_metadata_mismatch(state, artifact_path="/dummy/foo.pt")
+        warn_on_metadata_mismatch(state, artifact_path="/dummy/foo.eqx")
     msgs = [str(w.message) for w in caught if issubclass(w.category, RuntimeWarning)]
     assert any("arch_sha mismatch" in m for m in msgs), (
         f"expected arch_sha mismatch warning; got {msgs!r}"
     )
 
 
-def test_warns_when_torch_version_field_missing(monkeypatch):
-    """Pre-1.4-S3 checkpoints have no `torch_version` key → friendly warning."""
+def test_warns_when_equinox_version_field_missing(monkeypatch):
+    """Pre-port checkpoints have no `equinox_version` key → friendly warning."""
     monkeypatch.setattr(
-        "frasian.learned.training._checkpoint._torch_version",
-        lambda: "2.0.0",
+        "frasian.learned.training._checkpoint._equinox_version",
+        lambda: "0.11.0",
     )
     state = _matching_state()
-    state.pop("torch_version")
+    state.pop("equinox_version")
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        warn_on_metadata_mismatch(state, artifact_path="/dummy/foo.pt")
+        warn_on_metadata_mismatch(state, artifact_path="/dummy/foo.eqx")
     msgs = [str(w.message) for w in caught if issubclass(w.category, RuntimeWarning)]
-    assert any("no `torch_version` field" in m for m in msgs), (
-        f"expected pre-1.4-S3 torch_version warning; got {msgs!r}"
+    assert any("no `equinox_version` field" in m for m in msgs), (
+        f"expected pre-port equinox_version warning; got {msgs!r}"
     )
 
 
 def test_warns_when_arch_sha_field_missing(monkeypatch):
-    """Pre-1.4-S3 checkpoints have no `arch_sha` key → friendly warning."""
+    """Pre-port checkpoints have no `arch_sha` key → friendly warning."""
     monkeypatch.setattr(
-        "frasian.learned.training._checkpoint._torch_version",
-        lambda: "2.0.0",
+        "frasian.learned.training._checkpoint._equinox_version",
+        lambda: "0.11.0",
     )
     state = _matching_state()
     state.pop("arch_sha")
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        warn_on_metadata_mismatch(state, artifact_path="/dummy/foo.pt")
+        warn_on_metadata_mismatch(state, artifact_path="/dummy/foo.eqx")
     msgs = [str(w.message) for w in caught if issubclass(w.category, RuntimeWarning)]
     assert any("no `arch_sha` field" in m for m in msgs), (
-        f"expected pre-1.4-S3 arch_sha warning; got {msgs!r}"
+        f"expected pre-port arch_sha warning; got {msgs!r}"
     )
 
 
@@ -165,19 +166,18 @@ def test_arch_spec_sha_changes_when_architecture_version_changes(monkeypatch):
 
 
 @pytest.mark.L2
-def test_unknown_torch_returns_none(monkeypatch):
-    """When torch isn't installed, ``_torch_version`` returns None and
+def test_unknown_equinox_returns_none(monkeypatch):
+    """When equinox isn't installed, ``_equinox_version`` returns None and
     ``warn_on_metadata_mismatch`` does not crash.
 
-    This covers the audit env where the test runs at all (the calling
-    code only invokes this on load-time when torch IS installed; but
-    the helper must still degrade gracefully).
+    This covers any environment where equinox isn't a hard dep; the
+    helper must still degrade gracefully.
     """
     monkeypatch.setattr(
-        "frasian.learned.training._checkpoint._torch_version",
+        "frasian.learned.training._checkpoint._equinox_version",
         lambda: None,
     )
     state = _matching_state()
     with warnings.catch_warnings(record=True):
         warnings.simplefilter("always")
-        warn_on_metadata_mismatch(state, artifact_path="/dummy/foo.pt")
+        warn_on_metadata_mismatch(state, artifact_path="/dummy/foo.eqx")

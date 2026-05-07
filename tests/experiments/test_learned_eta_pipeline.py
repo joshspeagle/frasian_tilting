@@ -22,8 +22,6 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-torch = pytest.importorskip("torch")
-
 from frasian import Config, registry, run_experiment
 from frasian.config import GridSpec
 from frasian.learned.eta_artifact import EtaArtifact
@@ -32,7 +30,7 @@ from frasian.tilting.eta_selectors import LearnedDynamicEtaSelector
 from frasian.tilting.identity import IdentityTilting
 from frasian.tilting.power_law import PowerLawTilting
 
-_CKPT = Path("artifacts/learned_eta_canonical_normal_normal_powerlaw_v0_smoke.pt")
+_CKPT = Path("artifacts/learned_eta_canonical_normal_normal_powerlaw_v0_smoke.eqx")
 
 
 def _config(w_trained: float) -> Config:
@@ -99,7 +97,7 @@ class TestLearnedEtaPipelineEndToEnd:
         """``FRASIAN_DEFAULT_DYNAMIC_ETA=learned`` selects the Phase E selector."""
         if not _CKPT.exists():
             pytest.skip(f"checkpoint missing at {_CKPT}; train first")
-        ot_ckpt = Path("artifacts/learned_eta_canonical_normal_normal_ot_v0_smoke.pt")
+        ot_ckpt = Path("artifacts/learned_eta_canonical_normal_normal_ot_v0_smoke.eqx")
         if not ot_ckpt.exists():
             pytest.skip("ot smoke checkpoint missing; train first")
         from frasian._default_cells import default_tiltings

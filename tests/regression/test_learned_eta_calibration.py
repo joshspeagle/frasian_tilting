@@ -21,8 +21,6 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-torch = pytest.importorskip("torch")
-
 from frasian.learned.eta_artifact import EtaArtifact
 from frasian.models.distributions import NormalDistribution
 from frasian.models.normal_normal import NormalNormalModel
@@ -32,12 +30,12 @@ from frasian.tilting.power_law import PowerLawTilting
 
 _CHECKPOINT_CANDIDATES = {
     "powerlaw": [
-        Path("artifacts/learned_eta_canonical_normal_normal_powerlaw_v1.pt"),
-        Path("artifacts/learned_eta_canonical_normal_normal_powerlaw_v0_smoke.pt"),
+        Path("artifacts/learned_eta_canonical_normal_normal_powerlaw_v1.eqx"),
+        Path("artifacts/learned_eta_canonical_normal_normal_powerlaw_v0_smoke.eqx"),
     ],
     "ot": [
-        Path("artifacts/learned_eta_canonical_normal_normal_ot_v1.pt"),
-        Path("artifacts/learned_eta_canonical_normal_normal_ot_v0_smoke.pt"),
+        Path("artifacts/learned_eta_canonical_normal_normal_ot_v1.eqx"),
+        Path("artifacts/learned_eta_canonical_normal_normal_ot_v0_smoke.eqx"),
     ],
 }
 
@@ -93,8 +91,13 @@ def test_calibration_at_multiple_alphas(scheme_label, theta_true, alpha):
     prior = NormalDistribution(loc=mu0, scale=sigma0)
     model = NormalNormalModel(sigma=sigma)
 
+    # Stable per-scheme offset (NOT hash(scheme_label), which varies
+    # per Python process via PYTHONHASHSEED — same root cause as the
+    # WALDO blake2b fix). Constant offsets keep this test reproducible
+    # across runs and immune to pytest-randomly ordering effects.
+    _SCHEME_SEED_OFFSET = {"powerlaw": 0, "ot": 17}
     rng = np.random.default_rng(
-        seed=42 + int(theta_true) + hash(scheme_label) % 50 + int(100 * alpha)
+        seed=42 + int(theta_true) + _SCHEME_SEED_OFFSET[scheme_label] + int(100 * alpha)
     )
     covered = 0
     for _ in range(n_reps):

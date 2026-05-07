@@ -10,11 +10,21 @@ from __future__ import annotations
 from typing import Callable
 
 import numpy as np
+
+# scipy: brentq has no JAX equivalent we want yet; this module is the
+# public CI-inversion boundary. Per `docs/jax_style.md`, scipy lives
+# here and callers convert via `float(...)` before invoking the
+# closure (see `tilting/power_law.py::tilted_confidence_interval`).
 from scipy import optimize
 
-
-class BracketingFailed(RuntimeError):
-    """Raised when `brentq_with_doubling` cannot bracket a root."""
+# The canonical BracketingFailed lives in `frasian._errors`. We re-export
+# here so legacy `from frasian.tilting._solvers import BracketingFailed`
+# imports continue to resolve to the same class. There used to be a
+# distinct `class BracketingFailed(RuntimeError)` defined in this module;
+# the duplicate caused `except BracketingFailed` blocks in callers that
+# imported from `_errors` to silently never catch the raised exception
+# (Phase A skeptic re-review, finding #4/#5).
+from .._errors import BracketingFailed  # noqa: F401  — public re-export
 
 
 def brentq_with_doubling(

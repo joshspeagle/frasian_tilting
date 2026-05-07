@@ -39,8 +39,14 @@ from dataclasses import dataclass, field
 from functools import cached_property
 from typing import Any
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
+
+from .. import _jax_setup as _x64  # noqa: F401  — ensure float64 active
+
+_FORCE_X64 = _x64  # keep static-analysis from stripping the import
 
 
 @dataclass(frozen=True)
@@ -89,58 +95,60 @@ class GridConfidenceDistribution:
     # ----- Derived quantities -----
 
     @cached_property
-    def cdf_values(self) -> NDArray[np.float64]:
+    def cdf_values(self) -> jax.Array:
         """Cumulative trapezoidal integral of `pdf_values`. Always monotone."""
         if self.theta_grid.size != self.pdf_values.size:
             raise ValueError(
                 f"theta_grid (size {self.theta_grid.size}) and pdf_values "
                 f"(size {self.pdf_values.size}) must have equal length."
             )
+        theta = jnp.asarray(self.theta_grid, dtype=jnp.float64)
+        pdf = jnp.asarray(self.pdf_values, dtype=jnp.float64)
         # Cumulative trapezoid: starts at 0, ends at total mass.
-        out = np.zeros_like(self.theta_grid, dtype=np.float64)
-        if self.theta_grid.size >= 2:
-            dx = np.diff(self.theta_grid)
-            mid = 0.5 * (self.pdf_values[:-1] + self.pdf_values[1:])
-            increments = mid * dx
-            out[1:] = np.cumsum(increments)
-        return out
+        if theta.size < 2:
+            return jnp.zeros_like(theta)
+        dx = jnp.diff(theta)
+        mid = 0.5 * (pdf[:-1] + pdf[1:])
+        increments = mid * dx
+        return jnp.concatenate([jnp.zeros((1,), dtype=jnp.float64), jnp.cumsum(increments)])
 
     # ----- Probability-density queries -----
 
-    def pdf(self, theta: ArrayLike) -> NDArray[np.float64]:
+    def pdf(self, theta: ArrayLike) -> jax.Array:
         """pdf interpolated at `theta` (linear)."""
-        return np.interp(
-            np.asarray(theta, dtype=np.float64),
-            self.theta_grid,
-            self.pdf_values,
+        return jnp.interp(
+            jnp.asarray(theta, dtype=jnp.float64),
+            jnp.asarray(self.theta_grid, dtype=jnp.float64),
+            jnp.asarray(self.pdf_values, dtype=jnp.float64),
             left=0.0,
             right=0.0,
         )
 
-    def cdf(self, theta: ArrayLike) -> NDArray[np.float64]:
+    def cdf(self, theta: ArrayLike) -> jax.Array:
         """cdf interpolated at `theta` (linear). Always monotone."""
-        return np.interp(
-            np.asarray(theta, dtype=np.float64),
-            self.theta_grid,
-            self.cdf_values,
+        cdf_vals = self.cdf_values
+        return jnp.interp(
+            jnp.asarray(theta, dtype=jnp.float64),
+            jnp.asarray(self.theta_grid, dtype=jnp.float64),
+            cdf_vals,
             left=0.0,
-            right=float(self.cdf_values[-1]),
+            right=float(cdf_vals[-1]),
         )
 
-    def quantile(self, q: ArrayLike) -> NDArray[np.float64]:
+    def quantile(self, q: ArrayLike) -> jax.Array:
         """Inverse-cdf at probability `q ∈ [0, 1]`, linear interpolation.
 
         Always well-defined since `cdf_values` is monotone non-decreasing
         (the pdf-primary design).
         """
-        q_arr = np.asarray(q, dtype=np.float64)
+        q_arr = jnp.asarray(q, dtype=jnp.float64)
         # Strictly monotonise to handle plateaus where cdf is flat (zero
-        # density). np.interp treats ties by returning the leftmost match,
+        # density). jnp.interp treats ties by returning the leftmost match,
         # which is the correct inverse-cdf in that case.
-        return np.interp(
+        return jnp.interp(
             q_arr,
             self.cdf_values,
-            self.theta_grid,
+            jnp.asarray(self.theta_grid, dtype=jnp.float64),
             left=float(self.theta_grid[0]),
             right=float(self.theta_grid[-1]),
         )
@@ -157,7 +165,9 @@ class GridConfidenceDistribution:
 
     def mean(self) -> float:
         """CD-mean: ∫θ pdf(θ) dθ via trapezoidal integration."""
-        return float(np.trapezoid(self.theta_grid * self.pdf_values, self.theta_grid))
+        theta = jnp.asarray(self.theta_grid, dtype=jnp.float64)
+        pdf = jnp.asarray(self.pdf_values, dtype=jnp.float64)
+        return float(jnp.trapezoid(theta * pdf, theta))
 
     def median(self) -> float:
         """CD-median: quantile(0.5). Reparametrisation-invariant."""
@@ -165,7 +175,7 @@ class GridConfidenceDistribution:
 
     def mode(self) -> float:
         """CD-mode: argmax of pdf. Returns the leftmost peak when ties."""
-        idx = int(np.argmax(self.pdf_values))
+        idx = int(jnp.argmax(jnp.asarray(self.pdf_values)))
         return float(self.theta_grid[idx])
 
     def secondary_modes(self, *, prominence_frac: float = 0.1) -> list[float]:
@@ -238,7 +248,12 @@ class GridConfidenceDistribution:
             )
 
         # Integration mass.
-        mass = float(np.trapezoid(self.pdf_values, self.theta_grid))
+        mass = float(
+            jnp.trapezoid(
+                jnp.asarray(self.pdf_values, dtype=jnp.float64),
+                jnp.asarray(self.theta_grid, dtype=jnp.float64),
+            )
+        )
         if abs(mass - 1.0) > 1e-2:
             issues.append(
                 CDValidityIssue(
