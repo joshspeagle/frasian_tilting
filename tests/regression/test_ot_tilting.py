@@ -80,8 +80,25 @@ class TestOTIdentityElement:
 
 @pytest.mark.L0
 class TestOTAdmissibleRange:
-    @pytest.mark.parametrize("eta", [-0.001, -0.5, 1.001, 1.5, 100.0])
+    """Phase A audit: OT now extrapolates along the W2 displacement line.
+
+    The geodesic *segment* is [0, 1]; eta outside that traces the same
+    straight line in Wasserstein space. The Gaussian fast path requires
+    sigma_t > 0; the closed-form pvalue requires s_t > 0 ⇔ eta > -w/(1-w).
+    With the default _setup() (sigma=1, sigma0=1 → w=0.5, sigma_post≈0.707,
+    sigma_lik=1.0), sigma_t crosses zero at eta ≈ -2.41.
+    """
+
+    @pytest.mark.parametrize("eta", [-0.5, -2.0, 1.5, 100.0])
+    def test_extrapolation_admissible_when_math_holds(self, eta):
+        """eta outside [0, 1] is now admissible whenever sigma_t > 0."""
+        _, prior, likelihood, posterior = _setup()
+        tilted = OTTilting().tilt(posterior, prior, likelihood, eta)
+        assert tilted.scale > 0.0
+
+    @pytest.mark.parametrize("eta", [-3.0, -10.0, -1e6, float("inf"), float("nan")])
     def test_out_of_range_raises(self, eta):
+        """Only non-finite eta or eta that drives sigma_t<=0 raises."""
         _, prior, likelihood, posterior = _setup()
         with pytest.raises(TiltingDomainError):
             OTTilting().tilt(posterior, prior, likelihood, eta)
@@ -118,22 +135,13 @@ class TestOTDynamicTiltedPvalueGuard:
                 eta_at_theta,
             )
 
-    def test_eta_above_one_raises_with_index(self):
+    def test_eta_below_admissibility_raises_with_index(self):
+        """The closed-form WALDO pvalue requires s_t > 0 ⇔ eta > -w/(1-w).
+        With w=0.5 (sigma=sigma0=1), the bound is eta > -1.0.
+        """
         model, prior, D, theta_arr = self._setup_dyn()
-        eta_at_theta = np.array([0.5, 1.5, 0.7], dtype=np.float64)
-        with pytest.raises(TiltingDomainError, match=r"index 1"):
-            OTTilting().dynamic_tilted_pvalue(
-                theta_arr,
-                D,
-                model,
-                prior,
-                "waldo",
-                eta_at_theta,
-            )
-
-    def test_eta_below_zero_raises_with_index(self):
-        model, prior, D, theta_arr = self._setup_dyn()
-        eta_at_theta = np.array([-0.1, 0.5, 0.7], dtype=np.float64)
+        # -1.5 is below the eta_lower = -1.0 bound → must raise at index 0.
+        eta_at_theta = np.array([-1.5, 0.5, 0.7], dtype=np.float64)
         with pytest.raises(TiltingDomainError, match=r"index 0"):
             OTTilting().dynamic_tilted_pvalue(
                 theta_arr,
@@ -143,6 +151,22 @@ class TestOTDynamicTiltedPvalueGuard:
                 "waldo",
                 eta_at_theta,
             )
+
+    def test_extrapolated_eta_above_one_does_not_raise(self):
+        """eta > 1 is now admissible (W2 displacement line beyond the segment)."""
+        model, prior, D, theta_arr = self._setup_dyn()
+        eta_at_theta = np.array([0.5, 1.5, 0.7], dtype=np.float64)
+        p = OTTilting().dynamic_tilted_pvalue(
+            theta_arr,
+            D,
+            model,
+            prior,
+            "waldo",
+            eta_at_theta,
+        )
+        p_arr = np.atleast_1d(np.asarray(p, dtype=np.float64))
+        assert np.all(np.isfinite(p_arr))
+        assert np.all(p_arr >= 0.0) and np.all(p_arr <= 1.0)
 
     def test_valid_eta_returns_finite_pvalues(self):
         """Positive-path: `eta_at_theta = [0.0, 0.5, 1.0]` does NOT raise

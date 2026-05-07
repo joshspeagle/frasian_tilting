@@ -38,6 +38,29 @@ import sys
 from pathlib import Path
 
 
+def _require_hash_seed_pinned() -> None:
+    """Audit P0-12: refuse to run unless PYTHONHASHSEED is pinned.
+
+    Python's default randomised hash makes any code path that uses
+    `hash(...)` non-reproducible across processes. The headline
+    regeneration must produce the same numbers every run; we refuse to
+    proceed unless the user has pinned the seed externally. (Setting it
+    in-process is too late — the interpreter has already initialised
+    its hash randomisation.)
+    """
+    if os.environ.get("PYTHONHASHSEED") not in ("0", "random_pinned"):
+        sys.stderr.write(
+            "\nERROR: scripts.regen_headline requires PYTHONHASHSEED=0 to be\n"
+            "set in the environment BEFORE Python starts. Otherwise any code\n"
+            "path that uses Python's `hash(...)` (including the narrowness\n"
+            "test's seed derivation) is process-local and the headline numbers\n"
+            "drift across runs.\n\n"
+            "Re-run with:\n\n"
+            "    PYTHONHASHSEED=0 python -m scripts.regen_headline [args]\n\n"
+        )
+        raise SystemExit(2)
+
+
 def _check_jax_available() -> None:
     """Lazy jax/equinox availability check with a clear error path.
 
@@ -205,6 +228,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    _require_hash_seed_pinned()
     _check_jax_available()
     _check_artifacts_present()
 

@@ -101,6 +101,9 @@ class FixedEtaSelector:
     eta: float = 0.0
     name: ClassVar[str] = "fixed"
     is_dynamic: bool = False
+    # Post-selection inference flag: True iff `select(data=...)` reads D
+    # to pick eta. FixedEtaSelector returns a constant; not post-selection.
+    is_post_selection: ClassVar[bool] = False
 
     def select(
         self,
@@ -165,6 +168,12 @@ class NumericalEtaSelector:
     mu0: float = 0.0
     eta_min_buffer: float = 1e-3
     is_dynamic: bool = False
+    # NumericalEtaSelector reads `D = data.mean()` inside `select(...)`
+    # and minimises width / integrated-p AT that D — η = η(D), not η(θ).
+    # That's post-selection inference: the resulting CI undercovers by
+    # ~2 points at α=0.05 (see test_post_selection_coverage.py).
+    # Calibrated callers should use DynamicNumericalEtaSelector instead.
+    is_post_selection: ClassVar[bool] = True
 
     # New: objective + integrated_p hyperparameters.
     objective: str = "static_width"  # "static_width" | "integrated_p"
@@ -247,8 +256,11 @@ class NumericalEtaSelector:
         )
 
     def _select_inner(self, scheme, *, D, model, prior, alpha, statistic):
+        # The bracket is the closed-form Normal-Normal `power_law`
+        # admissible range (also valid for `ot`'s W2 displacement line);
+        # the optimizer's objective returns +inf on TiltingDomainError so
+        # over-broad brackets are self-correcting at the optimum.
         eta_lo, eta_hi = self._eta_bounds(model, prior)
-        eta_hi = min(eta_hi, 1.0 - self.eta_min_buffer)
 
         if self.objective == "static_width":
             objective_fn = self._make_static_width_objective(
@@ -407,6 +419,11 @@ class DynamicNumericalEtaSelector:
     search_mult: float = 8.0
     cache_bin_width: float = 0.5
     is_dynamic: bool = True
+    # `select_grid(theta_grid, ...)` is θ-only — η at each θ depends on
+    # θ, not D — so the dynamic CI is calibrated. The single-context
+    # `select(data=[D], ...)` shim falls back to NumericalEtaSelector at
+    # θ=D and inherits its post-selection bias; prefer `select_grid`.
+    is_post_selection: ClassVar[bool] = False
     # Mutable cache; `compare=False, repr=False` keeps the dataclass's
     # auto-generated `__eq__` / `__repr__` independent of the cache state.
     _cache: dict = field(default_factory=dict, compare=False, repr=False)
@@ -547,6 +564,9 @@ class LearnedDynamicEtaSelector:
     sigma: float = 1.0
     mu0: float = 0.0
     is_dynamic: bool = True
+    # Per-θ learned selector — η = MLP(θ), no D-conditioning. Calibrated
+    # by construction (see learned_eta.md / dual-head training).
+    is_post_selection: ClassVar[bool] = False
     _loaded: bool = field(default=False, init=False, repr=False, compare=False)
     # Diagnostic counters tracking how often the runtime safety clamp
     # has fired (skeptic E pre-PR review #2). Cumulative across calls
@@ -598,18 +618,62 @@ class LearnedDynamicEtaSelector:
                 f"{self.artifact.name} not loaded; " f"call .load() before _check_alpha()."
             )
         meta = self.artifact.metadata
-        # Phase E records `alpha` (None for marginalised losses, fixed
-        # value for static_width).
-        stored = meta.get("alpha")
-        if stored is None:
+        # Audit P0-16: gate on `alpha_mode` (added in Cluster E) NOT on
+        # `alpha is None`. Pre-fix: a checkpoint trained with
+        # loss_kind=static_width but with the alpha field accidentally
+        # stripped to None (e.g. via a metadata sanitiser) would pass
+        # `_check_alpha` silently. The new explicit `alpha_mode in
+        # {"marginalised", "fixed"}` field carries the intended
+        # contract; `is None` is no longer load-bearing.
+        alpha_mode = meta.get("alpha_mode")
+        if alpha_mode is None:
+            # Legacy checkpoints (pre-Cluster E) lack alpha_mode; fall
+            # back to the old `alpha is None → marginalised` heuristic
+            # for backward compatibility, but warn so the user knows to
+            # re-train at their convenience.
+            stored = meta.get("alpha")
+            if stored is None:
+                import warnings as _w
+                _w.warn(
+                    f"{self.artifact.name}: legacy checkpoint without "
+                    f"`alpha_mode`; falling back to alpha-is-None heuristic. "
+                    f"Re-train via `python -m scripts.train_learned_eta` to "
+                    f"get the explicit alpha_mode field.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                return
+            trained_alpha = float(stored)
+            if abs(alpha - trained_alpha) > 1e-9:
+                raise MissingArtifactError(
+                    f"{self.artifact.name} trained at alpha={trained_alpha}, "
+                    f"but inference alpha={alpha}; retrain or use a "
+                    f"marginalised checkpoint."
+                )
             return
-        trained_alpha = float(stored)
-        if abs(alpha - trained_alpha) > 1e-9:
-            raise MissingArtifactError(
-                f"{self.artifact.name} trained at alpha={trained_alpha}, "
-                f"but inference alpha={alpha}; retrain or use a "
-                f"marginalised checkpoint."
-            )
+        if alpha_mode == "marginalised":
+            return
+        if alpha_mode == "fixed":
+            stored = meta.get("alpha")
+            if stored is None:
+                raise MissingArtifactError(
+                    f"{self.artifact.name} declares alpha_mode='fixed' but "
+                    f"alpha is None — checkpoint metadata is internally "
+                    f"inconsistent. Re-train."
+                )
+            trained_alpha = float(stored)
+            if abs(alpha - trained_alpha) > 1e-9:
+                raise MissingArtifactError(
+                    f"{self.artifact.name} trained at alpha={trained_alpha} "
+                    f"(alpha_mode=fixed), but inference alpha={alpha}; "
+                    f"retrain at the right alpha or use a marginalised "
+                    f"checkpoint."
+                )
+            return
+        raise MissingArtifactError(
+            f"{self.artifact.name}: unknown alpha_mode={alpha_mode!r}; "
+            f"expected 'marginalised' or 'fixed'."
+        )
 
     def _check_experiment(
         self,

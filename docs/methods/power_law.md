@@ -123,7 +123,7 @@ a follow-up cleanup task.
   - `tests/regression/test_power_law_tilting.py` (closed-form NN)
   - `tests/regression/test_power_law_generic_tilt.py` (generic tilt)
   - `tests/regression/test_power_law_generic_pvalue_ci.py` (generic pvalue + CI)
-  - `tests/regression/test_power_law_generic_matches_closed_form.py` (cross-check)
+  - `tests/regression/test_generic_grid_pvalue_matches_closed_form.py` (cross-check)
   - `tests/regression/test_bernoulli_coverage.py` (Bernoulli coverage at nominal 1-α)
   - `tests/integration/test_bernoulli_end_to_end.py` (full public API on Bernoulli)
 - Property tests: `tests/properties/test_power_law_invariants.py`
@@ -208,7 +208,7 @@ pairings (e.g. `(BernoulliModel, BetaDistribution)`) route through:
 Cross-check tests pin atol-1e-3 agreement between the generic
 numerical path and the closed-form Theorem 6 path on Normal-Normal
 across (eta, D, sigma0) grids:
-`tests/regression/test_power_law_generic_matches_closed_form.py`
+`tests/regression/test_generic_grid_pvalue_matches_closed_form.py`
 (L2 cross-check on moments) and the L4 integration smoke
 `tests/integration/test_bernoulli_end_to_end.py` (full public API
 on Bernoulli + Beta).

@@ -32,9 +32,16 @@ _LOSS_KINDS = ("integrated_p", "cd_variance", "static_width")
 def resolve_device(device: str) -> str:
     """``"auto"`` → ``"gpu"`` if a JAX GPU device is visible else ``"cpu"``.
 
-    Pass-through for any non-``"auto"`` value (the caller may force
-    ``"cpu"`` even on a GPU host).
+    ``"cuda"`` is accepted as a backward-compat alias for ``"gpu"`` (audit
+    P0-14: the CLI advertises ``cuda`` but JAX's device platform name is
+    ``gpu``; without remapping the metadata field claimed ``cuda`` while
+    JAX silently fell back to CPU).
+
+    Pass-through for any non-``"auto"`` non-``"cuda"`` value (the caller
+    may force ``"cpu"`` even on a GPU host).
     """
+    if device == "cuda":
+        device = "gpu"
     if device != "auto":
         return device
     try:

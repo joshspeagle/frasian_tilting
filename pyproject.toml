@@ -76,6 +76,7 @@ markers = [
     "L4: end-to-end Experiment on a small grid",
     "L5: cross-product cells, smoke mode, nightly only",
     "slow: deselect with -m 'not slow'",
+    "nightly: long-running calibration regressions; deselect with -m 'not nightly'",
     "properties: alias for L1, used by registry-driven test discovery",
 ]
 

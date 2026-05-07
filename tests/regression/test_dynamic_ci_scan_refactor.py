@@ -86,9 +86,13 @@ def _reference_inline_dynamic_ci(
         )
 
     diff = p_theta - alpha
+    # Phase audit P0-8/9: closed-α sign convention + parity-checked stitching.
+    # `>= 0` includes tangential α-touches inside the accept region (matches
+    # the runtime `dynamic_ci_scan` after the audit fix).
+    sgn = np.where(diff >= 0.0, 1, -1).astype(np.int64)
     crossings: list[float] = []
     for i in range(theta_grid.size - 1):
-        if diff[i] * diff[i + 1] < 0.0:
+        if sgn[i] != sgn[i + 1]:
 
             def _f(theta_val: float, _i=i) -> float:
                 eta = float(np.interp(theta_val, coarse_theta_grid, coarse_eta))
@@ -115,21 +119,29 @@ def _reference_inline_dynamic_ci(
                 )
                 crossings.append(float(cross))
             except ValueError:
-                t = diff[i] / (diff[i] - diff[i + 1])
-                crossings.append(float(theta_grid[i] + t * (theta_grid[i + 1] - theta_grid[i])))
+                denom = diff[i] - diff[i + 1]
+                if denom == 0.0:
+                    crossings.append(
+                        float(0.5 * (theta_grid[i] + theta_grid[i + 1]))
+                    )
+                else:
+                    t = diff[i] / denom
+                    crossings.append(
+                        float(theta_grid[i] + t * (theta_grid[i + 1] - theta_grid[i]))
+                    )
 
     regions: list[tuple[float, float]] = []
-    if not crossings:
-        if p_theta[len(p_theta) // 2] >= alpha:
-            regions = [(float(theta_lo), float(theta_hi))]
-    else:
-        entries = list(crossings)
-        if p_theta[0] >= alpha:
-            entries = [float(theta_lo)] + entries
-        if p_theta[-1] >= alpha:
-            entries = entries + [float(theta_hi)]
-        for i in range(0, len(entries) - 1, 2):
-            regions.append((entries[i], entries[i + 1]))
+    entries = list(crossings)
+    if sgn[0] > 0:
+        entries = [float(theta_lo)] + entries
+    if sgn[-1] > 0:
+        entries = entries + [float(theta_hi)]
+    if len(entries) % 2 != 0:
+        raise RuntimeError(
+            f"reference dynamic_ci_scan got odd-parity entries: {entries!r}"
+        )
+    for i in range(0, len(entries), 2):
+        regions.append((entries[i], entries[i + 1]))
 
     total = float(sum(hi - lo for lo, hi in regions))
     return regions, total, len(regions)

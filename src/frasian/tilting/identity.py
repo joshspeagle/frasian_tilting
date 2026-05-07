@@ -15,7 +15,7 @@ call a single uniform interface across all cells.
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
 
 import numpy as np
@@ -25,7 +25,6 @@ from .._registry import register_tilting
 from ..models.base import Likelihood, Model, Posterior, Prior
 from ..statistics.base import TestStatistic
 from .base import ParamSpec
-from .eta_selectors import FixedEtaSelector
 
 if TYPE_CHECKING:
     from ..config import Config
@@ -34,7 +33,13 @@ if TYPE_CHECKING:
 @register_tilting(name="identity", brief="docs/methods/identity.md")
 @dataclass(frozen=True)
 class IdentityTilting:
-    """No-op tilting: `tilt(...)` returns the input posterior verbatim."""
+    """No-op tilting: `tilt(...)` returns the input posterior verbatim.
+
+    Carries no `selector` field — identity has nothing to tilt, so the
+    EtaSelector contract has no surface to honour. Callers that need a
+    selector-bearing scheme should use `PowerLawTilting(FixedEtaSelector(0))`,
+    which is numerically equivalent to identity at η=0.
+    """
 
     name: ClassVar[str] = "identity"
     param_space: ParamSpec = ParamSpec(
@@ -42,7 +47,6 @@ class IdentityTilting:
         eta_identity=0.0,
         description="No-op tilting; eta has no effect.",
     )
-    selector: FixedEtaSelector = field(default_factory=lambda: FixedEtaSelector(eta=0.0))
 
     # ----- TiltingScheme protocol -----
 

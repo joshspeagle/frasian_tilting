@@ -94,7 +94,7 @@ parameters — are invariants of the model itself.)
 - p-value is monotone decreasing in `|theta - mle|`.
 - Under H0 (data ~ N(theta_true, sigma^2)), closed-form p-values are
   Uniform[0, 1] (KS test in
-  `test_statistic_invariants.py::TestWaldUniformPvalueUnderH0`).
+  `test_wald_invariants.py::TestWaldUniformPvalueUnderH0`).
 - Acceptance region `[lo, hi]` (closed form, data-space) is symmetric
   about `theta0` with width `2 * z_{1-alpha/2} * sigma`. The
   generic path inverts in θ-space only and raises NotImplementedError
@@ -115,8 +115,8 @@ parameters — are invariants of the model itself.)
 
 - Implementation: `src/frasian/statistics/wald.py`
 - Regression tests: `tests/regression/test_waldo_pvalue.py::TestWaldStatistic`
-- Property tests: `tests/properties/test_statistic_invariants.py::TestWaldInvariants`
-- Statistical test (L3): `tests/properties/test_statistic_invariants.py::TestWaldUniformPvalueUnderH0`
+- Property tests: `tests/properties/test_wald_invariants.py::TestWaldInvariants`
+- Statistical test (L3): `tests/properties/test_wald_invariants.py::TestWaldUniformPvalueUnderH0`
 - Illustration: `src/frasian/experiments/illustrations/wald_demo.py`
 
 ## Status notes

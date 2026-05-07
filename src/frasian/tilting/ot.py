@@ -460,8 +460,12 @@ class OTTilting:
         eta_default=0.0,
         eta_identity=0.0,
         description=(
-            "t in [0, 1] along the W2 geodesic between posterior (t=0) "
-            "and likelihood-induced Gaussian N(D, sigma^2) (t=1)."
+            "Position along the W2 displacement line through posterior "
+            "(eta=0) and likelihood-induced Gaussian N(D, sigma^2) "
+            "(eta=1). The geodesic *segment* is [0, 1]; eta outside that "
+            "extrapolates along the same line and is admissible whenever "
+            "the resulting distribution is well-defined (Gaussian path: "
+            "sigma_t > 0; closed-form pvalue: s_t > 0 ⇔ eta > -w/(1-w))."
         ),
     )
     selector: EtaSelector = field(default_factory=lambda: FixedEtaSelector(eta=0.0))
@@ -506,16 +510,25 @@ class OTTilting:
                 "repeated scalar calls (see `path`)."
             )
         t = float(eta_arr)
-        if not (0.0 <= t <= 1.0):
-            raise TiltingDomainError(f"OTTilting requires eta in [0, 1], got {t!r}.")
+        if not np.isfinite(t):
+            raise TiltingDomainError(f"OTTilting requires finite eta, got {t!r}.")
 
-        # Gaussian fast path: linear interpolation in (mu, sigma).
+        # Gaussian fast path: linear interpolation in (mu, sigma). The W2
+        # displacement line is well-defined for any finite t, but the
+        # output is only a valid Gaussian when sigma_t > 0.
         if isinstance(posterior, NormalDistribution) and isinstance(likelihood, GaussianLikelihood):
             mu_a, sigma_a = posterior.loc, posterior.scale
             mu_b, sigma_b = float(likelihood.D), float(likelihood.sigma)
+            sigma_t = (1.0 - t) * sigma_a + t * sigma_b
+            if sigma_t <= 0.0:
+                raise TiltingDomainError(
+                    f"OTTilting Gaussian fast path requires sigma_t > 0, got "
+                    f"sigma_t={sigma_t!r} at eta={t!r} "
+                    f"(sigma_post={sigma_a!r}, sigma_lik={sigma_b!r})."
+                )
             return NormalDistribution(
                 loc=(1.0 - t) * mu_a + t * mu_b,
-                scale=(1.0 - t) * sigma_a + t * sigma_b,
+                scale=sigma_t,
             )
 
         # Gaussian-likelihood quantile-mixture path (likelihood admits a
@@ -591,20 +604,23 @@ class OTTilting:
         sigma0 = float(prior.scale)
         w = sigma0**2 / (sigma**2 + sigma0**2)
 
-        # Validation runs in numpy (JAX can't raise mid-trace). Convert
-        # eta to numpy exactly once for the [0, 1] + finiteness check.
+        # Validation runs in numpy (JAX can't raise mid-trace). The
+        # closed-form WALDO p-value is parameterised by s_t = (w +
+        # eta*(1-w))*sigma; it is well-defined whenever s_t > 0, i.e.
+        # eta > -w/(1-w). Above that there is no upper bound from s_t.
         eta_np = np.asarray(eta, dtype=np.float64)
-        invalid = ~(np.isfinite(eta_np) & (eta_np >= 0.0) & (eta_np <= 1.0))
+        eta_lower = -w / (1.0 - w)  # exclusive boundary
+        invalid = ~(np.isfinite(eta_np) & (eta_np > eta_lower))
         if np.any(invalid):
             if eta_np.ndim == 0:
                 raise TiltingDomainError(
-                    f"OTTilting.tilted_pvalue requires eta in [0, 1], got "
-                    f"{float(eta_np)!r}."
+                    f"OTTilting.tilted_pvalue requires eta > {eta_lower!r} "
+                    f"(s_t > 0) and finite, got {float(eta_np)!r}."
                 )
             bad = int(np.argmax(invalid))
             raise TiltingDomainError(
-                f"OTTilting.tilted_pvalue requires eta in [0, 1] and finite; "
-                f"offending index {bad} eta={float(eta_np.flat[bad])!r}."
+                f"OTTilting.tilted_pvalue requires eta > {eta_lower!r} and "
+                f"finite; offending index {bad} eta={float(eta_np.flat[bad])!r}."
             )
 
         # Shape dispatch: scalar -> numpy fast path; bulk -> jit'd kernel.
