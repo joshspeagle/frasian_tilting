@@ -15,9 +15,8 @@ on a tiny config (n_lhs=64, n_epochs=2, batch_size=16) and asserts:
   non-empty floats, accuracy is in [0, 1], paths exist, metadata is
   a populated dict).
 - The saved checkpoint exists at the requested path and contains the
-  expected metadata keys.
-
-Torch-gated; in audit envs without torch the test is skipped.
+  expected metadata keys (post-Equinox port: equinox_version /
+  jax_version replace torch_version).
 """
 
 from __future__ import annotations
@@ -26,15 +25,13 @@ from pathlib import Path
 
 import pytest
 
-torch = pytest.importorskip("torch")
-
-from frasian.learned.training.sampling import (  # noqa: E402
+from frasian.learned.training.sampling import (
     ExperimentConfig,
     UniformThetaDistribution,
 )
-from frasian.learned.training.train import EtaTrainResult, fit_eta_artifact  # noqa: E402
-from frasian.models.distributions import NormalDistribution  # noqa: E402
-from frasian.models.normal_normal import NormalNormalModel  # noqa: E402
+from frasian.learned.training.train import EtaTrainResult, fit_eta_artifact
+from frasian.models.distributions import NormalDistribution
+from frasian.models.normal_normal import NormalNormalModel
 
 
 @pytest.mark.L4
@@ -51,10 +48,10 @@ def test_fit_eta_artifact_returns_populated_result(
         theta_distribution=UniformThetaDistribution(low=-3.0, high=3.0),
         n_grid=33,
         n_lhs=64,
-        eta_explore_box=(-2.0, 2.0),
+        eta_explore_box=(-5.0, 5.0),
         seed=2026,
     )
-    out_path = tmp_path / "smoke.pt"
+    out_path = tmp_path / "smoke.eqx"
     result = fit_eta_artifact(
         config=config,
         out_path=out_path,
@@ -97,7 +94,8 @@ def test_fit_eta_artifact_returns_populated_result(
         "checkpoint_format_version",
         "architecture",
         "arch_sha",
-        "torch_version",
+        "equinox_version",
+        "jax_version",
         "experiment_config",
         "loss_kind",
         "antithetic",

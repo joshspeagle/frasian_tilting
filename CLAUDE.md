@@ -176,7 +176,7 @@ a `-log P(valid | θ, η)` boundary penalty driven by Head B
 checkpoint is trained for one `(model, prior, scheme)` and the
 selector refuses cross-experiment use via tuple-equal fingerprint
 compare. Smoke fixtures live in
-`artifacts/learned_eta_<config_name>_v0_smoke.pt`; production v1
+`artifacts/learned_eta_<config_name>_v0_smoke.eqx`; production v1
 checkpoints are not committed (re-train via
 `scripts.train_learned_eta --config experiments/<config>.yaml`).
 Activate via env var:
@@ -186,15 +186,23 @@ export FRASIAN_DEFAULT_DYNAMIC_ETA=learned   # vs default "numerical"
 ```
 
 Headline empirical result on the canonical sandbox (w=0.5,
-n_reps=200, α=0.05; v0_smoke checkpoint):
+n_reps=200, α=0.05; v0_smoke checkpoint, post-Equinox-port):
 
 ```
                             θ=0    θ=1    θ=2    θ=3    θ=4
 Wald                        3.92   3.92   3.92   3.92   3.92
-bare WALDO                  3.32   3.44   3.75   4.24   4.85
-power_law[numerical]        3.35   3.50   3.92   4.53   5.23   ← legacy: inflates
-power_law[learned]          3.67   3.67   3.67   3.71   3.80   ← calibrated AND ≤ Wald
+bare WALDO                  3.33   3.43   3.75   4.23   4.78
+power_law[numerical]        3.36   3.49   3.91   4.54   5.24   ← legacy: inflates
+power_law[learned]          3.63   3.64   3.68   3.75   3.82   ← calibrated AND ≤ Wald
 ```
+
+Numbers are from the JAX/Equinox/Optax v0_smoke checkpoint
+(post-Phase-F port commit 3) and are **not bit-equal** to the
+pre-port torch numbers — JAX's PRNG primitive differs from torch's
+even at the same nominal seed, so retrained weights drift within
+~1× MC standard error (~0.05 across α=0.05 narrowness MC repeats).
+The pattern (calibrated AND ≤ Wald, narrow at conflict) is
+preserved.
 
 Single-seed v0_smoke checkpoint; standard error ≈ 0.05 across α=0.05
 narrowness MC repeats. v1 production retraining will produce

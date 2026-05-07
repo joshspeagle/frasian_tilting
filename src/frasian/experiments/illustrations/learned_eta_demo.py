@@ -39,8 +39,8 @@ def _ensure_phase_e_checkpoint(smoke: bool) -> Path:
     # Anchor at project root so paths don't depend on CWD.
     project_root = Path(__file__).resolve().parents[4]
     candidates = [
-        project_root / "artifacts" / "learned_eta_canonical_normal_normal_powerlaw_v0_smoke.pt",
-        project_root / "artifacts" / "learned_eta_canonical_normal_normal_powerlaw_v1.pt",
+        project_root / "artifacts" / "learned_eta_canonical_normal_normal_powerlaw_v0_smoke.eqx",
+        project_root / "artifacts" / "learned_eta_canonical_normal_normal_powerlaw_v1.eqx",
     ]
     for c in candidates:
         if c.exists():
@@ -66,7 +66,7 @@ def _ensure_phase_e_checkpoint(smoke: bool) -> Path:
             eta_explore_box=cfg.eta_explore_box,
             seed=cfg.seed,
         )
-    out = project_root / "artifacts" / "learned_eta_canonical_normal_normal_powerlaw_v0_smoke.pt"
+    out = project_root / "artifacts" / "learned_eta_canonical_normal_normal_powerlaw_v0_smoke.eqx"
     fit_eta_artifact(
         config=cfg,
         out_path=out,
@@ -193,9 +193,10 @@ if __name__ == "__main__":
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args()
     try:
-        import torch  # noqa: F401
+        import jax  # noqa: F401
+        import equinox  # noqa: F401
     except ImportError:
-        print("learned_eta_demo: torch not available; skipping.")
+        print("learned_eta_demo: jax/equinox not available; skipping.")
         raise SystemExit(0) from None
     path = main(smoke=args.smoke, out=args.out)
     print(f"wrote {path}")

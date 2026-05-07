@@ -91,8 +91,8 @@ def _make_learned_selector(scheme_name: str):
     # `_default_cells.py` lives at `<root>/src/frasian/`.
     project_root = Path(__file__).resolve().parents[2]
     candidates = [
-        project_root / "artifacts" / f"learned_eta_{config_name}_v1.pt",
-        project_root / "artifacts" / f"learned_eta_{config_name}_v0_smoke.pt",
+        project_root / "artifacts" / f"learned_eta_{config_name}_v1.eqx",
+        project_root / "artifacts" / f"learned_eta_{config_name}_v0_smoke.eqx",
     ]
     chosen = next((c for c in candidates if c.exists()), None)
     if chosen is None:

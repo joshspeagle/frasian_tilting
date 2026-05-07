@@ -21,8 +21,6 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-torch = pytest.importorskip("torch")
-
 from frasian.learned.eta_artifact import EtaArtifact
 from frasian.models.distributions import NormalDistribution
 from frasian.models.normal_normal import NormalNormalModel
@@ -32,12 +30,12 @@ from frasian.tilting.power_law import PowerLawTilting
 
 _CHECKPOINT_CANDIDATES = {
     "powerlaw": [
-        Path("artifacts/learned_eta_canonical_normal_normal_powerlaw_v1.pt"),
-        Path("artifacts/learned_eta_canonical_normal_normal_powerlaw_v0_smoke.pt"),
+        Path("artifacts/learned_eta_canonical_normal_normal_powerlaw_v1.eqx"),
+        Path("artifacts/learned_eta_canonical_normal_normal_powerlaw_v0_smoke.eqx"),
     ],
     "ot": [
-        Path("artifacts/learned_eta_canonical_normal_normal_ot_v1.pt"),
-        Path("artifacts/learned_eta_canonical_normal_normal_ot_v0_smoke.pt"),
+        Path("artifacts/learned_eta_canonical_normal_normal_ot_v1.eqx"),
+        Path("artifacts/learned_eta_canonical_normal_normal_ot_v0_smoke.eqx"),
     ],
 }
 

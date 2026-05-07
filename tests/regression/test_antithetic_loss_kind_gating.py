@@ -18,7 +18,7 @@ We pin two properties:
    with a ``(2N,)`` D batch (verified via the saved checkpoint's
    ``antithetic`` metadata key).
 
-Both tests are torch-gated; the audit env without torch skips them.
+Both tests now use the JAX/Equinox orchestrator (Phase F port commit 3).
 """
 
 from __future__ import annotations
@@ -28,15 +28,13 @@ from pathlib import Path
 
 import pytest
 
-torch = pytest.importorskip("torch")
-
-from frasian.learned.training.sampling import (  # noqa: E402
+from frasian.learned.training.sampling import (
     ExperimentConfig,
     UniformThetaDistribution,
 )
-from frasian.learned.training.train import fit_eta_artifact  # noqa: E402
-from frasian.models.distributions import NormalDistribution  # noqa: E402
-from frasian.models.normal_normal import NormalNormalModel  # noqa: E402
+from frasian.learned.training.train import fit_eta_artifact
+from frasian.models.distributions import NormalDistribution
+from frasian.models.normal_normal import NormalNormalModel
 
 
 def _tiny_config() -> ExperimentConfig:
@@ -48,7 +46,7 @@ def _tiny_config() -> ExperimentConfig:
         theta_distribution=UniformThetaDistribution(low=-3.0, high=3.0),
         n_grid=33,
         n_lhs=64,
-        eta_explore_box=(-2.0, 2.0),
+        eta_explore_box=(-5.0, 5.0),
         seed=0,
     )
 
@@ -59,7 +57,7 @@ def test_antithetic_with_integrated_p_warns_and_falls_back(
     tmp_path: Path, bootstrapped_registry: object
 ) -> None:
     """``antithetic=True`` with ``loss_kind="integrated_p"`` warns + falls back."""
-    out_path = tmp_path / "ckpt.pt"
+    out_path = tmp_path / "ckpt.eqx"
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         result = fit_eta_artifact(
@@ -89,7 +87,7 @@ def test_antithetic_with_static_width_no_warning(
 ) -> None:
     """``antithetic=True`` with ``loss_kind="static_width"`` is silent +
     is recorded as ``True`` in the saved checkpoint."""
-    out_path = tmp_path / "ckpt_static.pt"
+    out_path = tmp_path / "ckpt_static.eqx"
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         result = fit_eta_artifact(

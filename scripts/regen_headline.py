@@ -11,8 +11,8 @@ power_law[numerical]        3.35   3.50   3.92   4.53   5.23
 power_law[learned]          3.67   3.67   3.67   3.71   3.80
 ```
 
-torch required; the script lazily imports it and prints a clear
-error if it is unavailable. See ``docs/methods/learned_eta.md``
+jax + equinox required; the script lazily imports them and prints a
+clear error if either is unavailable. See ``docs/methods/learned_eta.md``
 for the wider methodology.
 
 Usage::
@@ -28,7 +28,7 @@ docs. The OT learned cell is included for completeness even though
 the v0_smoke OT checkpoint is undertrained (Head B accuracy ~0.67).
 """
 
-# torch required; see docs/methods/learned_eta.md
+# jax + equinox required; see docs/methods/learned_eta.md
 
 from __future__ import annotations
 
@@ -38,19 +38,20 @@ import sys
 from pathlib import Path
 
 
-def _check_torch_available() -> None:
-    """Lazy torch availability check with a clear error path.
+def _check_jax_available() -> None:
+    """Lazy jax/equinox availability check with a clear error path.
 
     Avoids a hard import-time dependency so this module can be at least
     imported (and listed by `python -m scripts.regen_headline --help`)
-    in environments without torch installed.
+    in environments without jax installed.
     """
     try:
-        import torch  # noqa: F401
+        import jax  # noqa: F401
+        import equinox  # noqa: F401
     except ImportError as exc:
         sys.stderr.write(
-            "\nERROR: scripts.regen_headline requires torch to load the\n"
-            "Phase E v0_smoke checkpoints. Install torch (>=2.0) and retry.\n"
+            "\nERROR: scripts.regen_headline requires jax + equinox to load the\n"
+            "Phase E v0_smoke checkpoints. Install jax + equinox and retry.\n"
             f"Underlying ImportError: {exc}\n\n"
             "See docs/methods/learned_eta.md for the wider methodology.\n"
         )
@@ -61,8 +62,8 @@ def _check_artifacts_present() -> None:
     """Verify the committed v0_smoke checkpoints exist before running."""
     project_root = Path(__file__).resolve().parents[1]
     artifacts = [
-        project_root / "artifacts" / "learned_eta_canonical_normal_normal_powerlaw_v0_smoke.pt",
-        project_root / "artifacts" / "learned_eta_canonical_normal_normal_ot_v0_smoke.pt",
+        project_root / "artifacts" / "learned_eta_canonical_normal_normal_powerlaw_v0_smoke.eqx",
+        project_root / "artifacts" / "learned_eta_canonical_normal_normal_ot_v0_smoke.eqx",
     ]
     missing = [p for p in artifacts if not p.exists()]
     if missing:
@@ -113,14 +114,17 @@ def _compute_table(theta_grid: list[float], n_reps: int) -> dict[str, list[float
 
     os.environ["FRASIAN_DEFAULT_DYNAMIC_ETA"] = "numerical"
     pl_numerical = next(
-        t for t in default_tiltings() if t.cell_name == "power_law[dynamic_numerical]"
+        t
+        for t in default_tiltings()
+        if getattr(t, "cell_name", "") == "power_law[dynamic_numerical]"
     )
 
     os.environ["FRASIAN_DEFAULT_DYNAMIC_ETA"] = "learned"
     pl_learned = next(
         t
         for t in default_tiltings()
-        if "learned" in getattr(t, "cell_name", "") and t.cell_name.startswith("power_law")
+        if "learned" in getattr(t, "cell_name", "")
+        and getattr(t, "cell_name", "").startswith("power_law")
     )
 
     rng = np.random.default_rng(cfg.seed)
@@ -201,7 +205,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    _check_torch_available()
+    _check_jax_available()
     _check_artifacts_present()
 
     theta_grid = [0.0, 1.0, 2.0, 3.0, 4.0]

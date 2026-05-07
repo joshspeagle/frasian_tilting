@@ -429,14 +429,16 @@ class LearnedDynamicEtaSelector:
         if not self._loaded:
             self.artifact.load()
             self._loaded = True
-            # Only Phase E (format v2) checkpoints are supported.
+            # Phase E checkpoints: legacy torch format v2 + post-port
+            # Equinox format v3 are both accepted (the on-disk schema
+            # changed; the in-memory metadata fields are compatible).
             from .._errors import MissingArtifactError
 
             meta = self.artifact.metadata
             v = meta.get("checkpoint_format_version", None)
-            if v != 2 or "experiment_config" not in meta:
+            if v not in (2, 3) or "experiment_config" not in meta:
                 raise MissingArtifactError(
-                    f"{self.artifact.name}: expected Phase E (v2) "
+                    f"{self.artifact.name}: expected Phase E (v2 or v3) "
                     f"checkpoint with `experiment_config`; got "
                     f"format_version={v!r}. Re-train via "
                     f"`python -m scripts.train_learned_eta --config "

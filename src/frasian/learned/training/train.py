@@ -1,4 +1,4 @@
-"""Phase E dual-head training entry point — orchestrator after Tier 1.2 §7 split.
+"""Phase E dual-head training entry point — JAX/Equinox/Optax orchestrator.
 
 This module keeps only the public entry ``fit_eta_artifact``; the
 heavy lifting lives in:
@@ -7,25 +7,15 @@ heavy lifting lives in:
 - ``_train_loop.run_epoch_loop`` — minibatch / optimiser / early-stop
 - ``_validity_data`` — LHS sampling, validity batch building, antithetic
 - ``_losses_compose`` — width loss, boundary penalty, λ + β schedules
-- ``_checkpoint`` — atomic save + torch_version / arch_sha metadata
+- ``_checkpoint`` — atomic save + equinox / arch_sha metadata
 
 The training step is documented in ``_train_loop.py``; this file
-just wires the pieces together. Phase 4 skeptic §8 audit-line target
-is ~150; we land at ~310, with the remaining residual being the
-17-kwarg ``fit_eta_artifact`` signature (most are tunables that
-must surface to the public API), the ~40-line ``LoopArgs``
-construction (one kwarg per LoopArgs field — collapsing this
-into a builder would just relocate the ceremony), and the
-~25-line ``save_checkpoint`` call (one kwarg per metadata field —
-same trade-off). Further factoring would add indirection
-without reducing the underlying parameter-passing complexity.
+just wires the pieces together.
 
-**Determinism (1.2-NN4).** When torch is available, the orchestrator
-sets ``torch.use_deterministic_algorithms(True)`` and the cudnn flags
-as the first call. Combined with ``torch.manual_seed(seed)`` and
-``np.random.seed(seed)`` this gives byte-reproducible runs on the
-same torch + GPU build. CUBLAS deterministic mode requires the env
-var ``CUBLAS_WORKSPACE_CONFIG=:4096:8`` (set by the orchestrator).
+**Determinism.** JAX is bit-deterministic on CPU at a fixed
+``jax.random.PRNGKey``. The orchestrator derives the root key from
+``config.seed`` at the top, splits it for net init / data sampling,
+and seeds numpy globally for any side-channel randomness.
 """
 
 from __future__ import annotations
@@ -35,8 +25,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import torch
+import jax
+import jax.numpy as jnp
+import numpy as np
+import optax
 
+from ... import _jax_setup as _x64  # noqa: F401  — ensure float64 active
 from ..._registry import registry as _registry
 from ._checkpoint import save_checkpoint
 
@@ -55,10 +49,6 @@ from ._losses_compose import (
 from ._losses_compose import (
     lambda_schedule as _lambda_schedule,  # noqa: F401  (test back-compat)
 )
-
-# Pre-flight helpers (resolve device / determinism / loss-kind / RNGs)
-# live in ``_setup.py`` per Phase 4 skeptic §8. The ``_enable_determinism``
-# alias is kept for ``tests/regression/test_torch_determinism.py``.
 from ._setup import (
     enable_determinism as _enable_determinism,
 )
@@ -80,6 +70,8 @@ from ._train_loop import (
 from ._validity_data import prepare_held_out_validity, sample_data_per_theta
 from .architecture import EtaNet, ValidityNet
 from .sampling import ExperimentConfig, lhs_1d
+
+_FORCE_X64 = _x64
 
 
 @dataclass
@@ -121,15 +113,13 @@ def fit_eta_artifact(
 
     Model-agnostic interface (drives off ``config``). The width-loss
     side currently requires a NormalNormalModel + NormalDistribution
-    prior because the torch tilted_pvalue ports are Normal-Normal
-    only — the training loop itself doesn't reference Normal-Normal
-    coordinates anywhere else.
+    prior because the JAX tilted_pvalue ports are Normal-Normal only.
 
     Writes a checkpoint at ``out_path`` recording both nets' state,
     the experiment config (with fingerprints), the λ + β schedules,
-    ``torch_version``, ``arch_sha`` (for cross-environment compat
-    diagnostics), and a final calibration summary. Returns a
-    ``EtaTrainResult``.
+    ``equinox_version`` + ``jax_version``, ``arch_sha`` (for cross-
+    environment compat diagnostics), and a final calibration summary.
+    Returns a ``EtaTrainResult``.
 
     Parameters of note
     ------------------
@@ -142,21 +132,9 @@ def fit_eta_artifact(
         ``D − θ`` on the θ-symmetric grid, so the paired and IID
         estimators are algebraically identical — passing
         ``antithetic=True`` with those losses emits a
-        ``UserWarning`` and proceeds with antithetic=False.
-
-    Notes
-    -----
-    Determinism: ``torch.use_deterministic_algorithms(True, warn_only=True)``
-    + ``torch.manual_seed(seed)`` + ``np.random.seed(seed)`` are
-    set at the top of the function. Set
-    ``CUBLAS_WORKSPACE_CONFIG=:4096:8`` for CUDA determinism (auto-set
-    if not present).
+        ``UserWarning`` and proceeds with ``antithetic=False``.
     """
     _validate_loss_kind(loss_kind, alpha)
-    # Phase 4 skeptic §1: antithetic pairing is a no-op for the
-    # α-marginalised losses (their integrand is even in D − θ over a
-    # θ-symmetric grid, so the paired and IID estimators coincide).
-    # Honour the flag only for ``static_width`` and warn otherwise.
     effective_antithetic = bool(antithetic) and loss_kind == "static_width"
     if antithetic and not effective_antithetic:
         _warnings.warn(
@@ -168,7 +146,7 @@ def fit_eta_artifact(
             UserWarning,
             stacklevel=2,
         )
-    _enable_determinism(config.seed)
+    root_key = _enable_determinism(config.seed)
 
     device_resolved = _resolve_device(device)
     rng_train, rng_aux, rng_val_setup, rng_held = _spawn_rngs(config.seed)
@@ -186,12 +164,20 @@ def fit_eta_artifact(
     if n_aux is None:
         n_aux = batch_size
 
-    eta_net = EtaNet(theta_dim=theta_dim, hidden_sizes=eta_hidden_sizes).to(device_resolved)
-    val_net = ValidityNet(theta_dim=theta_dim, hidden_sizes=validity_hidden_sizes).to(
-        device_resolved
+    eta_init_key, val_init_key = jax.random.split(root_key)
+    eta_net = EtaNet(theta_dim=theta_dim, hidden_sizes=eta_hidden_sizes, key=eta_init_key)
+    val_net = ValidityNet(
+        theta_dim=theta_dim, hidden_sizes=validity_hidden_sizes, key=val_init_key
     )
-    optimizer_a = torch.optim.AdamW(eta_net.parameters(), lr=lr_a, weight_decay=weight_decay)
-    optimizer_b = torch.optim.AdamW(val_net.parameters(), lr=lr_b, weight_decay=weight_decay)
+
+    optimizer_a = optax.adamw(learning_rate=lr_a, weight_decay=weight_decay)
+    optimizer_b = optax.adamw(learning_rate=lr_b, weight_decay=weight_decay)
+    # Optax expects only the trainable (array) leaves of an Equinox
+    # module. ``eqx.filter`` selects exactly those.
+    import equinox as eqx
+
+    opt_state_a = optimizer_a.init(eqx.filter(eta_net, eqx.is_array))
+    opt_state_b = optimizer_b.init(eqx.filter(val_net, eqx.is_array))
 
     # LHS over θ once at training start; held-out subset for early stopping.
     theta_lhs = lhs_1d(config.theta_distribution, config.n_lhs, seed=config.seed)
@@ -201,12 +187,11 @@ def fit_eta_artifact(
     theta_train = theta_lhs[train_idx]
     theta_held = theta_lhs[val_idx]
 
-    # Skeptic block #2: frozen validation set sampled ONCE at training
-    # start, fixed across epochs.
+    # Frozen validation set sampled ONCE at training start.
     n_val_pairs = min(len(theta_held), 64)
     theta_val_np = theta_held[:n_val_pairs]
     D_val_np = sample_data_per_theta(config.model, theta_val_np, rng_val_setup)
-    D_val_t = torch.as_tensor(D_val_np, dtype=torch.float32, device=device_resolved)
+    D_val_t = jnp.asarray(D_val_np)
 
     eta_held_aux, D_held, valid_held = prepare_held_out_validity(
         scheme=scheme,
@@ -215,42 +200,44 @@ def fit_eta_artifact(
         rng=rng_held,
     )
 
-    theta_grid_t = torch.as_tensor(config.theta_grid, dtype=torch.float32, device=device_resolved)
+    theta_grid_t = jnp.asarray(config.theta_grid)
 
-    out = run_epoch_loop(
-        LoopArgs(
-            eta_net=eta_net,
-            val_net=val_net,
-            optimizer_a=optimizer_a,
-            optimizer_b=optimizer_b,
-            theta_train=theta_train,
-            theta_held=theta_held,
-            eta_held_aux=eta_held_aux,
-            valid_held=valid_held,
-            D_val_t=D_val_t,
-            theta_grid_t=theta_grid_t,
-            config=config,
-            scheme=scheme,
-            n_aux=n_aux,
-            rng_train=rng_train,
-            rng_aux=rng_aux,
-            n_epochs=n_epochs,
-            batch_size=batch_size,
-            loss_kind=loss_kind,
-            alpha=alpha,
-            lambda_max=lambda_max,
-            lambda_warmup_frac=lambda_warmup_frac,
-            patience=patience,
-            min_delta=min_delta,
-            antithetic=effective_antithetic,
-            device=device_resolved,
-            verbose=verbose,
-        )
+    args = LoopArgs(
+        eta_net=eta_net,
+        val_net=val_net,
+        optimizer_a=optimizer_a,
+        optimizer_b=optimizer_b,
+        opt_state_a=opt_state_a,
+        opt_state_b=opt_state_b,
+        theta_train=theta_train,
+        theta_held=theta_held,
+        eta_held_aux=eta_held_aux,
+        valid_held=valid_held,
+        D_val_t=D_val_t,
+        theta_grid_t=theta_grid_t,
+        config=config,
+        scheme=scheme,
+        n_aux=n_aux,
+        rng_train=rng_train,
+        rng_aux=rng_aux,
+        n_epochs=n_epochs,
+        batch_size=batch_size,
+        loss_kind=loss_kind,
+        alpha=alpha,
+        lambda_max=lambda_max,
+        lambda_warmup_frac=lambda_warmup_frac,
+        patience=patience,
+        min_delta=min_delta,
+        antithetic=effective_antithetic,
+        device=device_resolved,
+        verbose=verbose,
     )
+    out = run_epoch_loop(args)
 
-    # Roll back to best checkpoint.
-    eta_net.load_state_dict(out.best_state["eta"])
-    val_net.load_state_dict(out.best_state["validity"])
+    # Roll back to best checkpoint via reference swap (Equinox modules
+    # are immutable PyTrees).
+    eta_net = out.best_eta_net if out.best_eta_net is not None else args.eta_net
+    val_net = out.best_val_net if out.best_val_net is not None else args.val_net
 
     # Final Head B accuracy + Head A empirical validity rate on held-out θ.
     final_head_b_acc = evaluate_head_b_accuracy(

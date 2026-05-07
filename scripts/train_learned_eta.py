@@ -7,7 +7,7 @@ Example:
     python -m scripts.train_learned_eta \\
         --config experiments/canonical_normal_normal_powerlaw.yaml \\
         --n-epochs 30 --patience 8 \\
-        --out artifacts/learned_eta_canonical_normal_normal_powerlaw_v1.pt
+        --out artifacts/learned_eta_canonical_normal_normal_powerlaw_v1.eqx
 """
 
 from __future__ import annotations
