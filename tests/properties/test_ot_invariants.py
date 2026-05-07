@@ -106,7 +106,7 @@ class TestOTInvariants:
         from frasian.tilting.base import TiltingContext
 
         scheme = OTTilting()
-        ctx = TiltingContext(w=0.5, abs_delta=1.0, alpha=0.05)
+        ctx = TiltingContext(w=0.5, alpha=0.05)
         lo, hi = scheme.admissible_range(ctx)
         assert lo == 0.0
         assert hi == 1.0

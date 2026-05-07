@@ -467,6 +467,8 @@ class OTTilting:
             search_mult=search_mult,
             model_fingerprint=model.fingerprint(),
             prior_fingerprint=prior.fingerprint(),
+            model=model,
+            prior=prior,
         )
 
     # ----- Uniform CI / regions / pvalue interface -----
@@ -515,8 +517,6 @@ class OTTilting:
         sigma = float(model.sigma)
         sigma0 = float(prior.scale)
         w = sigma0**2 / (sigma**2 + sigma0**2)
-        abs_delta = abs((1.0 - w) * (prior.loc - D) / sigma)
-        ctx = TiltingContext(w=w, abs_delta=abs_delta, alpha=alpha)
 
         if getattr(self.selector, "is_dynamic", False):
             if config is not None:
@@ -542,7 +542,16 @@ class OTTilting:
                 raise RuntimeError(f"dynamic CI inversion produced no regions at D={D!r}")
             return regions
 
-        eta = float(self.selector.select(ctx, self, statistic=statistic))
+        eta = float(
+            self.selector.select(
+                self,
+                data=data,
+                model=model,
+                prior=prior,
+                alpha=alpha,
+                statistic=statistic,
+            )
+        )
         return [
             self.tilted_confidence_interval(
                 alpha,
@@ -600,31 +609,21 @@ class OTTilting:
         w = sigma0**2 / (sigma**2 + sigma0**2)
 
         if getattr(self.selector, "is_dynamic", False):
-            abs_delta_theta = np.abs((1.0 - w) * (prior.loc - theta_arr) / sigma)
+            # Phase 3a-1: θ-space directly.
             coarse_n = int(getattr(self.selector, "coarse_n", 25))
-            ad_max = float(abs_delta_theta.max()) + 1e-6
-            coarse_grid = np.linspace(0.0, ad_max, coarse_n)
-            select_kwargs = dict(
-                statistic=_NamedStatistic(statistic.name),
-                w=w,
-                alpha=alpha,
-            )
-            try:
-                import inspect
-
-                sig = inspect.signature(self.selector.select_grid)  # type: ignore[attr-defined]
-                if "model_fingerprint" in sig.parameters:
-                    select_kwargs["model_fingerprint"] = model.fingerprint()
-                if "prior_fingerprint" in sig.parameters:
-                    select_kwargs["prior_fingerprint"] = prior.fingerprint()
-            except (TypeError, ValueError):
-                pass
+            theta_lo = float(theta_arr.min())
+            theta_hi = float(theta_arr.max())
+            half_pad = 1e-6 * max(1.0, abs(theta_hi - theta_lo))
+            coarse_grid = np.linspace(theta_lo - half_pad, theta_hi + half_pad, coarse_n)
             coarse_eta = self.selector.select_grid(  # type: ignore[attr-defined]
                 coarse_grid,
                 self,
-                **select_kwargs,
+                model=model,
+                prior=prior,
+                alpha=alpha,
+                statistic=_NamedStatistic(statistic.name),
             )
-            eta_at_theta = np.interp(abs_delta_theta, coarse_grid, coarse_eta)
+            eta_at_theta = np.interp(theta_arr, coarse_grid, coarse_eta)
             return self.dynamic_tilted_pvalue(
                 theta_arr,
                 D,
@@ -634,7 +633,14 @@ class OTTilting:
                 eta_at_theta,
             )
 
-        abs_delta = abs((1.0 - w) * (prior.loc - D) / sigma)
-        ctx = TiltingContext(w=w, abs_delta=abs_delta, alpha=alpha)
-        eta = float(self.selector.select(ctx, self, statistic=statistic))
+        eta = float(
+            self.selector.select(
+                self,
+                data=data,
+                model=model,
+                prior=prior,
+                alpha=alpha,
+                statistic=statistic,
+            )
+        )
         return self.tilted_pvalue(theta_arr, D, model, prior, eta, statistic.name)

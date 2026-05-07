@@ -219,7 +219,7 @@ class TestLearnedDynamicEtaSelectorSmoke:
             mu0=0.0,
         )
         scheme = PowerLawTilting()
-        ctx = TiltingContext(w=0.5, abs_delta=1.0, alpha=0.05)
+        ctx = TiltingContext(w=0.5, alpha=0.05)
 
         # No fingerprints → raise.
         with pytest.raises(ValueError, match="fingerprint"):

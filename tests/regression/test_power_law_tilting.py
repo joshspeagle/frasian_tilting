@@ -91,16 +91,16 @@ class TestPowerLawDomain:
 
     def test_admissible_range_brackets_finite_window(self):
         scheme = PowerLawTilting()
-        ctx = TiltingContext(w=0.5, abs_delta=1.0, alpha=0.05)
+        ctx = TiltingContext(w=0.5, alpha=0.05)
         lo, hi = scheme.admissible_range(ctx)
         assert lo < scheme.param_space.eta_identity < hi
 
     def test_admissible_range_validates_w(self):
         scheme = PowerLawTilting()
         with pytest.raises(ValueError):
-            scheme.admissible_range(TiltingContext(w=0.0, abs_delta=1.0, alpha=0.05))
+            scheme.admissible_range(TiltingContext(w=0.0, alpha=0.05))
         with pytest.raises(ValueError):
-            scheme.admissible_range(TiltingContext(w=1.0, abs_delta=1.0, alpha=0.05))
+            scheme.admissible_range(TiltingContext(w=1.0, alpha=0.05))
 
 
 @pytest.mark.L0

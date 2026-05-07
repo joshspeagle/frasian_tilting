@@ -58,17 +58,19 @@ def _reference_inline_dynamic_ci(
     theta_hi = D + search_half
     theta_grid = np.linspace(theta_lo, theta_hi, n_grid)
 
-    abs_delta_theta = np.abs((1.0 - w) * (mu0 - theta_grid) / sigma)
-    ad_max = float(abs_delta_theta.max()) + 1e-6
-    coarse_grid = np.linspace(0.0, ad_max, coarse_n)
+    # Phase 3a-1: reference now uses the θ-keyed coarse grid (the
+    # selector's new signature). The pre-3a-1 |Δ|-keyed reference is
+    # gone; tests compare two equivalent θ-grid implementations.
+    coarse_theta_grid = np.linspace(theta_lo, theta_hi, coarse_n)
     coarse_eta = eta_selector.select_grid(
-        coarse_grid,
+        coarse_theta_grid,
         scheme,
         statistic=_NamedStatistic(statistic_name),
-        w=w,
+        model=model,
+        prior=prior,
         alpha=alpha,
     )
-    eta_at_theta = np.interp(abs_delta_theta, coarse_grid, coarse_eta)
+    eta_at_theta = np.interp(theta_grid, coarse_theta_grid, coarse_eta)
 
     p_theta = np.empty_like(theta_grid)
     for i in range(theta_grid.size):
@@ -89,8 +91,7 @@ def _reference_inline_dynamic_ci(
         if diff[i] * diff[i + 1] < 0.0:
 
             def _f(theta_val: float, _i=i) -> float:
-                ad = abs((1.0 - w) * (mu0 - theta_val) / sigma)
-                eta = float(np.interp(ad, coarse_grid, coarse_eta))
+                eta = float(np.interp(theta_val, coarse_theta_grid, coarse_eta))
                 return (
                     float(
                         scheme.tilted_pvalue(

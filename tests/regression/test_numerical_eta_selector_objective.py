@@ -22,7 +22,6 @@ import numpy as np
 import pytest
 
 from frasian.statistics.waldo import WaldoStatistic
-from frasian.tilting.base import TiltingContext
 from frasian.tilting.eta_selectors import NumericalEtaSelector
 from frasian.tilting.power_law import PowerLawTilting
 
@@ -46,10 +45,28 @@ class TestNumericalEtaSelectorObjective:
     def test_integrated_p_returns_eta_in_admissible_range(self, abs_delta, w):
         """Integrated-p objective produces a finite η in the admissible
         range for power_law."""
+        from frasian.models.distributions import NormalDistribution
+        from frasian.models.normal_normal import NormalNormalModel
+
         sel = NumericalEtaSelector(objective="integrated_p")
         scheme = PowerLawTilting()
-        ctx = TiltingContext(w=w, abs_delta=abs_delta, alpha=0.05)
-        eta = sel.select(ctx, scheme, statistic=WaldoStatistic())
+        # Phase 3a-1: TiltingContext no longer carries `abs_delta`; build
+        # the equivalent (model, prior, data) so the new selector
+        # signature has a concrete D.
+        sigma = 1.0
+        mu0 = 0.0
+        sigma0 = float(np.sqrt(w / (1.0 - w)) * sigma)
+        model = NormalNormalModel(sigma=sigma)
+        prior = NormalDistribution(loc=mu0, scale=sigma0)
+        D = mu0 - abs_delta * sigma / max(1.0 - w, 1e-12)
+        eta = sel.select(
+            scheme,
+            data=np.asarray([D]),
+            model=model,
+            prior=prior,
+            alpha=0.05,
+            statistic=WaldoStatistic(),
+        )
         assert np.isfinite(eta)
         eta_min = -w / (1.0 - w)
         assert eta > eta_min

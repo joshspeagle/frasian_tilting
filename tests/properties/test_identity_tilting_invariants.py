@@ -90,7 +90,7 @@ class TestIdentityTiltingInvariants:
     def test_admissible_range_is_unbounded(self):
         from frasian.tilting.base import TiltingContext
 
-        ctx = TiltingContext(w=0.5, abs_delta=1.0, alpha=0.05)
+        ctx = TiltingContext(w=0.5, alpha=0.05)
         lo, hi = IdentityTilting().admissible_range(ctx)
         assert np.isinf(lo) and lo < 0
         assert np.isinf(hi) and hi > 0

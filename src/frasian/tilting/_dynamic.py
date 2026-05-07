@@ -62,6 +62,8 @@ def dynamic_ci_scan(
     search_mult: float = 8.0,
     model_fingerprint: tuple | None = None,
     prior_fingerprint: tuple | None = None,
+    model: Any | None = None,
+    prior: Any | None = None,
     tilted_pvalue_vec_fn: Callable[
         [np.ndarray, np.ndarray], np.ndarray
     ]
@@ -130,6 +132,8 @@ def dynamic_ci_scan(
         search_mult=search_mult,
         model_fingerprint=model_fingerprint,
         prior_fingerprint=prior_fingerprint,
+        model=model,
+        prior=prior,
         named_statistic_cls=_NamedStatistic,
     )
     if hit_boundary:
@@ -152,6 +156,8 @@ def dynamic_ci_scan(
             search_mult=2.0 * search_mult,
             model_fingerprint=model_fingerprint,
             prior_fingerprint=prior_fingerprint,
+            model=model,
+            prior=prior,
             named_statistic_cls=_NamedStatistic,
         )
         if hit_boundary:
@@ -180,6 +186,8 @@ def _run_dynamic_scan(
     search_mult: float,
     model_fingerprint: tuple | None,
     prior_fingerprint: tuple | None,
+    model: Any | None,
+    prior: Any | None,
     named_statistic_cls: Any,
 ) -> tuple[list[tuple[float, float]], float, int, bool]:
     """Single scan pass; returns ``(regions, total, n_regions, hit_boundary)``.
@@ -194,40 +202,31 @@ def _run_dynamic_scan(
     theta_hi = D + search_half
     theta_grid = np.linspace(theta_lo, theta_hi, n_grid)
 
-    abs_delta_theta = np.abs((1.0 - w) * (mu0 - theta_grid) / sigma)
+    # Phase 3a-1: build a coarse θ-grid spanning the fine-scan window
+    # (the new selector signature is θ-indexed). Concrete model/prior
+    # instances are required for the new `select_grid(theta_grid, ...,
+    # model=, prior=, ...)` signature; fall back to constructing a
+    # Normal-Normal pair from `(sigma, mu0, w)` only when the caller
+    # didn't plumb them through (legacy adapter path; will be removed
+    # in commit 3a-2).
+    if model is None or prior is None:
+        from ..models.distributions import NormalDistribution
+        from ..models.normal_normal import NormalNormalModel
 
-    ad_max = float(abs_delta_theta.max()) + 1e-6
-    coarse_grid = np.linspace(0.0, ad_max, coarse_n)
-    select_kwargs = dict(
-        statistic=_NamedStatistic(statistic_name),
-        w=w,
-        alpha=alpha,
-    )
-    # Phase E selectors accept inference-time prior + model
-    # fingerprints to enforce strict cross-experiment refusal.
-    # Older selectors (Numerical/DynamicNumerical) don't have these
-    # kwargs in their signature; introspect to dispatch cleanly.
-    # Avoids try/except TypeError which would swallow real bugs in
-    # the selector body (skeptic E pre-PR review #6).
-    import inspect as _inspect
-    from collections.abc import Mapping
+        sigma0_derived = float(np.sqrt(w / max(1.0 - w, 1e-12)) * sigma)
+        model = NormalNormalModel(sigma=sigma)
+        prior = NormalDistribution(loc=mu0, scale=sigma0_derived)
 
-    _params: Mapping[str, _inspect.Parameter]
-    try:
-        _sig = _inspect.signature(eta_selector.select_grid)
-        _params = _sig.parameters
-    except (TypeError, ValueError):
-        _params = {}
-    if model_fingerprint is not None and "model_fingerprint" in _params:
-        select_kwargs["model_fingerprint"] = model_fingerprint
-    if prior_fingerprint is not None and "prior_fingerprint" in _params:
-        select_kwargs["prior_fingerprint"] = prior_fingerprint
+    coarse_theta_grid = np.linspace(theta_lo, theta_hi, coarse_n)
     coarse_eta = eta_selector.select_grid(
-        coarse_grid,
+        coarse_theta_grid,
         scheme,
-        **select_kwargs,
+        model=model,
+        prior=prior,
+        alpha=alpha,
+        statistic=_NamedStatistic(statistic_name),
     )
-    eta_at_theta = np.interp(abs_delta_theta, coarse_grid, coarse_eta)
+    eta_at_theta = np.interp(theta_grid, coarse_theta_grid, coarse_eta)
 
     # Fine-scan p-values: prefer the bulk vectorised callback when the
     # caller supplied one (Tier 1.3 N1). The scalar loop fallback keeps
@@ -255,8 +254,8 @@ def _run_dynamic_scan(
         if diff[i] * diff[i + 1] < 0.0:
 
             def _f(theta_val: float, _i=i) -> float:
-                ad = abs((1.0 - w) * (mu0 - theta_val) / sigma)
-                eta = float(np.interp(ad, coarse_grid, coarse_eta))
+                # Phase 3a-1: coarse_eta is keyed on θ directly.
+                eta = float(np.interp(theta_val, coarse_theta_grid, coarse_eta))
                 return float(tilted_pvalue_fn(theta_val, eta)) - alpha
 
             try:

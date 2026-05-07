@@ -30,11 +30,23 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class TiltingContext:
-    """Non-η parameters that bound or describe a tilting choice."""
+    """Non-η parameters that bound or describe a tilting choice.
+
+    `w` is Normal-Normal-flavored (= sigma0**2 / (sigma**2 + sigma0**2));
+    it's kept here because `admissible_range(context)` consumes it for
+    the closed-form Normal-Normal η bracket. Non-Normal callers may
+    pass a placeholder (e.g. 0.5) until a follow-up generalizes
+    `admissible_range(model, prior)`.
+
+    Phase 3a-1: ``abs_delta`` is deprecated and ignored — it is retained
+    as an optional field only so that legacy callers (smoothness.py +
+    its demo) continue to construct contexts unchanged. It will be
+    removed in commit 3a-3 when smoothness.py owns its own |Δ| sweep.
+    """
 
     w: float
-    abs_delta: float
     alpha: float
+    abs_delta: float = 0.0  # deprecated; ignored by all selector code paths
 
 
 @dataclass(frozen=True)
@@ -157,11 +169,58 @@ class EtaSelector(Protocol):
     Implementations: `NumericalEtaSelector` (Brent root-find on CI width),
     `ClosedFormEtaSelector` (analytic approximation), `LearnedEtaSelector`
     (wraps a `LearnedArtifact` such as the monotonic MLP).
+
+    Phase 3a-1: the call surface is θ-space and model-agnostic. `data`,
+    `model`, `prior` and `alpha` are passed at call time; selectors no
+    longer consume the Normal-Normal-specific `|Δ|` summary.
     """
 
-    @property
-    def name(self) -> str: ...
+    name: str
+    is_dynamic: bool
 
     def select(
-        self, context: TiltingContext, scheme: TiltingScheme, *, statistic: TestStatistic
+        self,
+        scheme: TiltingScheme,
+        *,
+        data: NDArray[np.float64],
+        model: Model,
+        prior: Prior,
+        alpha: float,
+        statistic: TestStatistic,
     ) -> float: ...
+
+
+@runtime_checkable
+class DynamicEtaSelector(Protocol):
+    """Dynamic selectors expose `select_grid(theta_grid, ...)` returning
+    one η per θ.
+
+    `select(...)` on a dynamic selector returns the η at a representative
+    θ (e.g. the data sufficient statistic), preserved for callers that
+    need a single number.
+    """
+
+    name: str
+    is_dynamic: bool
+
+    def select(
+        self,
+        scheme: TiltingScheme,
+        *,
+        data: NDArray[np.float64],
+        model: Model,
+        prior: Prior,
+        alpha: float,
+        statistic: TestStatistic,
+    ) -> float: ...
+
+    def select_grid(
+        self,
+        theta_grid: NDArray[np.float64],
+        scheme: TiltingScheme,
+        *,
+        model: Model,
+        prior: Prior,
+        alpha: float,
+        statistic: TestStatistic,
+    ) -> NDArray[np.float64]: ...
