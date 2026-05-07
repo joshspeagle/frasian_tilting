@@ -169,10 +169,14 @@ def _data_to_scalar_D(data: NDArray[np.float64]) -> float:
 # ----- Generic numerical path (any Distribution-conforming inputs) -----
 
 # Default knobs for the generic MC tilted-pvalue path. Mirrors PowerLaw
-# (see `power_law.py::_GENERIC_TILTED_PVALUE_*`).
+# (see `power_law.py::_GENERIC_TILTED_PVALUE_*`). `_GENERIC_TILTED_PVALUE_BASE_SEED`
+# is sourced from `_generic_pvalue` so PowerLaw and OT share the same
+# CRN seed at fixed (data, prior, eta, alpha) — enables direct cross-
+# scheme MC comparison in the smoothness experiment.
+from ._generic_pvalue import _GENERIC_TILTED_PVALUE_BASE_SEED  # noqa: F401
+
 _GENERIC_TILT_N_GRID: int = 1024
 _GENERIC_TILTED_PVALUE_N_MC: int = 200
-_GENERIC_TILTED_PVALUE_BASE_SEED: int = 0xC0FFEE
 _GENERIC_TILTED_PVALUE_N_GRID_MC: int = 256
 
 
@@ -372,6 +376,13 @@ def _generic_tilted_confidence_interval_ot(
 
     data_arr = np.atleast_1d(np.asarray(data, dtype=np.float64))
     eta_f = float(eta)
+    # Skeptic LOW #8: validate eta at function entry rather than letting
+    # _generic_tilt_ot raise mid-inversion. Saves the seed-derivation +
+    # posterior-construction cost on a doomed call.
+    if not (0.0 <= eta_f <= 1.0):
+        raise TiltingDomainError(
+            f"OTTilting requires eta in [0, 1], got {eta_f!r}."
+        )
     derived_seed = _stable_tilted_pvalue_seed(
         data_arr, model, prior, eta_f, alpha, base_seed
     )

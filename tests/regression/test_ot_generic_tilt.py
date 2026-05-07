@@ -160,7 +160,7 @@ def test_ot_generic_tilted_ci_bernoulli_smoke_low_nmc():
 
 
 @pytest.mark.L3
-@pytest.mark.parametrize("eta", [0.0, 0.3])
+@pytest.mark.parametrize("eta", [0.0, 0.3, 0.7, 1.0])
 @pytest.mark.parametrize("D", [-0.5, 0.0, 1.0])
 def test_ot_generic_ci_matches_closed_form_normal_normal(eta, D):
     """Generic vs closed-form CI on Normal-Normal at static η for OT.

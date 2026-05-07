@@ -321,8 +321,13 @@ def _generic_tilt(
 # doesn't need MC). Keep these as module-level constants rather than
 # constructor args on PowerLawTilting so the closed-form fast path
 # doesn't carry unused knobs in its dataclass surface.
+# `_GENERIC_TILTED_PVALUE_BASE_SEED` is sourced from `_generic_pvalue`
+# so PowerLaw and OT share the same CRN seed at fixed (data, prior, eta,
+# alpha) — enables direct cross-scheme MC comparison in the smoothness
+# experiment.
+from ._generic_pvalue import _GENERIC_TILTED_PVALUE_BASE_SEED  # noqa: F401
+
 _GENERIC_TILTED_PVALUE_N_MC: int = 200
-_GENERIC_TILTED_PVALUE_BASE_SEED: int = 0xC0FFEE
 # The MC inner-loop t-statistic uses a coarser grid than the observed
 # t_obs because (a) MC noise dominates over grid-discretisation noise
 # at any reasonable n_mc, and (b) per-MC-call cost is the dominant

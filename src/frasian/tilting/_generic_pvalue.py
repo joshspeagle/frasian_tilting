@@ -34,6 +34,16 @@ from numpy.typing import NDArray
 from ._grid_distribution import GridDistribution, grid_distribution_from_log_density
 
 
+# Shared default knobs for generic MC tilted-pvalue paths. Hoisted from
+# the per-scheme modules (PowerLaw + OT both used 0xC0FFEE; keeping a
+# single definition prevents per-scheme drift). The seed hash includes
+# (data, model.fingerprint, prior.fingerprint, eta, alpha, base_seed)
+# but NOT the scheme name — by design: PowerLaw and OT share the same
+# CRN uniform stream at fixed (data, prior, eta, alpha), enabling
+# direct cross-scheme comparison in the smoothness experiment.
+_GENERIC_TILTED_PVALUE_BASE_SEED: int = 0xC0FFEE
+
+
 def _resolve_support(
     model: object, data: NDArray[np.float64]
 ) -> tuple[float, float]:
@@ -46,6 +56,8 @@ def _resolve_support(
     enough). Centralised here to avoid the same dispatch tree being
     inlined in PowerLaw / OT generic paths.
     """
+    import warnings
+
     from ..models.distributions import BernoulliLikelihood, GaussianLikelihood
 
     if hasattr(model, "support"):
@@ -56,6 +68,22 @@ def _resolve_support(
         return (0.0, 1.0)
     if isinstance(likelihood, GaussianLikelihood):
         return (-float("inf"), float("inf"))
+    # Skeptic finding (Phase 3d review #2): fallthrough silently
+    # picked (-inf, inf) for unknown likelihoods, which then fed into
+    # `likelihood_as_distribution`'s mle ± 6*sigma=1.0 heuristic — a
+    # potentially wildly wrong window for a custom Likelihood with
+    # bounded support. Surface a warning so unexpected likelihood
+    # classes become visible at runtime.
+    warnings.warn(
+        f"_resolve_support: model lacks `support()` and likelihood "
+        f"{type(likelihood).__name__!r} is not a known class "
+        f"(BernoulliLikelihood / GaussianLikelihood). Falling back to "
+        f"(-inf, +inf); the generic-path mle±6σ window heuristic may "
+        f"produce a bad integration grid. Add a `support()` method to "
+        f"the model or extend this resolver.",
+        RuntimeWarning,
+        stacklevel=3,
+    )
     return (-float("inf"), float("inf"))
 
 
