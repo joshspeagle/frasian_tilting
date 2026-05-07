@@ -97,6 +97,30 @@ def _cell_name(tilting: Any) -> str:
     return str(name)
 
 
+def _is_stub(obj: Any, kind: str) -> bool:
+    """True iff `obj` is registered with `status="stub"` in `kind`'s slice.
+
+    Audit P0-10: stub schemes / statistics raise NotImplementedError on
+    every protocol method (or, pre-fix, AttributeError because the
+    `runtime_checkable` Protocol does not enforce method presence). Both
+    surface as `status="error"` cells with traceback in the manifest,
+    which is noisy and uninformative — the stub status is statically
+    declared. Gating here marks them `status="incompatible"` with a
+    stub-pointing reason so the manifest is honest about which cells are
+    intentionally not run.
+    """
+    from . import registry
+
+    cls = type(obj) if not isinstance(obj, type) else obj
+    slice_ = getattr(registry, kind + "s", None)
+    if slice_ is None:
+        return False
+    for entry in slice_.entries():
+        if entry.cls is cls:
+            return entry.status == "stub"
+    return False
+
+
 def run_experiment(
     *,
     experiment: Experiment,
@@ -150,6 +174,26 @@ def run_experiment(
         statistic = _instantiate(statistic_obj)
         cell_tilting_name = _cell_name(tilting)
         cell_statistic_name = getattr(statistic, "name", "?")
+
+        # Audit P0-10: gate stubs *before* invocation. Otherwise the
+        # call raises NotImplementedError (or, pre-Cluster D, plain
+        # AttributeError on the missing protocol method) and the
+        # per-cell try/except records `status="error"` with a noisy
+        # traceback. Both stubs are declared at registration time —
+        # surface that as a clean `incompatible` row.
+        if _is_stub(tilting, "tilting") or _is_stub(statistic, "statistic"):
+            stub_kind = "tilting" if _is_stub(tilting, "tilting") else "statistic"
+            stub_name = cell_tilting_name if stub_kind == "tilting" else cell_statistic_name
+            summary.cells.append(
+                CellSummary(
+                    tilting=cell_tilting_name,
+                    statistic=cell_statistic_name,
+                    cache_path="",
+                    status="incompatible",
+                    reason=f"stub {stub_kind} '{stub_name}' (see its method brief)",
+                )
+            )
+            continue
 
         if not _accepts_tilting(statistic, tilting):
             summary.cells.append(

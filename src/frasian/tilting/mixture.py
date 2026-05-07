@@ -21,14 +21,18 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from .._registry import register_tilting
-from ..models.base import Likelihood, Posterior, Prior
+from ..models.base import Likelihood, Model, Posterior, Prior
+from ..statistics.base import TestStatistic
 from .base import ParamSpec
+
+if TYPE_CHECKING:
+    from ..config import Config
 
 
 @register_tilting(name="mixture", brief="docs/methods/mixture.md", status="stub")
@@ -63,3 +67,53 @@ class MixtureTilting:
 
     def is_identity(self, eta: float) -> bool:
         return eta == self.param_space.eta_identity
+
+    # ----- Uniform CI / regions / pvalue interface -----
+    # Audit P0-10: the TiltingScheme protocol is `runtime_checkable` so
+    # `isinstance(stub, TiltingScheme)` returns True even with these
+    # methods absent — a missing method then raises AttributeError at
+    # runtime rather than the documented NotImplementedError. Explicit
+    # stubs raise the right exception type so the runner records
+    # status="error" with a meaningful reason (and the registry's
+    # status="stub" gating in `_runner.py` skips them cleanly before
+    # they ever get called).
+
+    def confidence_interval(
+        self,
+        alpha: float,
+        data: NDArray[np.float64],
+        model: Model,
+        prior: Prior,
+        statistic: TestStatistic,
+        *,
+        config: "Config | None" = None,
+    ) -> tuple[float, float]:
+        raise NotImplementedError(
+            "MixtureTilting.confidence_interval is a stub; see docs/methods/mixture.md."
+        )
+
+    def confidence_regions(
+        self,
+        alpha: float,
+        data: NDArray[np.float64],
+        model: Model,
+        prior: Prior,
+        statistic: TestStatistic,
+        *,
+        config: "Config | None" = None,
+    ) -> list[tuple[float, float]]:
+        raise NotImplementedError(
+            "MixtureTilting.confidence_regions is a stub; see docs/methods/mixture.md."
+        )
+
+    def pvalue(
+        self,
+        theta: ArrayLike,
+        data: NDArray[np.float64],
+        model: Model,
+        prior: Prior,
+        statistic: TestStatistic,
+    ) -> NDArray[np.float64]:
+        raise NotImplementedError(
+            "MixtureTilting.pvalue is a stub; see docs/methods/mixture.md."
+        )
