@@ -66,6 +66,24 @@ class Config:
     # --- IO ---
     cache_enabled: bool = True
 
+    # --- Parallelism ---
+    # Workers used by the per-replicate `parallel_map` inside
+    # coverage / width / confidence_distribution. Default `1` keeps the
+    # serial behaviour byte-reproducible. `-1` uses all cores. Process-
+    # based workers (joblib loky) so JAX state stays per-worker; first
+    # dispatch per worker pays a ~1-2 s import + JAX trace cost, so set
+    # `n_jobs > 1` only when the per-replicate work is large enough to
+    # amortise that (rule of thumb: per-CI cost > ~50 ms; safe for
+    # generic-MC WALDO and any OT-tilted cell, wasteful for closed-form
+    # Wald / WALDO).
+    #
+    # Fingerprint deliberately EXCLUDES n_jobs — the same Config with
+    # n_jobs=1 and n_jobs=8 must hit the same cache slot since the
+    # numerical result is identical (per-replicate D values come from a
+    # pre-generated raw stream; parallelism reorders the *evaluation*
+    # not the *seeding*). Verified by `test_parallelism_bitwise.py`.
+    n_jobs: int = 1
+
     @classmethod
     def default(cls) -> Config:
         """Production-resolution config (n_reps=10_000, full grids)."""

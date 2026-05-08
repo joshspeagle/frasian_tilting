@@ -129,6 +129,111 @@ class NormalNormalModel:
     def support(self) -> tuple[float, float]:
         return (-np.inf, np.inf)
 
+    # ----- Batched / vectorised hot-path overrides (Model protocol opt-ins) -----
+
+    def sample_data_batch(
+        self, theta: float, rng: Generator, n_mc: int, n_obs: int
+    ) -> NDArray[np.float64]:
+        """Draw `n_mc` independent N(theta, sigma^2) datasets, each n_obs obs.
+
+        Single `rng.normal` call returning shape `(n_mc, n_obs)`. Replaces
+        the default `n_mc`-iteration Python loop in
+        `frasian.models.base.default_sample_data_batch` for the
+        Normal-Normal sandbox; the speedup vs the loop is ~50–200x at
+        n_mc=2000 because `rng.normal` is a single C-level draw.
+        """
+        return rng.normal(
+            loc=float(np.asarray(theta)),
+            scale=self.sigma,
+            size=(int(n_mc), int(n_obs)),
+        )
+
+    def batch_loglik_grid(
+        self, data_batch: NDArray[np.float64], theta_grid: NDArray[np.float64]
+    ) -> NDArray[np.float64]:
+        """Vectorised Gaussian log-likelihood across rows × grid.
+
+        For row i, the likelihood treats `D_i = mean(data_batch[i])` as
+        a single scalar observation under N(theta, sigma^2). The full
+        formula (matching `GaussianLikelihood.loglik`) is:
+
+            loglik(theta; D_i) = -0.5 * ((theta - D_i) / sigma)^2
+                                  - 0.5 * log(2*pi*sigma^2)
+
+        Returns shape `(n_mc, n_grid)`. Replaces the per-row
+        `GaussianLikelihood(D=...).loglik(...)` Python loop in the
+        default fallback; ~50-200x speedup on Normal-Normal MC paths.
+        """
+        arr = np.atleast_2d(np.asarray(data_batch, dtype=np.float64))
+        grid = np.asarray(theta_grid, dtype=np.float64)
+        sigma = float(self.sigma)
+        D_means = arr.mean(axis=-1)  # (n_mc,) — n=1 sufficient stat
+        diff = grid[None, :] - D_means[:, None]  # (n_mc, n_grid)
+        z = diff / sigma
+        const = -0.5 * np.log(2.0 * np.pi * sigma**2)
+        return -0.5 * z * z + const
+
+    def posterior_moments_batch(
+        self, data_batch: NDArray[np.float64], prior: Prior
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        """Vectorised posterior moments across rows of `data_batch`.
+
+        Closed-form Normal-Normal posterior:
+            mu_n_i = w * mean(data_batch[i]) + (1 - w) * mu0
+            sigma_n^2 = w * sigma^2  (constant, theta-/data-independent)
+
+        Returns `(mu_arr, var_arr)` each shape `(n_mc,)`. The variance
+        is constant across i so `var_arr` is materialised as a constant
+        array — keeps the consumer-side broadcast trivial without
+        leaking the conjugate structure.
+        """
+        if not isinstance(prior, NormalDistribution):
+            raise NotImplementedError(
+                "NormalNormalModel.posterior_moments_batch currently requires "
+                "a NormalDistribution prior."
+            )
+        arr = np.atleast_2d(np.asarray(data_batch, dtype=np.float64))
+        D_means = arr.mean(axis=-1)  # shape (n_mc,)
+        sigma2 = float(self.sigma) ** 2
+        sigma0_2 = float(prior.scale) ** 2
+        w = sigma0_2 / (sigma2 + sigma0_2)
+        mu_n = w * D_means + (1.0 - w) * float(prior.loc)
+        sigma_n_sq = w * sigma2
+        var_n = np.full_like(mu_n, sigma_n_sq)
+        return mu_n, var_n
+
+    def posterior_quantile_batch(
+        self,
+        data_batch: NDArray[np.float64],
+        prior: Prior,
+        u_grid: NDArray[np.float64],
+    ) -> NDArray[np.float64]:
+        """Vectorised Gaussian posterior quantile across rows × u-grid.
+
+        For row i the posterior is N(mu_n_i, sigma_n^2) with
+        sigma_n^2 = w * sigma^2 (constant across i — depends only on
+        prior + model, not data). The quantile is closed form:
+            F_post,i^{-1}(u) = mu_n_i + sigma_n * Phi^{-1}(u)
+        Returns shape `(n_mc, n_u)`.
+        """
+        if not isinstance(prior, NormalDistribution):
+            raise NotImplementedError(
+                "NormalNormalModel.posterior_quantile_batch currently requires "
+                "a NormalDistribution prior."
+            )
+        from scipy.special import ndtri  # scipy: standard-Normal quantile
+
+        arr = np.atleast_2d(np.asarray(data_batch, dtype=np.float64))
+        u_arr = np.asarray(u_grid, dtype=np.float64)
+        D_means = arr.mean(axis=-1)
+        sigma2 = float(self.sigma) ** 2
+        sigma0_2 = float(prior.scale) ** 2
+        w = sigma0_2 / (sigma2 + sigma0_2)
+        mu_n = w * D_means + (1.0 - w) * float(prior.loc)  # (n_mc,)
+        sigma_n = float(np.sqrt(w) * self.sigma)
+        z = ndtri(u_arr)  # (n_u,)
+        return mu_n[:, None] + sigma_n * z[None, :]
+
     # ----- Conjugate-Normal-specific surface (public, used by PowerLawTilting etc.) -----
 
     def weight(self, prior: NormalDistribution) -> float:

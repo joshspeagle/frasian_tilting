@@ -153,6 +153,22 @@ class WaldoStatistic:
 
     n_mc: int = 2000
     seed: int = 0xC0FFEE
+    # When True, every dispatch site below skips the closed-form
+    # Normal-Normal+Normal fast path (Theorem 3) and runs the
+    # model-agnostic Monte-Carlo numerical path even on the conjugate
+    # NN sandbox. The two paths agree to within MC noise on NN n=1
+    # (see `tests/regression/test_waldo_generic_matches_closed_form.py`),
+    # so this flag is intended for *path-coverage debugging*, not
+    # production CI estimation. The discriminated `cell_name`
+    # ensures the cache and manifest don't collide across the two
+    # flavours.
+    force_generic: bool = False
+
+    @property
+    def cell_name(self) -> str:
+        """Discriminator for the cache key + manifest. Default closed-form
+        cell is `waldo`; `force_generic=True` flips it to `waldo[generic]`."""
+        return f"{self.name}[generic]" if self.force_generic else self.name
 
     # ---------- closed-form Normal-Normal+Normal path ----------
 
@@ -259,22 +275,29 @@ class WaldoStatistic:
         model: Model,
         prior: Prior | None,
     ) -> jax.Array:
+        """t = (mu_post - theta)^2 / var_post; degenerate var -> NaN.
+
+        Pure-numpy hot path: brentq is Python control-flow so any JAX
+        scalar wrapping is pure overhead (~50-100 µs per `jnp.asarray`
+        on a scalar). Returns `jax.Array` at the public boundary for
+        protocol parity, but the math is numpy.
+        """
         if prior is None:
             raise ValueError("WaldoStatistic.evaluate requires a prior (got None).")
         posterior = model.posterior(data, prior)
-        theta_arr = jnp.asarray(theta0, dtype=jnp.float64)
-        mu_post = jnp.asarray(posterior.mean(), dtype=jnp.float64)
-        var_post = jnp.asarray(posterior.var(), dtype=jnp.float64)
+        theta_arr = np.asarray(theta0, dtype=np.float64)
+        mu_post = float(np.asarray(posterior.mean()))
+        var_post = float(np.asarray(posterior.var()))
         diff = mu_post - theta_arr
-        # Degenerate-variance contract: return NaN when var_post <= 0,
-        # NOT a tiny floor (which would inflate t to ~10^300 and pair
-        # with the mc-reference's `0.0`-on-degenerate behaviour to
-        # produce a false p ≈ 1/(n_mc+1)). Both code paths now agree on
-        # NaN; consumers treat NaN as "uninformative draw" (mc reference)
-        # or "ill-posed observed data" (raises in `_generic_pvalue`).
-        safe_var = jnp.where(var_post > 0.0, var_post, 1.0)
-        raw = diff * diff / safe_var
-        return jnp.where(var_post > 0.0, raw, jnp.nan)
+        # Degenerate-variance contract: NaN when var_post <= 0, NOT a
+        # tiny floor (which would inflate t to ~10^300 and pair with the
+        # mc-reference's `0.0`-on-degenerate behaviour to produce a
+        # false p ≈ 1/(n_mc+1)). Consumers treat NaN as "uninformative
+        # draw" (mc reference) or "ill-posed observed data" (raises in
+        # `_generic_pvalue`).
+        if var_post > 0.0 and np.isfinite(var_post):
+            return jnp.asarray(diff * diff / var_post)
+        return jnp.asarray(np.full_like(theta_arr, np.nan))
 
     @staticmethod
     def _stable_seed(
@@ -314,36 +337,38 @@ class WaldoStatistic:
     ) -> NDArray[np.float64]:
         """Sample n_mc t-values under H_0 ~ likelihood(.|theta0).
 
-        Uses CRN: same `derived_seed` ⇒ same internal uniform stream ⇒
-        same inverse-CDF mappings to D' across different theta values.
-        On Bernoulli, `Generator.binomial(1, theta_f, ...)` draws
-        uniforms and compares to theta_f, so different theta_f produces
-        D' = (#{u_i < theta_f}) — a piecewise-constant function of theta
-        with the *same* uniforms. On Normal, `Generator.normal(loc=theta_f,
-        scale=sigma, ...)` shifts the same Z-draws — smooth in theta_f.
-        Either way, brentq sees a deterministic function of theta and
-        converges.
+        Vectorised: one `model.sample_data_batch` call returns shape
+        (n_mc, n_obs); one `model.posterior_moments_batch` call returns
+        per-row (mu, var) arrays. The t-statistic is then a single
+        broadcast `(mu - theta0)^2 / var` numpy expression. Replaces the
+        former `n_mc`-iteration Python loop (~45 µs per iteration of
+        sample + posterior + scalar arithmetic) with two C-level numpy
+        ops; ~50-200x speedup at n_mc=2000 on Normal-Normal.
+
+        CRN: a fresh `np.random.default_rng(derived_seed)` per call. Same
+        seed ⇒ same internal uniform stream ⇒ same inverse-CDF mappings
+        to D' across theta probes. On Bernoulli, this piecewise-constant
+        property of `binomial(1, theta, ...)` w.r.t. `theta` survives the
+        batch (single rng call still draws the same uniforms internally).
+
+        Degenerate-variance handling: rows with `var <= 0` or non-finite
+        var produce NaN t. `_generic_pvalue` filters NaN downstream.
         """
-        rng = np.random.default_rng(derived_seed)
-        t_samples = np.empty(n_mc, dtype=np.float64)
-        for i in range(n_mc):
-            D_prime = model.sample_data(theta0_f, rng, n_obs)
-            post_prime = model.posterior(D_prime, prior)
-            mu = float(np.asarray(post_prime.mean()))
-            var = float(np.asarray(post_prime.var()))
-            if var <= 0.0 or not np.isfinite(var):
-                # Degenerate MC draw: posterior is a point mass, t is
-                # ill-defined. Mark NaN; `_generic_pvalue` filters NaN
-                # from the reference and divides by n_eff. Previously
-                # this returned 0.0, which paired with `_generic_evaluate`'s
-                # 1e-300 floor to make t_obs huge and t_ref always-zero
-                # — collapsing the empirical p to 1/(n_mc+1) regardless
-                # of θ. Fixing both halves of the inconsistency together.
-                t_samples[i] = np.nan
-            else:
-                d = mu - theta0_f
-                t_samples[i] = d * d / var
-        return t_samples
+        from ..models.base import (
+            posterior_moments_batch as _moments_batch,
+            sample_data_batch as _sample_batch,
+        )
+
+        rng = np.random.default_rng(int(derived_seed))
+        D_batch = _sample_batch(model, float(theta0_f), rng, int(n_mc), int(n_obs))
+        mu_arr, var_arr = _moments_batch(model, D_batch, prior)
+        finite = (var_arr > 0.0) & np.isfinite(var_arr)
+        # Suppress divide-by-zero / invalid warnings for the masked-out
+        # rows — we replace them with NaN below.
+        with np.errstate(invalid="ignore", divide="ignore"):
+            diff = mu_arr - float(theta0_f)
+            t = diff * diff / np.where(finite, var_arr, 1.0)
+        return np.where(finite, t, np.nan)
 
     def _generic_pvalue(
         self,
@@ -353,20 +378,29 @@ class WaldoStatistic:
         prior: Prior | None,
         *,
         derived_seed: int | None = None,
+        obs_moments: tuple[float, float] | None = None,
     ) -> jax.Array:
         """MC empirical p-value with `(k+1)/(n+1)` continuity correction.
 
-        ``derived_seed``: when supplied, used as the MC seed (call this
-        path from `_generic_confidence_interval` to enable CRN across
-        brentq probes). When ``None``, a stable seed is computed from
-        (data, model, prior, alpha=0, self.seed) — the resulting
-        single-call p-value is reproducible across processes but does
-        NOT share random numbers with any companion call. Use the
-        explicit form whenever multiple p-values must agree under CRN.
+        ``theta0`` accepts a scalar OR a 1-D array. The array path
+        (used by the CD experiment, which evaluates the p-value on a
+        ~401-pt theta grid per replicate) loops over thetas in Python
+        — each theta gets its own MC reference under H_0:theta — but
+        each per-theta MC reference is fully vectorised.
+
+        ``derived_seed``: when supplied, used as the MC seed for *every*
+        theta (CRN across the array — what `_generic_confidence_interval`
+        threads in, and what makes `f(theta)` deterministic for brentq).
+        When ``None``, a stable seed is derived from (data, model, prior,
+        alpha=0, self.seed). The seed is INDEPENDENT of theta by design.
+
+        ``obs_moments``: optional `(mu_obs, var_obs)`. When supplied,
+        skips the (theta-independent) observed-posterior recomputation —
+        ~30 µs saved per call. The CI inversion path passes this once-
+        computed pair through every brentq probe.
         """
         if prior is None:
             raise ValueError("WaldoStatistic.pvalue requires a prior (got None).")
-        theta_f = float(np.asarray(theta0))
         data_arr = np.atleast_1d(np.asarray(data, dtype=np.float64))
         if data_arr.ndim != 1:
             raise NotImplementedError(
@@ -376,36 +410,59 @@ class WaldoStatistic:
                 "to expose an `n_obs(data) -> int` accessor (latent skeptic vector #7)."
             )
         n_obs = int(data_arr.size)
-        t_obs = float(np.asarray(self._generic_evaluate(theta_f, data, model, prior)))
-        if not np.isfinite(t_obs):
+
+        # Hoist observed moments (theta-independent) — pure-numpy, no JAX.
+        if obs_moments is None:
+            posterior = model.posterior(data_arr, prior)
+            mu_obs = float(np.asarray(posterior.mean()))
+            var_obs = float(np.asarray(posterior.var()))
+        else:
+            mu_obs, var_obs = obs_moments
+        if not (np.isfinite(var_obs) and var_obs > 0.0):
             raise ValueError(
                 f"WaldoStatistic._generic_pvalue: observed posterior variance "
                 f"is degenerate (var <= 0) at the supplied data, so the test "
-                f"statistic is ill-defined. theta0={theta_f!r}, "
+                f"statistic is ill-defined. var_obs={var_obs!r}, "
                 f"data.shape={data_arr.shape!r}."
             )
+
         if derived_seed is None:
             derived_seed = self._stable_seed(data_arr, model, prior, 0.0, self.seed)
-        t_ref = self._generic_mc_reference(
-            theta_f, n_obs, model, prior, self.n_mc, derived_seed
-        )
-        # Drop MC draws with degenerate variance (NaN per the
-        # _generic_mc_reference contract) and renormalise.
-        finite = np.isfinite(t_ref)
-        n_eff = int(finite.sum())
-        if n_eff == 0:
-            raise ValueError(
-                f"WaldoStatistic._generic_pvalue: every MC reference draw "
-                f"produced a degenerate posterior at theta0={theta_f!r}. "
-                f"Cannot compute an empirical p-value."
+
+        theta_arr_input = np.asarray(theta0, dtype=np.float64)
+        scalar_input = (theta_arr_input.ndim == 0)
+        theta_arr = np.atleast_1d(theta_arr_input)
+        # t_obs(theta) = (mu_obs - theta)^2 / var_obs — vectorised across thetas.
+        diff_obs = mu_obs - theta_arr
+        t_obs = diff_obs * diff_obs / var_obs
+
+        # Per-theta MC reference (each theta needs its own H_0 reference;
+        # CRN seed shared so brentq probes nest cleanly).
+        p_out = np.empty(theta_arr.shape, dtype=np.float64)
+        for i, theta_f in enumerate(theta_arr):
+            t_ref = self._generic_mc_reference(
+                float(theta_f), n_obs, model, prior, self.n_mc, derived_seed
             )
-        t_ref_clean = t_ref[finite]
-        # +1 smoothing: empirical p-value with continuity correction. This
-        # is intentionally CONSERVATIVE — coverage is biased upward by
-        # O(1/n_eff), never downward. Bounded strictly in (0, 1] so brentq
-        # can bracket cleanly even at the extreme tails of the MC reference.
-        p = (float(np.sum(t_ref_clean >= t_obs)) + 1.0) / (float(n_eff) + 1.0)
-        return jnp.asarray(p)
+            finite = np.isfinite(t_ref)
+            n_eff = int(finite.sum())
+            if n_eff == 0:
+                raise ValueError(
+                    f"WaldoStatistic._generic_pvalue: every MC reference draw "
+                    f"produced a degenerate posterior at theta0={float(theta_f)!r}. "
+                    f"Cannot compute an empirical p-value."
+                )
+            # +1 smoothing: conservative continuity correction — coverage
+            # biased upward by O(1/n_eff), never downward. Bounded in
+            # (0, 1] so brentq can bracket cleanly even at the tails.
+            n_more_extreme = float(np.sum(t_ref[finite] >= t_obs[i]))
+            p_out[i] = (n_more_extreme + 1.0) / (float(n_eff) + 1.0)
+
+        # Match input shape: scalar in -> scalar out (preserves the
+        # historical scalar contract that `_generic_confidence_interval`
+        # and the smoke tests rely on).
+        if scalar_input:
+            return jnp.asarray(float(p_out[0]))
+        return jnp.asarray(p_out)
 
     def _generic_confidence_interval(
         self,
@@ -441,9 +498,15 @@ class WaldoStatistic:
         derived_seed = self._stable_seed(data_arr, model, prior, 0.0, self.seed)
         support_lo, support_hi = model.support()
 
+        # Hoisted observed moments — theta-INDEPENDENT, computed once per
+        # CI (was previously recomputed inside every brentq probe via
+        # `_generic_evaluate` -> `model.posterior`). Threaded into
+        # `_generic_pvalue` via the `obs_moments` kwarg below.
         posterior = model.posterior(data, prior)
         mu_post = float(np.asarray(posterior.mean()))
-        sigma_post = float(np.sqrt(max(float(np.asarray(posterior.var())), 1e-300)))
+        var_post = float(np.asarray(posterior.var()))
+        sigma_post = float(np.sqrt(max(var_post, 1e-300)))
+        obs_moments = (mu_post, var_post)
 
         def f(theta: float) -> float:
             # Clamp to model support: brentq's bracket-doubling can
@@ -456,7 +519,9 @@ class WaldoStatistic:
             theta_safe = max(float(support_lo), min(float(support_hi), theta))
             return float(
                 self._generic_pvalue(
-                    theta_safe, data, model, prior, derived_seed=derived_seed
+                    theta_safe, data, model, prior,
+                    derived_seed=derived_seed,
+                    obs_moments=obs_moments,
                 )
             ) - alpha
 
@@ -510,14 +575,14 @@ class WaldoStatistic:
     def evaluate(
         self, theta0: ArrayLike, data: NDArray[np.float64], model: Model, prior: Prior | None = None
     ) -> jax.Array:
-        if _is_normal_normal_n1(model, prior, data):
+        if not self.force_generic and _is_normal_normal_n1(model, prior, data):
             return self._closed_form_evaluate(theta0, data, model, prior)  # type: ignore[arg-type]
         return self._generic_evaluate(theta0, data, model, prior)
 
     def pvalue(
         self, theta0: ArrayLike, data: NDArray[np.float64], model: Model, prior: Prior | None = None
     ) -> jax.Array:
-        if _is_normal_normal_n1(model, prior, data):
+        if not self.force_generic and _is_normal_normal_n1(model, prior, data):
             return self._closed_form_pvalue(theta0, data, model, prior)  # type: ignore[arg-type]
         return self._generic_pvalue(theta0, data, model, prior)
 
@@ -544,8 +609,15 @@ class WaldoStatistic:
         an optional protocol method; feature-detect via
         `has_acceptance_region(stat)`.
         """
-        if _is_normal_normal_pair(model, prior):
+        if not self.force_generic and _is_normal_normal_pair(model, prior):
             return self._closed_form_acceptance_region(alpha, theta0, model, prior)  # type: ignore[arg-type]
+        if self.force_generic and _is_normal_normal_pair(model, prior):
+            raise NotImplementedError(
+                "WaldoStatistic.acceptance_region (data-space) has no generic "
+                "path; got force_generic=True. Use confidence_interval(...) "
+                "for the generic theta-space inversion, or unset force_generic "
+                "to recover the closed-form NN+Normal data-space region."
+            )
         raise NotImplementedError(
             f"WaldoStatistic.acceptance_region (data-space) is only "
             f"available for the closed-form Normal-Normal pair; got "
@@ -556,7 +628,7 @@ class WaldoStatistic:
     def confidence_interval(
         self, alpha: float, data: NDArray[np.float64], model: Model, prior: Prior | None = None
     ) -> tuple[float, float]:
-        if _is_normal_normal_n1(model, prior, data):
+        if not self.force_generic and _is_normal_normal_n1(model, prior, data):
             return self._closed_form_confidence_interval(alpha, data, model, prior)  # type: ignore[arg-type]
         return self._generic_confidence_interval(alpha, data, model, prior)
 

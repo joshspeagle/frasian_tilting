@@ -40,10 +40,12 @@ Applications* 48: 257–263.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Any, ClassVar
 
 import numpy as np
 
+from .._parallel import parallel_map
 from .._registry import register_experiment
 from ..cd.distances import wasserstein_1
 from ..cd.from_closed_form import wald_cd
@@ -58,6 +60,43 @@ from ..statistics.base import TestStatistic
 from ..tilting.base import TiltingScheme
 from .base import ExperimentContext, RawResult
 from .coverage import _sigma0_from_w
+
+
+def _cd_replicate(
+    D: float,
+    *,
+    sigma: float,
+    model: Any,
+    prior: Any,
+    tilting: Any,
+    statistic: Any,
+    n_grid_cd: int,
+    half_width_sigma_cd: float,
+) -> tuple[float, float, float, float] | None:
+    """Compute one replicate's CD summaries: (median, width_95, w1_to_wald, nonmono).
+
+    Returns None if the cell raises NotImplementedError / ValueError /
+    RuntimeError during CD construction. Top-level for joblib pickling.
+    """
+    try:
+        cd = build_cd_from_pvalue(
+            tilting,
+            statistic,
+            D,
+            model,
+            prior,
+            n_grid=n_grid_cd,
+            half_width_sigma=half_width_sigma_cd,
+        )
+        wald_ref = wald_cd(D, sigma, theta_grid=cd.theta_grid)
+    except (NotImplementedError, ValueError, RuntimeError):
+        return None
+    median = float(cd.median())
+    lo, hi = cd.interval(0.05)
+    width = float(hi - lo)
+    w1 = float(wasserstein_1(cd, wald_ref))
+    nonmono = 0.0 if cd.is_monotone_inversion() else 1.0
+    return (median, width, w1, nonmono)
 
 
 @register_experiment(
@@ -120,44 +159,32 @@ class ConfidenceDistributionExperiment:
         w1_to_wald_cd_se = np.full_like(cd_median, np.nan)
         nonmonotone_fraction = np.full_like(cd_median, np.nan)
 
+        n_jobs = int(getattr(ctx.config, "n_jobs", 1))
         for j, w in enumerate(w_grid):
             sigma0 = _sigma0_from_w(float(w), self.sigma)
             prior = NormalDistribution(loc=self.mu0, scale=sigma0)
 
             for i in range(n_theta):
-                medians = np.empty(n_reps, dtype=np.float64)
-                widths = np.empty(n_reps, dtype=np.float64)
-                w1s = np.empty(n_reps, dtype=np.float64)
-                nonmono = np.zeros(n_reps, dtype=np.float64)
-                supported = True
-                for k in range(n_reps):
-                    D = float(raw.D[i, k])
-                    try:
-                        cd = build_cd_from_pvalue(
-                            tilting,
-                            statistic,
-                            D,
-                            model,
-                            prior,
-                            n_grid=self.n_grid_cd,
-                            half_width_sigma=self.half_width_sigma_cd,
-                        )
-                        wald_ref = wald_cd(
-                            D,
-                            self.sigma,
-                            theta_grid=cd.theta_grid,
-                        )
-                    except (NotImplementedError, ValueError, RuntimeError):
-                        supported = False
-                        break
-                    medians[k] = cd.median()
-                    lo, hi = cd.interval(0.05)
-                    widths[k] = hi - lo
-                    w1s[k] = wasserstein_1(cd, wald_ref)
-                    nonmono[k] = 0.0 if cd.is_monotone_inversion() else 1.0
-
-                if not supported:
+                D_arr = [float(d) for d in raw.D[i, :]]
+                fn = partial(
+                    _cd_replicate,
+                    sigma=self.sigma,
+                    model=model,
+                    prior=prior,
+                    tilting=tilting,
+                    statistic=statistic,
+                    n_grid_cd=self.n_grid_cd,
+                    half_width_sigma_cd=self.half_width_sigma_cd,
+                )
+                results = parallel_map(fn, D_arr, n_jobs=n_jobs)
+                if any(r is None for r in results):
+                    # Unsupported (NotImplementedError / ValueError /
+                    # RuntimeError on at least one replicate) → leave NaN row.
                     continue
+                medians = np.array([m for (m, _, _, _) in results], dtype=np.float64)
+                widths = np.array([wd for (_, wd, _, _) in results], dtype=np.float64)
+                w1s = np.array([w1 for (_, _, w1, _) in results], dtype=np.float64)
+                nonmono = np.array([nm for (_, _, _, nm) in results], dtype=np.float64)
                 cd_median[i, j] = medians.mean()
                 cd_median_se[i, j] = float(medians.std(ddof=1) / np.sqrt(n_reps))
                 cd_width_95[i, j] = widths.mean()
@@ -167,10 +194,11 @@ class ConfidenceDistributionExperiment:
                 nonmonotone_fraction[i, j] = nonmono.mean()
 
         cell_name = getattr(tilting, "cell_name", tilting.name)
+        stat_cell_name = getattr(statistic, "cell_name", statistic.name)
         return RawResult(
             experiment=self.name,
             tilting=cell_name,
-            statistic=statistic.name,
+            statistic=stat_cell_name,
             arrays={
                 "theta_grid": theta_grid,
                 "w_grid": w_grid,

@@ -90,10 +90,13 @@ def _instantiate(obj: Any) -> Any:
     return obj() if isinstance(obj, type) else obj
 
 
-def _cell_name(tilting: Any) -> str:
-    """Display name used in the manifest. Tiltings may opt into a
-    `cell_name` property to encode their selector; fall back to `name`."""
-    name = getattr(tilting, "cell_name", None) or getattr(tilting, "name", "?")
+def _cell_name(obj: Any) -> str:
+    """Display name used in the manifest. Both tiltings and statistics may
+    opt into a `cell_name` property (tiltings encode their selector, e.g.
+    `power_law[dynamic_numerical]`; statistics encode dispatch flags,
+    e.g. `wald[generic]`). Fall back to `.name` for objects that don't
+    expose `cell_name`."""
+    name = getattr(obj, "cell_name", None) or getattr(obj, "name", "?")
     return str(name)
 
 
@@ -173,7 +176,7 @@ def run_experiment(
         tilting = _instantiate(tilting_obj)
         statistic = _instantiate(statistic_obj)
         cell_tilting_name = _cell_name(tilting)
-        cell_statistic_name = getattr(statistic, "name", "?")
+        cell_statistic_name = _cell_name(statistic)
 
         # Audit P0-10: gate stubs *before* invocation. Otherwise the
         # call raises NotImplementedError (or, pre-Cluster D, plain

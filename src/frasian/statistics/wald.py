@@ -61,6 +61,21 @@ class WaldStatistic:
         description="(D - theta)^2 / sigma^2 ~ chi^2_1 under H0; "
         "generic: (mle - theta)^2 * I(theta) ~ chi^2_1.",
     )
+    # When True, every dispatch site below skips the closed-form
+    # Normal-Normal fast path and runs the model-agnostic numerical
+    # path even when the model fingerprint reports `("normal_normal",
+    # ...)`. The two paths agree to within numerical tolerance on NN
+    # (see `tests/regression/test_wald_generic_matches_closed_form.py`),
+    # so this flag is intended for *path-coverage debugging*, not
+    # production CI estimation. The discriminated `cell_name` ensures
+    # the cache and manifest don't collide across the two flavours.
+    force_generic: bool = False
+
+    @property
+    def cell_name(self) -> str:
+        """Discriminator for the cache key + manifest. Default closed-form
+        cell is `wald`; `force_generic=True` flips it to `wald[generic]`."""
+        return f"{self.name}[generic]" if self.force_generic else self.name
 
     # ---------- closed-form Normal-Normal path ----------
 
@@ -174,14 +189,14 @@ class WaldStatistic:
     def evaluate(
         self, theta0: ArrayLike, data: NDArray[np.float64], model: Model, prior: Prior | None = None
     ) -> jax.Array:
-        if _is_normal_normal(model):
+        if not self.force_generic and _is_normal_normal(model):
             return self._closed_form_evaluate(theta0, data, model)  # type: ignore[arg-type]
         return self._generic_evaluate(theta0, data, model)
 
     def pvalue(
         self, theta0: ArrayLike, data: NDArray[np.float64], model: Model, prior: Prior | None = None
     ) -> jax.Array:
-        if _is_normal_normal(model):
+        if not self.force_generic and _is_normal_normal(model):
             return self._closed_form_pvalue(theta0, data, model)  # type: ignore[arg-type]
         return self._generic_pvalue(theta0, data, model)
 
@@ -192,10 +207,19 @@ class WaldStatistic:
 
         Closed-form Normal-Normal only — the generic path inverts in
         `theta`-space (`confidence_interval`), not in data-space. Calling
-        `acceptance_region` against a non-Normal model raises.
+        `acceptance_region` against a non-Normal model — or against an
+        NN model with `force_generic=True` — raises, since there is no
+        generic data-space inversion path.
         """
-        if _is_normal_normal(model):
+        if not self.force_generic and _is_normal_normal(model):
             return self._closed_form_acceptance_region(alpha, theta0, model)  # type: ignore[arg-type]
+        if self.force_generic and _is_normal_normal(model):
+            raise NotImplementedError(
+                "WaldStatistic.acceptance_region (data-space) has no generic "
+                "path; got force_generic=True. Use confidence_interval(...) "
+                "for the generic theta-space inversion, or unset force_generic "
+                "to recover the closed-form NN data-space region."
+            )
         raise NotImplementedError(
             f"WaldStatistic.acceptance_region (data-space) is only "
             f"available for NormalNormalModel; got {type(model).__name__}. "
@@ -205,7 +229,7 @@ class WaldStatistic:
     def confidence_interval(
         self, alpha: float, data: NDArray[np.float64], model: Model, prior: Prior | None = None
     ) -> tuple[float, float]:
-        if _is_normal_normal(model):
+        if not self.force_generic and _is_normal_normal(model):
             return self._closed_form_confidence_interval(alpha, data, model)  # type: ignore[arg-type]
         return self._generic_confidence_interval(alpha, data, model)
 

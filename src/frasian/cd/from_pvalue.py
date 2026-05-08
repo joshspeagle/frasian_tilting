@@ -183,12 +183,13 @@ def build_cd_from_pvalue(
     # 4. Inversion-based C(θ) — preserved verbatim as auxiliary diagnostic.
     signed = _signed_confidence_curve(theta_grid, pvals)
 
+    stat_cell_name = getattr(statistic, "cell_name", statistic.name)
     cell_name = (
         name
         if name is not None
         else (
             f"({getattr(tilting, 'cell_name', tilting.name)}, "
-            f"{statistic.name})@D={float(D):+.3f}"
+            f"{stat_cell_name})@D={float(D):+.3f}"
         )
     )
 
@@ -199,7 +200,7 @@ def build_cd_from_pvalue(
         signed_confidence=signed,
         metadata={
             "tilting": getattr(tilting, "cell_name", tilting.name),
-            "statistic": statistic.name,
+            "statistic": stat_cell_name,
             "D": float(D),
             "n_grid": int(theta_grid.size),
             "Z_normalisation": Z,

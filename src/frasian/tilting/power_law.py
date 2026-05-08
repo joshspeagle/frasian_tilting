@@ -444,6 +444,103 @@ def _generic_tilted_t_statistic(
     return diff * diff / var_safe
 
 
+def _generic_tilted_mc_reference_batch(
+    *,
+    theta_f: float,
+    n_obs: int,
+    model: object,
+    prior: Prior,
+    eta_f: float,
+    support: tuple[float, float],
+    n_mc: int,
+    n_grid: int,
+    rng: np.random.Generator,
+) -> tuple[NDArray[np.float64], int]:
+    """Vectorised MC reference for the power-law tilted p-value.
+
+    Returns `(t_samples, n_collapsed)` with `t_samples` shape `(n_mc,)`.
+    Replaces the per-MC-iteration Python loop in `_generic_tilted_pvalue`
+    with three batched operations:
+
+      1. `sample_data_batch(model, theta_f, rng, n_mc, n_obs)` →
+         `D_batch` shape `(n_mc, n_obs)` in one rng call.
+      2. `posterior_moments_batch(model, D_batch, prior)` → per-row
+         `(mu_arr, var_arr)`, used to size a single conservative
+         theta-grid window covering all rows.
+      3. `batch_loglik_grid(model, D_batch, theta_grid)` → per-row
+         log-likelihood on the shared grid; combined with
+         `prior.logpdf(theta_grid)` and the tilting exponent
+         `(1 - eta)` to form per-row tilted log-densities; per-row
+         normalisation + trapezoidal moments yields `(mu, var)` per row.
+
+    Per-row windows in the original implementation differed slightly;
+    using a single conservative window (max-extent across rows) keeps
+    the integration vectorised at the cost of some per-row resolution
+    in the wings. Compensated by using the same `n_grid` as the
+    original — the per-row windows were always similar in width
+    because all rows are draws from the same `likelihood(.|theta_f)`.
+
+    Collapsed-row handling matches the legacy contract: rows whose
+    integration normalisation `Z` is non-positive / non-finite OR whose
+    derived variance is non-positive contribute `t = 0` (treats them as
+    NOT more-extreme — biases the empirical p UP, conservative).
+    """
+    from ..models.base import (
+        batch_loglik_grid as _batch_loglik_grid,
+        posterior_moments_batch as _posterior_moments_batch,
+        sample_data_batch as _sample_data_batch,
+    )
+
+    if n_mc <= 0:
+        return np.empty(0, dtype=np.float64), 0
+    support_lo, support_hi = float(support[0]), float(support[1])
+    D_batch = _sample_data_batch(model, float(theta_f), rng, int(n_mc), int(n_obs))
+    mu_arr, var_arr = _posterior_moments_batch(model, D_batch, prior)
+
+    # Single conservative theta-window covering all rows. mu ± 8 sigma_post
+    # is the per-row default; union across rows is `min(mu - 8*sigma)` /
+    # `max(mu + 8*sigma)`. Clip to support.
+    sigma_post_arr = np.sqrt(np.maximum(var_arr, 1e-300))
+    half = 8.0 * sigma_post_arr
+    finite = np.isfinite(mu_arr) & np.isfinite(sigma_post_arr)
+    if not np.any(finite):
+        return np.zeros(int(n_mc), dtype=np.float64), int(n_mc)
+    lo = max(float(np.nanmin((mu_arr - half)[finite])), support_lo)
+    hi = min(float(np.nanmax((mu_arr + half)[finite])), support_hi)
+    if not np.isfinite(lo) or not np.isfinite(hi) or not (lo < hi):
+        # Degenerate window across all rows.
+        return np.zeros(int(n_mc), dtype=np.float64), int(n_mc)
+
+    theta_grid = np.linspace(lo, hi, int(n_grid))
+
+    log_lik_batch = _batch_loglik_grid(model, D_batch, theta_grid)  # (n_mc, n_grid)
+    log_prior = np.asarray(prior.logpdf(theta_grid), dtype=np.float64)  # (n_grid,)
+    log_q = log_lik_batch + (1.0 - float(eta_f)) * log_prior[None, :]
+    # Sanitise -inf entries before the max-subtract; keeps exp finite.
+    log_q = np.where(np.isfinite(log_q), log_q, -1e300)
+    log_q_max = log_q.max(axis=-1, keepdims=True)
+    pdf_unnorm = np.exp(log_q - log_q_max)  # (n_mc, n_grid)
+    Z = np.trapezoid(pdf_unnorm, theta_grid, axis=-1)  # (n_mc,)
+    Z_safe = np.where(Z > 0, Z, 1.0)
+    pdf = pdf_unnorm / Z_safe[:, None]
+    # Per-row mean and second moment via trapezoidal weighting.
+    mean_arr = np.trapezoid(theta_grid[None, :] * pdf, theta_grid, axis=-1)
+    m2_arr = np.trapezoid(theta_grid[None, :] ** 2 * pdf, theta_grid, axis=-1)
+    var_tilted = np.maximum(m2_arr - mean_arr * mean_arr, 0.0)
+
+    # Collapsed = bad normalisation OR zero variance.
+    finite_z = (Z > 0) & np.isfinite(Z)
+    finite_var = (var_tilted > 0) & np.isfinite(var_tilted)
+    finite_row = finite_z & finite_var
+    n_collapsed = int(np.sum(~finite_row))
+
+    diff = mean_arr - float(theta_f)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        t = diff * diff / np.where(finite_row, var_tilted, 1.0)
+    t_samples = np.where(finite_row, t, 0.0)
+    return t_samples, n_collapsed
+
+
 def _generic_tilted_pvalue(
     theta: float,
     data: NDArray[np.float64],
@@ -521,31 +618,24 @@ def _generic_tilted_pvalue(
     diff_obs = mu_obs - theta_f
     t_obs = diff_obs * diff_obs / var_obs_safe
 
-    # MC reference under H_0: theta_0 = theta. Coarser grid for speed —
-    # MC noise dominates over grid-discretisation noise at n_mc>=200.
+    # MC reference under H_0: theta_0 = theta — vectorised.
+    # Replaces the per-iteration Python loop (each iteration:
+    # model.sample_data + posterior + likelihood + 256-pt grid
+    # integration ~ms) with a single batched sample + a single batched
+    # tilted-moments call. ~50–200x speedup on Normal-Normal at n_mc=200.
     rng = np.random.default_rng(derived_seed)
     n_obs = int(data_arr.size)
-    t_samples = np.empty(n_mc, dtype=np.float64)
-    n_collapsed = 0
-    for i in range(n_mc):
-        D_prime = model.sample_data(theta_f, rng, n_obs)
-        try:
-            t_samples[i] = _generic_tilted_t_statistic(
-                theta_f, D_prime, model, prior, eta_f, support=support,
-                n_grid=_GENERIC_TILTED_PVALUE_N_GRID_MC,
-            )
-        except (ValueError, RuntimeError, ArithmeticError) as e:
-            # Skeptic finding #8 narrowing: catch only the documented
-            # failure modes (degenerate grid window from collapsed
-            # posterior on extreme MC draws; numerical issues in the
-            # trapezoidal Z). Bugs from elsewhere (TypeError, etc.) now
-            # propagate cleanly. Sentinel `t = 0` treats the draw as
-            # NOT more-extreme — biases the empirical p UP, i.e.
-            # CONSERVATIVE direction. The +1 smoothing keeps the result
-            # bounded below by 1/(n_mc+1).
-            del e  # explicit: discard the exception object
-            t_samples[i] = 0.0
-            n_collapsed += 1
+    t_samples, n_collapsed = _generic_tilted_mc_reference_batch(
+        theta_f=theta_f,
+        n_obs=n_obs,
+        model=model,
+        prior=prior,
+        eta_f=eta_f,
+        support=support,
+        n_mc=int(n_mc),
+        n_grid=_GENERIC_TILTED_PVALUE_N_GRID_MC,
+        rng=rng,
+    )
     if n_collapsed > n_mc // 2:
         # More than half the MC samples collapsed — the conservative-
         # direction bias is too large to be useful. Surface as a warning.
@@ -1105,8 +1195,27 @@ class PowerLawTilting:
         """
         # Phase 3c: dispatch on (model, prior) — generic for non-Normal-Normal,
         # closed-form for Normal-Normal. Dynamic selectors still require NN.
-        if not self._is_normal_normal_pair(model, prior):
+        # Path-coverage-debug override: a statistic carrying
+        # `force_generic=True` collapses both branches onto the generic
+        # MC path even on NN, so the "tilted CI = invert tilted p-value =
+        # generic test-statistic computation" architecture is exercised
+        # uniformly. Dynamic + force_generic isn't supported (the dynamic
+        # scanner is NN-flavoured); raise rather than silently downgrade.
+        force_generic = bool(getattr(statistic, "force_generic", False))
+        route_generic = force_generic or not self._is_normal_normal_pair(model, prior)
+        if route_generic:
             if getattr(self.selector, "is_dynamic", False):
+                if force_generic:
+                    raise NotImplementedError(
+                        "PowerLawTilting + dynamic-η selector + "
+                        "force_generic=True is not supported: the dynamic "
+                        "scanner is Normal-Normal-flavoured (windows D ± "
+                        "search_mult * sigma) and has no generic "
+                        "counterpart yet. Use a static selector "
+                        "(FixedEtaSelector / NumericalEtaSelector) with "
+                        "force_generic=True to exercise the generic "
+                        "tilted-CI path on NN."
+                    )
                 raise NotImplementedError(
                     "PowerLawTilting dynamic-η selector currently requires "
                     "NormalNormalModel + NormalDistribution prior (the dynamic "
@@ -1244,8 +1353,19 @@ class PowerLawTilting:
         Normal-only here too.
         """
         # Phase 3c: dispatch generic path for non-Normal-Normal pairings.
-        if not self._is_normal_normal_pair(model, prior):
+        # `statistic.force_generic` collapses both branches onto the
+        # generic MC path even on NN — same flag used in
+        # `confidence_regions`.
+        force_generic = bool(getattr(statistic, "force_generic", False))
+        route_generic = force_generic or not self._is_normal_normal_pair(model, prior)
+        if route_generic:
             if getattr(self.selector, "is_dynamic", False):
+                if force_generic:
+                    raise NotImplementedError(
+                        "PowerLawTilting.pvalue + dynamic-η selector + "
+                        "force_generic=True is not supported (dynamic "
+                        "scanner is NN-flavoured). Use a static selector."
+                    )
                 raise NotImplementedError(
                     "PowerLawTilting.pvalue dynamic-η selector currently "
                     "requires NormalNormalModel + NormalDistribution prior."

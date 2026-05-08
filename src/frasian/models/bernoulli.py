@@ -92,3 +92,99 @@ class BernoulliModel:
 
     def support(self) -> tuple[float, float]:
         return (0.0, 1.0)
+
+    # ----- Batched / vectorised hot-path overrides (Model protocol opt-ins) -----
+
+    def sample_data_batch(
+        self, theta: float, rng: Generator, n_mc: int, n_obs: int
+    ) -> NDArray[np.float64]:
+        """Draw `n_mc` independent Bernoulli(theta) datasets, n_obs each.
+
+        Single `rng.binomial` call returning shape `(n_mc, n_obs)`.
+        Replaces the default per-row Python loop in
+        `frasian.models.base.default_sample_data_batch`.
+        """
+        theta_f = float(np.asarray(theta))
+        if not (0.0 <= theta_f <= 1.0):
+            raise ValueError(f"theta must lie in [0, 1], got {theta_f!r}")
+        return rng.binomial(1, theta_f, size=(int(n_mc), int(n_obs))).astype(np.float64)
+
+    def batch_loglik_grid(
+        self, data_batch: NDArray[np.float64], theta_grid: NDArray[np.float64]
+    ) -> NDArray[np.float64]:
+        """Vectorised Bernoulli log-likelihood across rows × grid.
+
+        For row i, the likelihood is parameterised by `(k_i, n_obs)`
+        with `k_i = sum(data_batch[i])`. The full formula (matching
+        `BernoulliLikelihood.loglik`, omitting the n_obs / k_i
+        combinatorial constant which cancels in tilted normalisation) is:
+
+            loglik(theta; k_i, n_obs)
+              = k_i * log(theta) + (n_obs - k_i) * log(1 - theta)
+
+        Returns shape `(n_mc, n_grid)`. The clip-eps boundary handling
+        mirrors the scalar `BernoulliLikelihood.loglik`.
+        """
+        arr = np.atleast_2d(np.asarray(data_batch, dtype=np.float64))
+        grid = np.asarray(theta_grid, dtype=np.float64)
+        n_obs = arr.shape[-1]
+        k = arr.sum(axis=-1)  # (n_mc,)
+        eps = 1e-300
+        log_theta = np.log(np.clip(grid, eps, 1.0))  # (n_grid,)
+        log_1m = np.log(np.clip(1.0 - grid, eps, 1.0))  # (n_grid,)
+        return k[:, None] * log_theta[None, :] + (n_obs - k)[:, None] * log_1m[None, :]
+
+    def posterior_quantile_batch(
+        self,
+        data_batch: NDArray[np.float64],
+        prior: Prior,
+        u_grid: NDArray[np.float64],
+    ) -> NDArray[np.float64]:
+        """Vectorised Beta posterior quantile across rows × u-grid.
+
+        For row i: posterior = Beta(prior.alpha + k_i, prior.beta + n - k_i).
+        scipy.special.betaincinv broadcasts over `(alpha, beta, u)` so a
+        single call returns the full `(n_mc, n_u)` matrix.
+        """
+        if not isinstance(prior, BetaDistribution):
+            raise NotImplementedError(
+                "BernoulliModel.posterior_quantile_batch currently requires a "
+                "BetaDistribution prior."
+            )
+        from scipy.special import betaincinv  # scipy: beta inverse-incomplete
+
+        arr = np.atleast_2d(np.asarray(data_batch, dtype=np.float64))
+        u_arr = np.asarray(u_grid, dtype=np.float64)
+        n_obs = arr.shape[-1]
+        k = arr.sum(axis=-1)
+        alpha = prior.alpha + k  # (n_mc,)
+        beta = prior.beta + (n_obs - k)
+        return betaincinv(alpha[:, None], beta[:, None], u_arr[None, :])
+
+    def posterior_moments_batch(
+        self, data_batch: NDArray[np.float64], prior: Prior
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        """Vectorised Beta-conjugate posterior moments over rows.
+
+        For each row i:
+            k_i = sum(data_batch[i]),  n = data_batch.shape[1]
+            alpha_i = prior.alpha + k_i,  beta_i = prior.beta + n - k_i
+            mu_i  = alpha_i / (alpha_i + beta_i)
+            var_i = alpha_i * beta_i / ((alpha_i + beta_i)^2 * (alpha_i + beta_i + 1))
+
+        Returns `(mu_arr, var_arr)` each shape `(n_mc,)`.
+        """
+        if not isinstance(prior, BetaDistribution):
+            raise NotImplementedError(
+                "BernoulliModel.posterior_moments_batch currently requires a "
+                "BetaDistribution prior."
+            )
+        arr = np.atleast_2d(np.asarray(data_batch, dtype=np.float64))
+        n_obs = arr.shape[-1]
+        k = arr.sum(axis=-1)  # shape (n_mc,)
+        alpha = prior.alpha + k
+        beta = prior.beta + (n_obs - k)
+        ab = alpha + beta
+        mu = alpha / ab
+        var = (alpha * beta) / (ab * ab * (ab + 1.0))
+        return mu.astype(np.float64), var.astype(np.float64)

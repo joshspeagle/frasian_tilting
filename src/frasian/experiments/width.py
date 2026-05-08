@@ -23,10 +23,12 @@ multimodal p-values; for single-region cells the two coincide.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Any, ClassVar
 
 import numpy as np
 
+from .._parallel import parallel_map
 from .._registry import register_experiment
 from ..config import Config
 from ..diagnostics.base import Diagnostic
@@ -38,6 +40,37 @@ from ..statistics.base import TestStatistic
 from ..tilting.base import TiltingScheme
 from .base import ExperimentContext, RawResult
 from .coverage import _call_with_config, _sigma0_from_w
+
+
+def _width_replicate(
+    D: float,
+    *,
+    alpha: float,
+    model: Any,
+    prior: Any,
+    tilting: Any,
+    statistic: Any,
+    config: Config,
+) -> tuple[float, int] | None:
+    """Compute one replicate's (union_width, n_regions) or None if unsupported.
+
+    Top-level for joblib pickling. The caller aggregates `width_se` and
+    `mean_n_regions` from the returned tuples.
+    """
+    try:
+        regions = _call_with_config(
+            tilting.confidence_regions,
+            alpha,
+            np.asarray([D]),
+            model,
+            prior,
+            statistic,
+            config=config,
+        )
+    except NotImplementedError:
+        return None
+    width = float(sum(hi - lo for lo, hi in regions))
+    return (width, int(len(regions)))
 
 
 @register_experiment(name="width", brief="docs/methods/width_experiment.md")
@@ -94,52 +127,49 @@ class WidthExperiment:
         width_se = np.full((n_theta, n_w), np.nan, dtype=np.float64)
         mean_n_regions = np.full((n_theta, n_w), np.nan, dtype=np.float64)
 
+        n_jobs = int(getattr(ctx.config, "n_jobs", 1))
         for j, w in enumerate(w_grid):
             sigma0 = _sigma0_from_w(float(w), self.sigma)
             prior = NormalDistribution(loc=self.mu0, scale=sigma0)
             for i in range(n_theta):
-                widths = np.full(n_reps, np.nan, dtype=np.float64)
-                n_regions_arr = np.full(n_reps, np.nan, dtype=np.float64)
-                supported = True
-                for k in range(n_reps):
-                    D = raw.D[i, k]
-                    try:
-                        # Pass ctx.config so the dynamic-CI scan reads
-                        # `dynamic_n_grid/coarse_n/search_mult` from
-                        # Config. Skeptic Phase 5 vector #2.
-                        regions = _call_with_config(
-                            tilting.confidence_regions,
-                            alpha,
-                            np.asarray([D]),
-                            model,
-                            prior,
-                            statistic,
-                            config=ctx.config,
-                        )
-                    except NotImplementedError:
-                        supported = False
-                        break
-                    widths[k] = float(sum(hi - lo for lo, hi in regions))
-                    n_regions_arr[k] = float(len(regions))
-                if supported:
-                    # Audit P1 K.1: use `np.nanmean` / `np.nanstd` to be
-                    # robust against per-rep failures that fill `widths[k]`
-                    # with NaN (e.g. a single brentq bracket failure
-                    # mid-loop that we want to skip rather than abort).
-                    mean_width[i, j] = float(np.nanmean(widths))
-                    if np.sum(~np.isnan(widths)) >= 2:
-                        width_se[i, j] = float(
-                            np.nanstd(widths, ddof=1) / np.sqrt(n_reps)
-                        )
-                    else:
-                        width_se[i, j] = np.nan
-                    mean_n_regions[i, j] = float(np.nanmean(n_regions_arr))
+                D_arr = raw.D[i, :]
+                fn = partial(
+                    _width_replicate,
+                    alpha=alpha,
+                    model=model,
+                    prior=prior,
+                    tilting=tilting,
+                    statistic=statistic,
+                    config=ctx.config,
+                )
+                # Same `parallel_map` discipline as coverage. Per-rep
+                # tuples come back as `(width, n_regions)` or None for
+                # unsupported cells.
+                results = parallel_map(fn, list(D_arr), n_jobs=n_jobs)
+                if any(r is None for r in results):
+                    continue  # unsupported → leave NaN row
+
+                widths = np.array([w_ for (w_, _) in results], dtype=np.float64)
+                n_regions_arr = np.array([n for (_, n) in results], dtype=np.float64)
+                # Audit P1 K.1: use `np.nanmean` / `np.nanstd` to be
+                # robust against per-rep failures that fill `widths[k]`
+                # with NaN (e.g. a single brentq bracket failure
+                # mid-loop that we want to skip rather than abort).
+                mean_width[i, j] = float(np.nanmean(widths))
+                if np.sum(~np.isnan(widths)) >= 2:
+                    width_se[i, j] = float(
+                        np.nanstd(widths, ddof=1) / np.sqrt(n_reps)
+                    )
+                else:
+                    width_se[i, j] = np.nan
+                mean_n_regions[i, j] = float(np.nanmean(n_regions_arr))
 
         cell_name = getattr(tilting, "cell_name", tilting.name)
+        stat_cell_name = getattr(statistic, "cell_name", statistic.name)
         return RawResult(
             experiment=self.name,
             tilting=cell_name,
-            statistic=statistic.name,
+            statistic=stat_cell_name,
             arrays={
                 "theta_grid": theta_grid,
                 "w_grid": w_grid,

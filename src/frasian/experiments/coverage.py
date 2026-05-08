@@ -34,10 +34,12 @@ Conventions:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Any, ClassVar
 
 import numpy as np
 
+from .._parallel import parallel_map
 from .._registry import register_experiment
 from ..config import Config
 from ..diagnostics.base import Diagnostic
@@ -55,6 +57,38 @@ def _sigma0_from_w(w: float, sigma: float) -> float:
     if not (0.0 < w < 1.0):
         raise ValueError(f"w must lie in (0, 1), got {w!r}")
     return float(np.sqrt(w / (1.0 - w)) * sigma)
+
+
+def _coverage_replicate(
+    D: float,
+    *,
+    alpha: float,
+    model: Any,
+    prior: Any,
+    tilting: Any,
+    statistic: Any,
+    config: Config,
+) -> list[tuple[float, float]] | None:
+    """Compute one replicate's CI regions or return None if unsupported.
+
+    Top-level so it pickles cleanly under joblib loky workers. Returns
+    a list of `(lo, hi)` region pairs (single-element for non-multi-
+    region cells) or `None` if the cell raised `NotImplementedError`
+    (the inner-loop sentinel that triggers the bucket NaN row).
+    """
+    try:
+        regions = _call_with_config(
+            tilting.confidence_regions,
+            alpha,
+            np.asarray([D]),
+            model,
+            prior,
+            statistic,
+            config=config,
+        )
+    except NotImplementedError:
+        return None
+    return [(float(lo), float(hi)) for lo, hi in regions]
 
 
 def _call_with_config(fn, *args: Any, config: Config, **kwargs: Any) -> Any:
@@ -133,52 +167,61 @@ class CoverageExperiment:
         coverage = np.full((n_theta, n_w), np.nan, dtype=np.float64)
         coverage_se = np.full((n_theta, n_w), np.nan, dtype=np.float64)
 
+        n_jobs = int(getattr(ctx.config, "n_jobs", 1))
         for j, w in enumerate(w_grid):
             sigma0 = _sigma0_from_w(float(w), self.sigma)
             prior = NormalDistribution(loc=self.mu0, scale=sigma0)
             for i in range(n_theta):
-                hits = 0
                 theta_true = float(theta_grid[i])
-                for k in range(n_reps):
-                    D = raw.D[i, k]
-                    try:
-                        # Pass ctx.config so the dynamic-CI scan reads
-                        # `dynamic_n_grid/coarse_n/search_mult` from
-                        # Config, not from the selector defaults.
-                        # Skeptic Phase 5 vector #2.
-                        regions = _call_with_config(
-                            tilting.confidence_regions,
-                            alpha,
-                            np.asarray([D]),
-                            model,
-                            prior,
-                            statistic,
-                            config=ctx.config,
-                        )
-                    except NotImplementedError:
-                        # Cell that does not support CI inversion: leave NaN.
-                        break
-                    if any(lo <= theta_true <= hi for lo, hi in regions):
-                        hits += 1
-                else:
-                    p = hits / n_reps
-                    coverage[i, j] = p
-                    # Audit P1 K.2: drop the 1e-12 SE floor. Pre-fix
-                    # `max(p*(1-p), 1e-12)` returned a fake non-zero SE
-                    # (~1e-7/sqrt(n_reps)) at p=0 / p=1, hiding the
-                    # honest "no MC variation observed" signal. The
-                    # downstream consumer (CoverageRateDiagnostic /
-                    # plotting) treats SE=0 as "skip error bar" and
-                    # SE>0 as "plot SE band"; the floor blurred this
-                    # boundary. Now SE is exactly 0 at extreme p,
-                    # which downstream can detect explicitly.
-                    coverage_se[i, j] = float(np.sqrt(p * (1.0 - p) / n_reps))
+                D_arr = raw.D[i, :]  # shape (n_reps,)
+
+                # Dispatch the n_reps replicates via `parallel_map`. With
+                # `n_jobs=1` (default) this is a plain list comp — byte-
+                # identical to the legacy loop. With `n_jobs>1` joblib
+                # spreads replicates across worker processes; the
+                # `_coverage_replicate` helper at module scope pickles
+                # cleanly. Per-replicate D values come from a pre-
+                # generated raw stream so reordering evaluation does
+                # not affect numerical output.
+                fn = partial(
+                    _coverage_replicate,
+                    alpha=alpha,
+                    model=model,
+                    prior=prior,
+                    tilting=tilting,
+                    statistic=statistic,
+                    config=ctx.config,
+                )
+                regions_per_rep = parallel_map(fn, list(D_arr), n_jobs=n_jobs)
+
+                if any(r is None for r in regions_per_rep):
+                    # Cell that does not support CI inversion: leave NaN.
+                    continue
+
+                hits = sum(
+                    1
+                    for regions in regions_per_rep
+                    if any(lo <= theta_true <= hi for lo, hi in regions)
+                )
+                p = hits / n_reps
+                coverage[i, j] = p
+                # Audit P1 K.2: drop the 1e-12 SE floor. Pre-fix
+                # `max(p*(1-p), 1e-12)` returned a fake non-zero SE
+                # (~1e-7/sqrt(n_reps)) at p=0 / p=1, hiding the
+                # honest "no MC variation observed" signal. The
+                # downstream consumer (CoverageRateDiagnostic /
+                # plotting) treats SE=0 as "skip error bar" and
+                # SE>0 as "plot SE band"; the floor blurred this
+                # boundary. Now SE is exactly 0 at extreme p,
+                # which downstream can detect explicitly.
+                coverage_se[i, j] = float(np.sqrt(p * (1.0 - p) / n_reps))
 
         cell_name = getattr(tilting, "cell_name", tilting.name)
+        stat_cell_name = getattr(statistic, "cell_name", statistic.name)
         return RawResult(
             experiment=self.name,
             tilting=cell_name,
-            statistic=statistic.name,
+            statistic=stat_cell_name,
             arrays={
                 "theta_grid": theta_grid,
                 "w_grid": w_grid,
