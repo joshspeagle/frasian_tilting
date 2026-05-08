@@ -54,6 +54,15 @@ def _resolve_dynamic_eta_mode() -> str:
         production path. Calibrated AND narrow (the headline claim).
 
     Default is `numerical`.
+
+    Audit P2 (Cluster F): the env var is read on every call rather
+    than cached at import time. This is deliberate so tests can
+    flip the mode via `monkeypatch.setenv(...)`, but the caller
+    should be aware that flipping the var mid-process produces a
+    **fresh** `EtaArtifact` with a cold artifact cache — every
+    new call to `default_tiltings()` will re-read the .eqx file
+    from disk. Set the env var once before launching Python (or
+    in a session-scoped fixture) for production runs.
     """
     import os
 

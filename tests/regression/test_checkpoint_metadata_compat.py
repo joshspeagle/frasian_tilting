@@ -166,6 +166,53 @@ def test_arch_spec_sha_changes_when_architecture_version_changes(monkeypatch):
 
 
 @pytest.mark.L2
+class TestReadMetadataOnlyLengthCap:
+    """Audit P2 (Cluster F): `_read_metadata_only` must refuse to
+    allocate multi-GiB buffers from an adversarial 4-byte length
+    prefix. The 16 MiB cap is hardcoded; pin both the ceiling and
+    the truncation refusal here.
+    """
+
+    def test_rejects_oversized_length_prefix(self, tmp_path):
+        import struct
+
+        from frasian._errors import MissingArtifactError
+        from frasian.learned.eta_artifact import _MAX_METADATA_BYTES, _read_metadata_only
+
+        bad = tmp_path / "adversarial.eqx"
+        # Declare 1 GiB of metadata; file body is ~empty.
+        with open(bad, "wb") as fh:
+            fh.write(struct.pack(">I", 1024 * 1024 * 1024))
+            fh.write(b"\x00" * 16)
+        assert 1024 * 1024 * 1024 > _MAX_METADATA_BYTES
+        with pytest.raises(MissingArtifactError, match="metadata header"):
+            _read_metadata_only(bad)
+
+    def test_rejects_truncated_file(self, tmp_path):
+        import struct
+
+        from frasian._errors import MissingArtifactError
+        from frasian.learned.eta_artifact import _read_metadata_only
+
+        bad = tmp_path / "truncated.eqx"
+        # Declare 1024 bytes; only write 16 bytes of body.
+        with open(bad, "wb") as fh:
+            fh.write(struct.pack(">I", 1024))
+            fh.write(b"\x00" * 16)
+        with pytest.raises(MissingArtifactError, match="truncated"):
+            _read_metadata_only(bad)
+
+    def test_rejects_too_small_file(self, tmp_path):
+        from frasian._errors import MissingArtifactError
+        from frasian.learned.eta_artifact import _read_metadata_only
+
+        bad = tmp_path / "tiny.eqx"
+        bad.write_bytes(b"\x00\x01")  # only 2 bytes, no full length prefix
+        with pytest.raises(MissingArtifactError, match="too small"):
+            _read_metadata_only(bad)
+
+
+@pytest.mark.L2
 def test_unknown_equinox_returns_none(monkeypatch):
     """When equinox isn't installed, ``_equinox_version`` returns None and
     ``warn_on_metadata_mismatch`` does not crash.
