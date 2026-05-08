@@ -37,12 +37,25 @@ class RawSamples:
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def fingerprint(self) -> str:
-        """Stable hash used by the cache to invalidate when raw data changes."""
+        """Stable hash used by the cache to invalidate when raw data changes.
+
+        Audit P1 L.7: include shape + dtype explicitly. Pre-fix
+        ``tobytes()`` serialised only the raw bytes — a (10, 100)
+        float64 array and a (100, 10) float64 array with the same
+        byte content would collide in the fingerprint, even though
+        their shape semantics differ. Hashing shape and dtype
+        explicitly closes that hole.
+        """
         h = hashlib.sha256()
         h.update(self.name.encode())
         h.update(str(self.sigma).encode())
         h.update(str(self.seed).encode())
+        # Audit P1 L.7: shape + dtype before raw bytes.
+        h.update(str(self.theta_grid.shape).encode())
+        h.update(str(self.theta_grid.dtype).encode())
         h.update(self.theta_grid.tobytes())
+        h.update(str(self.D.shape).encode())
+        h.update(str(self.D.dtype).encode())
         h.update(self.D.tobytes())
         h.update(json.dumps(dict(self.metadata), sort_keys=True).encode())
         return h.hexdigest()[:24]

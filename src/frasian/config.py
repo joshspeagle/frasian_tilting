@@ -96,14 +96,40 @@ class Config:
         return replace(self, **overrides)
 
     def fingerprint(self) -> str:
-        """Deterministic short hash used for cache invalidation."""
+        """Deterministic short hash used for cache invalidation.
+
+        Audit P1 L.6: includes major.minor versions of `numpy` and
+        `jax` so an environment upgrade (e.g. `jax 0.4.x` → `jax 0.5.x`,
+        which changed PRNG semantics on some operations) invalidates
+        the cache. Patch versions are excluded because they're
+        ABI-stable by SemVer convention; if a patch release ever
+        changes numerical output, callers can `--force` to bypass.
+        """
         import hashlib
         import json
 
         payload = json.dumps(self._serializable(), sort_keys=True).encode()
         return hashlib.sha256(payload).hexdigest()[:16]
 
+    @staticmethod
+    def _major_minor(version_str: str) -> str:
+        """Return `"major.minor"` from a `"major.minor.patch[...]"` string."""
+        parts = version_str.split(".")
+        return ".".join(parts[:2]) if len(parts) >= 2 else version_str
+
     def _serializable(self) -> Mapping[str, object]:
+        # Audit P1 L.6: include numpy + jax major.minor versions.
+        # Patch versions are excluded (SemVer-stable ABI by convention).
+        try:
+            import numpy as _np_pkg
+            numpy_ver = self._major_minor(_np_pkg.__version__)
+        except Exception:
+            numpy_ver = "unknown"
+        try:
+            import jax as _jax_pkg
+            jax_ver = self._major_minor(_jax_pkg.__version__)
+        except Exception:
+            jax_ver = "unknown"
         return {
             "alpha": self.alpha,
             "seed": self.seed,
@@ -120,4 +146,6 @@ class Config:
             "w_grid": self.w_grid.__dict__,
             "theta_grid": self.theta_grid.__dict__,
             "cache_enabled": self.cache_enabled,
+            "_numpy_version": numpy_ver,
+            "_jax_version": jax_ver,
         }

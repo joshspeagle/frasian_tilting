@@ -22,7 +22,6 @@ import json
 import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable
 
@@ -62,7 +61,6 @@ class CacheKey:
         return self.git_sha.startswith("dirty:")
 
 
-@lru_cache(maxsize=1)
 def git_sha(repo_root: Path | None = None) -> str:
     """Current git sha or `dirty:<hash>` if there are uncommitted changes.
 
@@ -71,9 +69,15 @@ def git_sha(repo_root: Path | None = None) -> str:
     always changes when any tracked file is modified or staged, guaranteeing
     that dirty-tree cache keys never collide with clean-tree keys.
 
-    Result is memoised because shelling out to git is the slowest call in
-    the cache pipeline. Tests that need fresh evaluation must call
-    `git_sha.cache_clear()`.
+    Audit P1 L.4: dropped `@lru_cache(maxsize=1)`. The legacy cache
+    was per-process-lifetime, so a long-running session that
+    transitioned from clean → dirty → committed via interactive
+    edits would keep the stale sha and either pollute the cache
+    with a wrong sha or, worse, treat dirty results as clean.
+    Tests previously had to call `git_sha.cache_clear()`; the
+    new contract is "always re-shells, always honest." The two
+    `subprocess.run` calls cost ~2 ms total; the cache pipeline
+    is dominated by other work.
     """
     cwd = Path(repo_root) if repo_root is not None else Path.cwd()
     try:
@@ -119,10 +123,31 @@ def get_or_compute(
     `compute` returns a `(arrays, metadata)` pair which is then persisted.
     Dirty git trees never hit the cache (we always recompute and overwrite),
     so committing the source is a hard prerequisite for reproducibility.
+
+    Audit P1 L.8: when loading from disk we validate that the stored
+    ``_cache_key`` matches the requested ``key``. Pre-fix the loader
+    trusted the directory name (digest) without reading the embedded
+    metadata; a hash collision (24-char SHA-256 prefix is ~ 10⁻¹⁴
+    bits of entropy collision risk) or a manually-relocated cache
+    dir would silently return the wrong result. Loud refusal here.
     """
     path = cache_path(cache_root, key)
     if enabled and not force and not key.is_dirty() and result_exists(path):
-        return load_result(path)
+        loaded = load_result(path)
+        # Audit P1 L.8: validate the loaded `_cache_key` matches the
+        # requested key. Mismatch signals a digest collision, a
+        # relocated cache dir, or schema drift; refuse loudly.
+        stored_key = dict(loaded.metadata).get("_cache_key", {})
+        expected_digest = key.digest()
+        actual_digest = stored_key.get("digest")
+        if actual_digest is not None and actual_digest != expected_digest:
+            raise RuntimeError(
+                f"Cache integrity error at {path}: stored "
+                f"_cache_key.digest={actual_digest!r} but requested "
+                f"key.digest()={expected_digest!r}. Either delete the "
+                f"cache directory or pass force=True to recompute."
+            )
+        return loaded
     arrays, metadata = compute()
     full_meta = {
         "_cache_key": {
