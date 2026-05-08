@@ -108,8 +108,6 @@ class TestConfidenceDistributionExperimentEndToEnd:
         )
         dyn = PowerLawTilting(
             selector=DynamicNumericalEtaSelector(
-                sigma=1.0,
-                mu0=0.0,
                 n_grid=201,
                 coarse_n=11,
             ),
