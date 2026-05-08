@@ -304,6 +304,42 @@ def _generic_tilt(
     # max(log_q)) which sends these to ~0 anyway.
     log_q = np.where(np.isfinite(log_q), log_q, -1e300)
 
+    # Audit P1 H.1: admissibility check. The closed-form Normal-Normal
+    # path raises `TiltingDomainError` when (1-w)*(1-eta) drives the
+    # tilted-posterior denominator non-positive (the tilted distribution
+    # is not normalisable — log q diverges at infinity). The generic
+    # path here cannot compute that scalar, but the same divergence
+    # surfaces as `argmax(log_q)` lying on a grid boundary: a tilted
+    # distribution that grows without bound is window-truncated, and
+    # its mode pins to the cut-off. We detect that and refuse rather
+    # than silently returning a `GridDistribution` of a non-normalisable
+    # density. (The first/last index check has a 1-bin tolerance for
+    # legitimate cases where the prior pulls the mode to a support
+    # boundary on bounded models — e.g. Beta(1, 1) on Bernoulli.)
+    finite_mask = np.isfinite(log_lik) & np.isfinite(log_prior)
+    if np.any(finite_mask):
+        idx_max = int(np.argmax(np.where(finite_mask, log_q, -np.inf)))
+        # On bounded supports (Bernoulli + Beta), the boundary may be
+        # the legitimate mode — only flag the divergence when the
+        # boundary log-density is BIGGER than the next interior point.
+        # That signals the truncation, not a real boundary mode.
+        if idx_max == 0 and log_q[0] > log_q[1] + 1e-9:
+            raise TiltingDomainError(
+                f"PowerLawTilting._generic_tilt: log q_tilt(θ; η={float(eta)!r}) "
+                f"is monotonically increasing toward the lower grid edge "
+                f"θ={theta_grid[0]!r}. The tilted posterior is not "
+                f"normalisable on this support — typically because (1-η) is "
+                f"large enough to drive the prior contribution divergent at "
+                f"infinity. Reduce |η| or use a bounded prior."
+            )
+        if idx_max == n_grid - 1 and log_q[-1] > log_q[-2] + 1e-9:
+            raise TiltingDomainError(
+                f"PowerLawTilting._generic_tilt: log q_tilt(θ; η={float(eta)!r}) "
+                f"is monotonically increasing toward the upper grid edge "
+                f"θ={theta_grid[-1]!r}. The tilted posterior is not "
+                f"normalisable on this support."
+            )
+
     return grid_distribution_from_log_density(
         theta_grid,
         log_q,

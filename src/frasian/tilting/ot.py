@@ -517,6 +517,11 @@ class OTTilting:
         # Gaussian fast path: linear interpolation in (mu, sigma). The W2
         # displacement line is well-defined for any finite t, but the
         # output is only a valid Gaussian when sigma_t > 0.
+        # Audit P1 H.6: `prior` is intentionally unused on this path —
+        # OT interpolates between posterior and the likelihood-induced
+        # Gaussian; the prior is already absorbed in `posterior`. The
+        # parameter stays in the protocol signature for uniformity
+        # with `power_law`/`mixture` etc. that DO consume the prior.
         if isinstance(posterior, NormalDistribution) and isinstance(likelihood, GaussianLikelihood):
             mu_a, sigma_a = posterior.loc, posterior.scale
             mu_b, sigma_b = float(likelihood.D), float(likelihood.sigma)
