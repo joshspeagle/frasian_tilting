@@ -62,11 +62,24 @@ def brentq_with_doubling(
         raise ValueError(f"initial_half_width must be positive, got {initial_half_width!r}")
 
     f_mid = f(midpoint)
+    # Audit P1 H.5: refuse non-finite f(midpoint) up front. Pre-fix the
+    # loop would burn `max_doublings + 1` iterations before raising
+    # BracketingFailed with a generic message; the actual problem
+    # (a NaN/inf at the bracket midpoint, e.g. the user's f raises and
+    # returns sentinel +inf, or the underlying p-value is ill-defined
+    # at this θ) is much cheaper to surface here.
+    if not np.isfinite(f_mid):
+        raise BracketingFailed(
+            f"f(midpoint) is non-finite ({f_mid!r}) at midpoint={midpoint!r}; "
+            f"cannot bracket. Check that the inversion target is well-defined "
+            f"at the midpoint (e.g. observed test statistic is finite, "
+            f"posterior is non-degenerate)."
+        )
     half = initial_half_width
     for _ in range(max_doublings + 1):
         endpoint = midpoint + direction * half
         f_end = f(endpoint)
-        if np.isfinite(f_mid) and np.isfinite(f_end) and f_mid * f_end <= 0.0:
+        if np.isfinite(f_end) and f_mid * f_end <= 0.0:
             a, b = (endpoint, midpoint) if direction < 0 else (midpoint, endpoint)
             return float(optimize.brentq(f, a, b, xtol=xtol, rtol=rtol, maxiter=maxiter))
         half *= 2.0

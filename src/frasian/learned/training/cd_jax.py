@@ -94,5 +94,17 @@ def cd_density_jax(
     else:
         x_grid = theta_grid
     Z = jnp.trapezoid(pdf_unnorm, x_grid, axis=-1)  # (B,)
-    Z = jnp.maximum(Z, eps)
-    return pdf_unnorm / Z[..., None]
+    # Audit P1 J.1: emit NaN pdf when Z is below the floor (essentially
+    # constant p — no CD support on this grid). Pre-fix the code
+    # `jnp.maximum(Z, eps)` returned a finite-but-huge pdf
+    # (`pdf_unnorm / 1e-12`), which silently contaminated downstream
+    # `cd_variance_loss` (var ~ 1e12 × spread²) without tripping the
+    # `_masked_mean` non-finite filter. Now those samples become NaN
+    # and `_masked_mean` masks them out. Callers who deliberately
+    # want the saturating behaviour can pre-floor `Z` themselves.
+    z_too_small = Z < eps
+    Z_safe = jnp.where(z_too_small, jnp.asarray(1.0, Z.dtype), Z)
+    pdf_normalised = pdf_unnorm / Z_safe[..., None]
+    return jnp.where(
+        z_too_small[..., None], jnp.full_like(pdf_normalised, jnp.nan), pdf_normalised
+    )

@@ -12,6 +12,7 @@ HDF5; that complexity is a future extension if/when datasets get large.
 from __future__ import annotations
 
 import json
+import tempfile
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -24,6 +25,42 @@ from numpy.typing import NDArray
 SCHEMA_VERSION = 1
 
 
+class _MetadataJSONEncoder(json.JSONEncoder):
+    """Audit P1 L.2: tolerant encoder for numpy + Path types.
+
+    Pre-fix `json.dumps(metadata)` raised `TypeError` whenever a
+    metadata field carried a numpy scalar (`np.float64`, `np.int64`)
+    or a `pathlib.Path`. The error surfaced at cache-write time as
+    a hard crash with no recovery path. The encoder converts:
+
+    * numpy integer scalars → Python int
+    * numpy floating scalars → Python float (NaN / inf preserved)
+    * numpy boolean scalars → Python bool
+    * numpy arrays → list (small arrays only — large arrays should
+      live in `arrays.npz`, not the metadata sidecar)
+    * `pathlib.Path` → str (POSIX, for cross-platform stability)
+    * `bytes` → hex (rare; rejected by default JSON)
+
+    Anything still unencodable falls back to the default raise so
+    we don't silently lose information.
+    """
+
+    def default(self, obj):  # noqa: D401  (json convention)
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.bool_):
+            return bool(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, Path):
+            return obj.as_posix()
+        if isinstance(obj, bytes):
+            return obj.hex()
+        return super().default(obj)
+
+
 @dataclass(frozen=True)
 class StoredResult:
     """In-memory representation of a persisted result directory."""
@@ -33,54 +70,57 @@ class StoredResult:
 
 
 def save_result(path: Path, arrays: Mapping[str, NDArray], metadata: Mapping[str, Any]) -> None:
-    """Crash-safe persist: write to `<path>.tmp`, rotate the existing
-    directory aside, swap, then delete the rotated copy.
+    """Crash-safe + concurrency-safe persist (audit P1 L.2 + L.3).
 
     `path` is a *directory*. Sequence:
-      1. Materialise the new result inside `<path>.tmp`.
-      2. If `path` already exists, rename it to `<path>.backup`.
-      3. Rename `<path>.tmp` to `path`.
-      4. Delete `<path>.backup`.
+      1. Materialise the new result inside a per-call `mkdtemp`
+         directory (e.g. `<parent>/.tmp.<random>`). Two concurrent
+         writers get distinct names so neither blocks the other.
+      2. If `path` already exists, rotate it to a per-call backup
+         (`<parent>/.backup.<random>`).
+      3. Rename `mkdtemp` dir to `path` (atomic within a filesystem).
+      4. Delete the rotated backup.
 
-    A crash between step 2 and step 3 leaves `<path>.tmp` and
-    `<path>.backup` on disk; the next call to `save_result` cleans
-    those up before retrying. The previous result is therefore *never*
-    lost across a crash window — the worst case is two leftover dirs
-    that get garbage-collected on the next write.
+    A crash mid-sequence leaves orphan `.tmp.*` / `.backup.*` dirs in
+    the parent. They are NOT auto-cleaned (we can't tell whose they
+    are without flock) but a follow-up `save_result` to a different
+    path is unaffected. Operators can `rm -rf .tmp.* .backup.*` at
+    leisure.
 
-    This is not strictly POSIX-atomic (you can't rename a non-empty
-    directory over another non-empty directory in one syscall) but it
-    is crash-recoverable, which is what callers actually need.
+    Audit P1 L.2: metadata.json uses `_MetadataJSONEncoder` so
+    numpy scalars and `Path` instances serialise cleanly instead of
+    raising `TypeError` at write time.
+
+    Audit P1 L.3: per-call mkdtemp avoids the fixed `<path>.tmp`
+    name collision when two pytest-xdist workers write concurrently.
     """
     path = Path(path)
-    tmp = path.with_name(path.name + ".tmp")
-    backup = path.with_name(path.name + ".backup")
+    parent = path.parent
+    parent.mkdir(parents=True, exist_ok=True)
 
-    # Clean up leftovers from any prior crash.
-    for stale in (tmp, backup):
-        if stale.exists():
-            for child in stale.iterdir():
-                child.unlink()
-            stale.rmdir()
-
-    # 1. Materialise the new directory under `<path>.tmp`.
-    tmp.mkdir(parents=True)
+    # 1. Materialise the new result inside a unique tmp directory.
+    tmp = Path(tempfile.mkdtemp(prefix=".tmp." + path.name + ".", dir=parent))
     np.savez_compressed(tmp / "arrays.npz", **dict(arrays))  # type: ignore[arg-type]
     full_meta = {
         "_schema_version": SCHEMA_VERSION,
         "_saved_at": time.time(),
         **dict(metadata),
     }
-    (tmp / "metadata.json").write_text(json.dumps(full_meta, indent=2, sort_keys=True))
+    (tmp / "metadata.json").write_text(
+        json.dumps(full_meta, indent=2, sort_keys=True, cls=_MetadataJSONEncoder)
+    )
 
     # 2. Rotate the existing result aside (no data loss across the gap).
+    backup: Path | None = None
     if path.exists():
+        backup = Path(tempfile.mkdtemp(prefix=".backup." + path.name + ".", dir=parent))
+        # mkdtemp created an empty dir; remove it so the rename works.
+        backup.rmdir()
         path.rename(backup)
     # 3. Swap the new directory in.
     tmp.rename(path)
-    # 4. Drop the rotated copy. A crash here leaves an orphan `.backup`;
-    # the next save_result call cleans it up.
-    if backup.exists():
+    # 4. Drop the rotated copy.
+    if backup is not None and backup.exists():
         for child in backup.iterdir():
             child.unlink()
         backup.rmdir()

@@ -55,9 +55,10 @@ import numpy as np
 from scipy import optimize
 
 from ..learned.base import LearnedArtifact
+from ..models._dispatch import is_normal_normal
 from ..models.base import Model, Prior
 from ..models.distributions import NormalDistribution
-from ..models.normal_normal import NormalNormalModel
+from ..models.normal_normal import NormalNormalModel  # noqa: F401  (legacy field-access typing)
 from ..models.normal_normal import weight as _weight
 from ..statistics.base import TestStatistic
 from .base import TiltingDomainError, TiltingScheme
@@ -196,7 +197,7 @@ class NumericalEtaSelector:
         Non-NormalNormal callers must use the generic numerical selector
         planned for Phase 3 follow-ups.
         """
-        if not isinstance(model, NormalNormalModel):
+        if not is_normal_normal(model):
             raise NotImplementedError(
                 f"NumericalEtaSelector currently requires NormalNormalModel; "
                 f"got {type(model).__name__!r}. Generic-model selector is a "
@@ -682,6 +683,8 @@ class LearnedDynamicEtaSelector:
         prior_fingerprint: tuple | None = None,
         model: Model | None = None,
         prior: Prior | None = None,
+        n_data: int | None = None,
+        theta_distribution_fingerprint: tuple | None = None,
     ) -> None:
         """Phase E: verify inference matches the trained experiment.
 
@@ -701,30 +704,87 @@ class LearnedDynamicEtaSelector:
         Closes the "subclass with same fingerprint but overridden
         ``logpdf``" silent-acceptance hole. Older checkpoints lacking
         these keys preserve the legacy fingerprint-only check.
+
+        Audit P1 H.2: model_fingerprint / prior_fingerprint are now
+        **required** (raise on None instead of silently skipping).
+        Pre-fix a misbehaving model returning ``None`` from
+        ``fingerprint()`` would slip through cross-experiment use of
+        a checkpoint trained on a different model.
+
+        Audit P1 H.3: optional ``n_data`` and
+        ``theta_distribution_fingerprint`` arguments. These are
+        training-time concepts (the checkpoint's recorded sample
+        size and θ-sampler), so callers at inference rarely have
+        them. When supplied, refuse on mismatch.
         """
         from .._errors import MissingArtifactError
 
         meta = self.artifact.metadata["experiment_config"]
         trained_model_fp = tuple(meta["model_fingerprint"])
         trained_prior_fp = tuple(meta["prior_fingerprint"])
+        trained_n_data = int(meta.get("n_data", 1))
+        trained_td_fp_raw = meta.get("theta_distribution_fingerprint")
+        trained_td_fp = tuple(trained_td_fp_raw) if trained_td_fp_raw is not None else None
 
-        # Strict per-fingerprint compare when available — this is the
-        # cross-experiment safety net. A byte-equal match rules out
-        # both NN/NN drift and any non-NN (Bernoulli/Beta, ...) cross-
-        # use; an unequal match refuses loudly.
-        if model_fingerprint is not None and tuple(model_fingerprint) != trained_model_fp:
+        # Audit P1 H.2: model_fingerprint and prior_fingerprint are
+        # required. A None on either side previously silently skipped
+        # the cross-experiment check, which was the whole point of the
+        # fingerprint contract. Refuse loudly so callers wire it up.
+        if model_fingerprint is None:
+            raise MissingArtifactError(
+                f"{self.artifact.name}._check_experiment requires "
+                f"model_fingerprint to be supplied (got None). The "
+                f"fingerprint is the primary cross-experiment safety net; "
+                f"silently skipping it lets a checkpoint trained on a "
+                f"different model load. Pass `tuple(model.fingerprint())` "
+                f"explicitly. Trained on model={trained_model_fp!r}."
+            )
+        if prior_fingerprint is None:
+            raise MissingArtifactError(
+                f"{self.artifact.name}._check_experiment requires "
+                f"prior_fingerprint to be supplied (got None). "
+                f"Pass `tuple(prior.fingerprint())` explicitly. "
+                f"Trained with prior={trained_prior_fp!r}."
+            )
+
+        if tuple(model_fingerprint) != trained_model_fp:
             raise MissingArtifactError(
                 f"{self.artifact.name} trained on model "
                 f"{trained_model_fp!r}, but inference model is "
                 f"{tuple(model_fingerprint)!r}. Train a new "
                 f"checkpoint for this experiment."
             )
-        if prior_fingerprint is not None and tuple(prior_fingerprint) != trained_prior_fp:
+        if tuple(prior_fingerprint) != trained_prior_fp:
             raise MissingArtifactError(
                 f"{self.artifact.name} trained with prior "
                 f"{trained_prior_fp!r}, but inference prior is "
                 f"{tuple(prior_fingerprint)!r}. Train a new "
                 f"checkpoint for this experiment."
+            )
+
+        # Audit P1 H.3: optional n_data + theta_distribution_fingerprint
+        # checks. These are training-time concepts; callers at inference
+        # rarely have them, so the default-None path skips. When
+        # supplied, refuse on mismatch — the trained checkpoint's MC
+        # width loss was computed at the recorded n_data, and the η*
+        # surface is calibrated for that.
+        if n_data is not None and int(n_data) != trained_n_data:
+            raise MissingArtifactError(
+                f"{self.artifact.name} trained at n_data={trained_n_data}, "
+                f"but inference n_data={int(n_data)}. The MC width loss "
+                f"calibration is per-n_data; train a new checkpoint."
+            )
+        if (
+            theta_distribution_fingerprint is not None
+            and trained_td_fp is not None
+            and tuple(theta_distribution_fingerprint) != trained_td_fp
+        ):
+            raise MissingArtifactError(
+                f"{self.artifact.name} trained with theta_distribution "
+                f"{trained_td_fp!r}, but inference θ-distribution is "
+                f"{tuple(theta_distribution_fingerprint)!r}. The η* "
+                f"surface is calibrated for the trained sampler; "
+                f"train a new checkpoint."
             )
 
         # Phase 4 skeptic #6: class-name compare guards subclass
@@ -831,8 +891,27 @@ class LearnedDynamicEtaSelector:
         self._check_alpha(alpha)
 
         theta_arr = np.asarray(grid, dtype=np.float64)
-        model_fp = getattr(model, "fingerprint", lambda: None)()
-        prior_fp = getattr(prior, "fingerprint", lambda: None)()
+        # Audit P1 H.2: fingerprint() is part of the Model / Prior
+        # protocol; if the supplied object lacks it (or returns None),
+        # surface that loudly here rather than silently skipping the
+        # cross-experiment check downstream.
+        from .._errors import MissingArtifactError
+        model_fp_fn = getattr(model, "fingerprint", None)
+        prior_fp_fn = getattr(prior, "fingerprint", None)
+        if model_fp_fn is None or model_fp_fn() is None:
+            raise MissingArtifactError(
+                f"{self.artifact.name}.select_grid: "
+                f"model.fingerprint() must return a tuple, got "
+                f"model={type(model).__name__!r} (no/None fingerprint)."
+            )
+        if prior_fp_fn is None or prior_fp_fn() is None:
+            raise MissingArtifactError(
+                f"{self.artifact.name}.select_grid: "
+                f"prior.fingerprint() must return a tuple, got "
+                f"prior={type(prior).__name__!r} (no/None fingerprint)."
+            )
+        model_fp = tuple(model_fp_fn())
+        prior_fp = tuple(prior_fp_fn())
         # w_eff is the data-weight ratio σ₀² / (σ² + σ₀²) — defined
         # only for the (NormalNormal, NormalDistribution) pair. For
         # non-NN experiments (Bernoulli + Beta) it is meaningless;
@@ -840,11 +919,7 @@ class LearnedDynamicEtaSelector:
         # sanity check and `_maybe_clamp_eta` skips the NN-specific
         # admissibility window.
         w_eff: float | None
-        if (
-            model_fp is not None and prior_fp is not None
-            and tuple(model_fp)[0] == "normal_normal"
-            and tuple(prior_fp)[0] == "normal"
-        ):
+        if model_fp[0] == "normal_normal" and prior_fp[0] == "normal":
             w_eff = float(prior.scale) ** 2 / (
                 float(model.sigma) ** 2 + float(prior.scale) ** 2
             )
@@ -852,8 +927,8 @@ class LearnedDynamicEtaSelector:
             w_eff = None
         self._check_experiment(
             w_eff,
-            model_fingerprint=tuple(model_fp) if model_fp is not None else None,
-            prior_fingerprint=tuple(prior_fp) if prior_fp is not None else None,
+            model_fingerprint=model_fp,
+            prior_fingerprint=prior_fp,
             model=model,
             prior=prior,
         )

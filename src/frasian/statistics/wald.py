@@ -24,15 +24,20 @@ from numpy.typing import ArrayLike, NDArray
 
 from .. import _jax_setup as _x64  # noqa: F401  — ensure float64 active
 from .._registry import register_statistic
+from ..models._dispatch import is_normal_normal
 from ..models.base import Model, Prior
-from ..models.normal_normal import NormalNormalModel
+from ..models.normal_normal import NormalNormalModel  # noqa: F401  (legacy field-access)
 from .base import AsymptoticDistribution
 
 _FORCE_X64 = _x64  # keep static-analysis from stripping the import
 
 
 def _is_normal_normal(model: Model) -> bool:
-    return isinstance(model, NormalNormalModel)
+    # Audit P1 G.5: fingerprint-based check decouples the closed-form
+    # NN dispatch from the concrete `NormalNormalModel` class — a
+    # future wrapper / reimplementation can opt in by declaring its
+    # fingerprint as `("normal_normal", ...)`.
+    return is_normal_normal(model)
 
 
 @register_statistic(name="wald", brief="docs/methods/wald.md")

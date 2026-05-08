@@ -51,10 +51,32 @@ def _check_brief(entry, errors: list[str]) -> None:
     for section in REQUIRED_SECTIONS:
         # Match Markdown header `## <section>` (case-insensitive, exact).
         pattern = re.compile(rf"^##\s+{re.escape(section)}\s*$", re.IGNORECASE | re.MULTILINE)
-        if not pattern.search(text):
+        m = pattern.search(text)
+        if not m:
             errors.append(
                 f"  - {entry.kind} '{entry.name}': brief at {entry.brief!r} "
                 f"missing section '## {section}'"
+            )
+            continue
+        # Audit P1 M.7: section bodies must be non-empty. Pre-fix a
+        # bare `## Derivation` header with no body would pass; this
+        # let `/propose-method` ship empty briefs that the reviewer
+        # had to manually inspect. Now we slice from the end of the
+        # matched header to the next `##` (or EOF) and require some
+        # non-whitespace, non-comment content.
+        body_start = m.end()
+        next_hdr = re.search(r"^##\s+\S", text[body_start:], re.MULTILINE)
+        body = text[body_start:body_start + next_hdr.start()] if next_hdr else text[body_start:]
+        # Strip whitespace and HTML comments; require at least one
+        # alphabetic character in the body.
+        stripped = re.sub(r"<!--.*?-->", "", body, flags=re.DOTALL).strip()
+        # Allow `TODO` / `(intentionally empty)` only with explicit
+        # opt-out so a placeholder isn't silently accepted.
+        if not re.search(r"[A-Za-z]", stripped):
+            errors.append(
+                f"  - {entry.kind} '{entry.name}': brief at {entry.brief!r} "
+                f"section '## {section}' has empty body (must contain "
+                f"non-whitespace content)."
             )
 
 

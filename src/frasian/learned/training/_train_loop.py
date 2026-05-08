@@ -379,7 +379,15 @@ def _training_step(
             beta,
             log_p_lik_grid_t,
         )
-    except (ValueError, RuntimeError) as e:
+    except (ValueError, RuntimeError, ArithmeticError) as e:
+        # Audit P1 J.8: also catch ArithmeticError (parent of
+        # FloatingPointError / ZeroDivisionError / OverflowError).
+        # Pre-fix only ValueError/RuntimeError were caught; a JAX
+        # FloatingPointError (raised when `jax_debug_nans=True` and a
+        # NaN propagates) or numpy OverflowError would crash the
+        # training loop instead of skipping the offending step. Both
+        # are recoverable: skip the step, gradient clip survives
+        # downstream.
         if args.verbose:
             warnings.warn(
                 f"[width loss] step {step_idx} skipped: {e}", RuntimeWarning, stacklevel=2
@@ -454,7 +462,9 @@ def _evaluate_epoch(
                 args.log_p_lik_val_t,
             )
         )
-    except (ValueError, RuntimeError):
+    except (ValueError, RuntimeError, ArithmeticError):
+        # Audit P1 J.8: catch ArithmeticError parent on the eval path
+        # too (mirrors the training-step guard).
         v_loss = float("inf")
     if not np.isfinite(v_loss):
         v_loss = float("inf")

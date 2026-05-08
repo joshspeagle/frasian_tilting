@@ -181,16 +181,26 @@ def run_experiment(
         # per-cell try/except records `status="error"` with a noisy
         # traceback. Both stubs are declared at registration time —
         # surface that as a clean `incompatible` row.
-        if _is_stub(tilting, "tilting") or _is_stub(statistic, "statistic"):
-            stub_kind = "tilting" if _is_stub(tilting, "tilting") else "statistic"
-            stub_name = cell_tilting_name if stub_kind == "tilting" else cell_statistic_name
+        # Audit P0-review #3: report ALL stubs, not just the first one.
+        # When both tilting and statistic are stubs the previous
+        # short-circuit hid the second; the manifest reason should make
+        # both visible so the user knows both briefs need attention.
+        stub_parts: list[str] = []
+        if _is_stub(tilting, "tilting"):
+            stub_parts.append(f"tilting '{cell_tilting_name}'")
+        if _is_stub(statistic, "statistic"):
+            stub_parts.append(f"statistic '{cell_statistic_name}'")
+        if stub_parts:
             summary.cells.append(
                 CellSummary(
                     tilting=cell_tilting_name,
                     statistic=cell_statistic_name,
                     cache_path="",
                     status="incompatible",
-                    reason=f"stub {stub_kind} '{stub_name}' (see its method brief)",
+                    reason=(
+                        f"stub {' and stub '.join(stub_parts)} "
+                        f"(see method brief)"
+                    ),
                 )
             )
             continue

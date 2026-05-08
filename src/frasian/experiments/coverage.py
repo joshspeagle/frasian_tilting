@@ -1,5 +1,15 @@
 """CoverageExperiment: empirical frequentist coverage on a (theta, w) grid.
 
+**Normal-Normal-only by construction** (audit P1 K.4 / Path A). The
+experiment hard-codes `model = NormalNormalModel(sigma=self.sigma)` and
+`prior = NormalDistribution(loc=mu0, scale=sigma0_from_w(w))`. The
+`(theta, w)` grid is well-defined only on the conjugate Gaussian
+sandbox: `w = sigma0^2/(sigma^2 + sigma0^2)` is a Gaussian-only
+quantity, and the data-generating distribution is `N(theta_true, sigma)`.
+Bernoulli / Beta and other non-NN models do not enter this experiment;
+extending requires a model-protocol-level abstraction over the
+"prior axis" (out of scope today).
+
 For each cell (TiltingScheme x TestStatistic) and each (theta_true, w):
   1. Generate `n_reps` samples D ~ N(theta_true, sigma).
   2. Compute the (1 - alpha) CI *regions* from each D via
@@ -115,8 +125,13 @@ class CoverageExperiment:
 
         n_theta = theta_grid.size
         n_w = w_grid.size
-        coverage = np.empty((n_theta, n_w), dtype=np.float64)
-        coverage_se = np.empty_like(coverage)
+        # Audit P1 K.1: initialise with NaN, not `np.empty` (which
+        # leaves uninitialised garbage). If a cell early-exits via an
+        # unhandled exception, the (i, j) slot stays NaN — downstream
+        # `np.nanmean` etc. then ignore it cleanly. Pre-fix the slot
+        # would be filled with whatever was in memory at allocation.
+        coverage = np.full((n_theta, n_w), np.nan, dtype=np.float64)
+        coverage_se = np.full((n_theta, n_w), np.nan, dtype=np.float64)
 
         for j, w in enumerate(w_grid):
             sigma0 = _sigma0_from_w(float(w), self.sigma)
@@ -141,17 +156,23 @@ class CoverageExperiment:
                             config=ctx.config,
                         )
                     except NotImplementedError:
-                        # Cell that does not support CI inversion: record NaN.
-                        coverage[i, j] = np.nan
-                        coverage_se[i, j] = np.nan
+                        # Cell that does not support CI inversion: leave NaN.
                         break
                     if any(lo <= theta_true <= hi for lo, hi in regions):
                         hits += 1
                 else:
                     p = hits / n_reps
                     coverage[i, j] = p
-                    # Wald-binomial SE; clipped to avoid 0 at extremes.
-                    coverage_se[i, j] = float(np.sqrt(max(p * (1.0 - p), 1e-12) / n_reps))
+                    # Audit P1 K.2: drop the 1e-12 SE floor. Pre-fix
+                    # `max(p*(1-p), 1e-12)` returned a fake non-zero SE
+                    # (~1e-7/sqrt(n_reps)) at p=0 / p=1, hiding the
+                    # honest "no MC variation observed" signal. The
+                    # downstream consumer (CoverageRateDiagnostic /
+                    # plotting) treats SE=0 as "skip error bar" and
+                    # SE>0 as "plot SE band"; the floor blurred this
+                    # boundary. Now SE is exactly 0 at extreme p,
+                    # which downstream can detect explicitly.
+                    coverage_se[i, j] = float(np.sqrt(p * (1.0 - p) / n_reps))
 
         cell_name = getattr(tilting, "cell_name", tilting.name)
         return RawResult(

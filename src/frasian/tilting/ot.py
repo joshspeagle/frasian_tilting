@@ -63,6 +63,7 @@ from scipy import stats as _scalar_scipy_stats
 from .. import _jax_setup as _x64  # noqa: F401  — ensure float64 active
 from .._errors import TiltingDomainError
 from .._registry import register_tilting
+from ..models._dispatch import is_normal_normal
 from ..models.base import Likelihood, Model, Posterior, Prior
 from ..models.distributions import GaussianLikelihood, NormalDistribution
 from ..statistics.base import TestStatistic
@@ -516,6 +517,11 @@ class OTTilting:
         # Gaussian fast path: linear interpolation in (mu, sigma). The W2
         # displacement line is well-defined for any finite t, but the
         # output is only a valid Gaussian when sigma_t > 0.
+        # Audit P1 H.6: `prior` is intentionally unused on this path —
+        # OT interpolates between posterior and the likelihood-induced
+        # Gaussian; the prior is already absorbed in `posterior`. The
+        # parameter stays in the protocol signature for uniformity
+        # with `power_law`/`mixture` etc. that DO consume the prior.
         if isinstance(posterior, NormalDistribution) and isinstance(likelihood, GaussianLikelihood):
             mu_a, sigma_a = posterior.loc, posterior.scale
             mu_b, sigma_b = float(likelihood.D), float(likelihood.sigma)
@@ -590,7 +596,7 @@ class OTTilting:
         """
         from ..models.normal_normal import NormalNormalModel
 
-        if not isinstance(model, NormalNormalModel):
+        if not is_normal_normal(model):
             raise NotImplementedError(
                 "OTTilting.tilted_pvalue currently requires NormalNormalModel; "
                 f"got {type(model).__name__!r}."
@@ -657,7 +663,7 @@ class OTTilting:
         from ..models.normal_normal import NormalNormalModel
         from ._solvers import brentq_with_doubling
 
-        if not isinstance(model, NormalNormalModel):
+        if not is_normal_normal(model):
             raise NotImplementedError(
                 "OTTilting.tilted_confidence_interval currently requires " "NormalNormalModel."
             )
@@ -738,7 +744,7 @@ class OTTilting:
         from ..models.normal_normal import NormalNormalModel
         from ._dynamic import dynamic_ci_scan
 
-        if not isinstance(model, NormalNormalModel):
+        if not is_normal_normal(model):
             raise NotImplementedError(
                 "OTTilting.dynamic_tilted_confidence_interval currently "
                 "requires NormalNormalModel."
@@ -802,7 +808,7 @@ class OTTilting:
         """
         from ..models.normal_normal import NormalNormalModel
 
-        if not isinstance(model, NormalNormalModel):
+        if not is_normal_normal(model):
             raise NotImplementedError(
                 f"OTTilting requires NormalNormalModel for the uniform CI "
                 f"interface; got {type(model).__name__!r}."
@@ -817,7 +823,7 @@ class OTTilting:
         """Predicate-only counterpart to `_require_normal_sandbox`."""
         from ..models.normal_normal import NormalNormalModel
 
-        return isinstance(model, NormalNormalModel) and isinstance(prior, NormalDistribution)
+        return is_normal_normal(model) and isinstance(prior, NormalDistribution)
 
     def confidence_regions(
         self,

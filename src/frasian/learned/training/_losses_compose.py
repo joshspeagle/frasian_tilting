@@ -36,8 +36,9 @@ import jax.numpy as jnp
 import numpy as np
 
 from ... import _jax_setup as _x64  # noqa: F401  — ensure float64 active
+from ...models._dispatch import is_normal_normal
 from ...models.distributions import NormalDistribution
-from ...models.normal_normal import NormalNormalModel
+from ...models.normal_normal import NormalNormalModel  # noqa: F401  (legacy field-access typing)
 from .architecture import EtaNet, ValidityNet
 from .losses import (
     boundary_penalty_from_validity,
@@ -75,7 +76,7 @@ def extract_normal_normal_params(
     consistent with the documented "model-agnostic in principle,
     Normal-Normal in practice" caveat.
     """
-    if not isinstance(model, NormalNormalModel):
+    if not is_normal_normal(model):
         raise NotImplementedError(
             "Phase E training currently requires a NormalNormalModel; "
             f"got {type(model).__name__}. Extending to non-Normal-Normal "
