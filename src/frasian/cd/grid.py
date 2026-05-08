@@ -125,7 +125,17 @@ class GridConfidenceDistribution:
         )
 
     def cdf(self, theta: ArrayLike) -> jax.Array:
-        """cdf interpolated at `theta` (linear). Always monotone."""
+        """cdf interpolated at `theta` (linear). Always monotone.
+
+        Audit P1 I.2: the right-edge value is `cdf_values[-1]`, i.e. the
+        total integrated mass. If `pdf_values` is not Z-normalised
+        (constructors via `build_cd_from_pvalue` enforce this; direct
+        construction does not), `cdf(+∞)` will reflect the true mass
+        rather than always being 1.0. Callers who need a strictly
+        proper CDF should construct via `build_cd_from_pvalue` or
+        verify `abs(cdf_values[-1] - 1.0) < tol` before treating
+        `cdf` as a probability.
+        """
         cdf_vals = self.cdf_values
         return jnp.interp(
             jnp.asarray(theta, dtype=jnp.float64),
@@ -139,7 +149,18 @@ class GridConfidenceDistribution:
         """Inverse-cdf at probability `q ∈ [0, 1]`, linear interpolation.
 
         Always well-defined since `cdf_values` is monotone non-decreasing
-        (the pdf-primary design).
+        (the pdf-primary design). On flat segments (zero pdf), `jnp.interp`
+        returns the leftmost matching θ — equivalent to
+        `searchsorted(side='left')` (audit P1 I.1) on grid-coincident
+        queries, with smooth linear interpolation between grid points.
+        Smooth interp is preferred because downstream W2-distance
+        computations integrate the quantile and benefit from continuity.
+
+        Audit P1 I.2: `q` outside `[0, cdf_values[-1]]` clamps to the
+        grid edge θ. If `cdf_values[-1]` is materially below 1 (an
+        un-normalised pdf), `quantile(q > cdf_values[-1])` returns the
+        upper grid edge — silently. Callers who need a strict
+        proper-CDF inverse should verify normalisation first.
         """
         q_arr = jnp.asarray(q, dtype=jnp.float64)
         # Strictly monotonise to handle plateaus where cdf is flat (zero
@@ -181,7 +202,20 @@ class GridConfidenceDistribution:
     def secondary_modes(self, *, prominence_frac: float = 0.1) -> list[float]:
         """Local maxima other than the global mode whose prominence
         (peak height − adjacent valley) exceeds `prominence_frac` of the
-        global maximum. Useful for detecting multimodal CDs."""
+        global maximum. Useful for detecting multimodal CDs.
+
+        Audit P1 I.3: the prior right-side prominence used
+        `pdf[i:].min()`, which **includes the peak itself** — making
+        `right_min == pdf[i]` for any strictly-decreasing right-tail,
+        which forced `valley = pdf[i]` and `prominence = 0`. The fix
+        is `pdf[i+1:].min()` (exclude the peak from the right valley)
+        and `pdf[:i].min()` (already excludes the peak — Python slicing
+        is half-open). This is still an "approximate prominence" — it
+        compares against the global tail minimum rather than the
+        valley between the secondary peak and the next-higher peak —
+        but it now correctly returns nonzero values for genuine
+        secondary modes.
+        """
         pdf = self.pdf_values
         if pdf.size < 3:
             return []
@@ -200,9 +234,11 @@ class GridConfidenceDistribution:
             if i == global_idx:
                 continue
             # Approximate prominence: peak value minus the lower of the
-            # adjacent interior minima (or grid endpoint).
+            # adjacent interior minima (or grid endpoint). Both slices
+            # exclude the peak itself: pdf[:i] is [0, i-1] and
+            # pdf[i+1:] is [i+1, end] — Python's half-open slicing.
             left_min = float(pdf[:i].min()) if i > 0 else 0.0
-            right_min = float(pdf[i:].min()) if i < pdf.size else 0.0
+            right_min = float(pdf[i + 1:].min()) if (i + 1) < pdf.size else 0.0
             valley = max(left_min, right_min)
             if (pdf[i] - valley) >= threshold:
                 out.append(float(self.theta_grid[i]))

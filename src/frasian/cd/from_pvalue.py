@@ -105,10 +105,22 @@ def build_cd_from_pvalue(
 ) -> GridConfidenceDistribution:
     """Build a `GridConfidenceDistribution` from `tilting.pvalue`.
 
+    **n=1 implicit convention** (audit P1 I.4): `D` is a scalar
+    observation, passed downstream as `data=np.asarray([float(D)])`.
+    The Schweder-Hjort density therefore reflects the p-value at a
+    single observation — using `σ` rather than `σ/sqrt(n)` for the NN
+    closed-form path (the framework's sandbox is n=1), and a single
+    likelihood draw for the generic path. Callers wanting CDs from
+    multi-observation data should call the underlying `tilting.pvalue`
+    on a θ-grid + the multi-observation data array directly and
+    construct a `GridConfidenceDistribution` from the resulting
+    Schweder-Hjort density.
+
     Parameters
     ----------
     tilting, statistic, D, model, prior
-        The cell + observed datum to build a CD for.
+        The cell + observed datum to build a CD for. `D` is a scalar
+        single observation; see the n=1 convention note above.
     theta_grid : ndarray, optional
         Explicit θ-grid. If None, defaults to a 1001-point grid centred
         on D with half-width `half_width_sigma · σ` (σ from `model.sigma`
