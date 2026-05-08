@@ -11,6 +11,10 @@ import pytest
 from frasian import Config, RegistryConflictError, registry
 from frasian._registry import register_statistic, register_tilting
 
+# Audit P1 / deferred M.1: file-level mark so `-m L0` collects this
+# file. Without it, `pytest -m L0` silently misses these tests.
+pytestmark = pytest.mark.L0
+
 
 class _DummyTilting:
     name = "dummy_tilting"

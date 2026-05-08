@@ -20,7 +20,6 @@ from frasian.diagnostics.smoothness_metrics import (
 
 
 @pytest.mark.L0
-@pytest.mark.properties
 class TestSmoothnessMetricHelpers:
     def test_lipschitz_zero_on_constant(self):
         x = np.linspace(0, 1, 11)

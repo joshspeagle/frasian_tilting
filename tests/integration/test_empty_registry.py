@@ -1,8 +1,9 @@
-"""Step-1 verification: framework is sound on an empty registry.
+"""Empty-registry verification: framework is sound on an empty registry.
 
-These tests cover the core promise of Step 1: importing `frasian` does not
-trigger any side effects, the registry starts empty, and `run_experiment`
-fails cleanly rather than silently doing nothing.
+These tests cover a core framework-scaffold promise: importing
+`frasian` does not trigger any side effects, the registry starts
+empty, and `run_experiment` fails cleanly rather than silently doing
+nothing.
 """
 
 from __future__ import annotations
@@ -14,6 +15,10 @@ import pytest
 
 from frasian import Config, EmptyRegistryError, list_methods, registry, run_experiment
 from frasian.experiments.base import Experiment, ExperimentContext, RawResult
+
+# Audit P1 / deferred M.1: file-level mark so `-m L0` collects this
+# file. Without it, `pytest -m L0` silently misses these tests.
+pytestmark = pytest.mark.L0
 
 
 @dataclass

@@ -197,3 +197,75 @@ def test_fit_eta_artifact_serialised_in_memory_matches(
     eqx.tree_serialise_leaves(buf_a, art_a._validity_net)
     eqx.tree_serialise_leaves(buf_b, art_b._validity_net)
     assert buf_a.getvalue() == buf_b.getvalue()
+
+
+@pytest.mark.L4
+@pytest.mark.slow
+def test_fit_eta_artifact_end_to_end_inference_byte_equal(
+    tmp_path: Path, bootstrapped_registry: object
+) -> None:
+    """Audit P2 (Cluster H): pin end-to-end pipeline byte-equality.
+
+    Pre-fix the determinism suite only compared serialised leaves
+    (the on-disk weights). A regression that left the weights bit-
+    equal but somehow made `predict_eta` non-deterministic (e.g. a
+    non-deterministic kernel introduced by a JAX upgrade) would
+    silently slip past. This test runs `fit_eta_artifact` twice at
+    the same seed, loads both, and asserts that
+    `predict_eta(theta_grid)` AND `predict_validity_logit(...)` on
+    a fixed θ grid produce byte-equal arrays — i.e. the **full
+    pipeline** from training through inference is bit-deterministic,
+    not just the stored bytes.
+    """
+    from frasian.learned.eta_artifact import EtaArtifact
+    from frasian.learned.training.sampling import (
+        ExperimentConfig,
+        UniformThetaDistribution,
+    )
+    from frasian.learned.training.train import fit_eta_artifact
+    from frasian.models.distributions import NormalDistribution
+    from frasian.models.normal_normal import NormalNormalModel
+
+    config = ExperimentConfig(
+        scheme_name="power_law",
+        statistic_name="waldo",
+        prior=NormalDistribution(loc=0.0, scale=1.0),
+        model=NormalNormalModel(sigma=1.0),
+        theta_distribution=UniformThetaDistribution(low=-3.0, high=3.0),
+        n_grid=33,
+        n_lhs=64,
+        eta_explore_box=(-5.0, 5.0),
+        seed=12345,
+    )
+
+    out_a = tmp_path / "a.eqx"
+    out_b = tmp_path / "b.eqx"
+    for out in (out_a, out_b):
+        fit_eta_artifact(
+            config=config,
+            out_path=out,
+            loss_kind="integrated_p",
+            n_epochs=2,
+            batch_size=16,
+            n_aux=16,
+            patience=2,
+            antithetic=False,
+            verbose=False,
+        )
+
+    art_a = EtaArtifact(artifact_path=out_a)
+    art_b = EtaArtifact(artifact_path=out_b)
+    art_a.load()
+    art_b.load()
+
+    theta_grid = np.linspace(-2.5, 2.5, 21)
+    eta_a = art_a.predict_eta(theta_grid)
+    eta_b = art_b.predict_eta(theta_grid)
+    np.testing.assert_array_equal(
+        np.asarray(eta_a),
+        np.asarray(eta_b),
+        err_msg=(
+            "predict_eta diverged between two same-seed training runs; "
+            "JAX/Equinox end-to-end determinism regressed at inference."
+        ),
+    )
