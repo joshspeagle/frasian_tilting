@@ -506,6 +506,14 @@ class DynamicNumericalEtaSelector:
 # fraction of the batch, raise rather than silently clamp — a checkpoint
 # that drifts that far is either undertrained or for the wrong
 # experiment, and silently clamping would mask a calibration failure.
+#
+# Audit P2 (Cluster G) considered exposing this as a tunable. Kept
+# private: this is a calibration-correctness gate, not a precision
+# tradeoff. A user that wants the gate disabled is asking the
+# framework to silently produce uncalibrated CIs — re-train the
+# checkpoint instead. Loosening it requires a code change with a
+# regression test demonstrating that the new threshold still
+# catches the documented failure modes.
 _CLAMP_FAIL_THRESHOLD = 0.20
 
 
