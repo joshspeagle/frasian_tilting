@@ -434,12 +434,16 @@ def test_fingerprints_hashable():
 @pytest.mark.L1
 @pytest.mark.properties
 def test_experiment_config_dict_round_trip(bootstrapped_registry):
+    # Audit P1 J.4 (commit 1f6ff8b): NormalNormalModel + n_data > 1 is
+    # rejected at __post_init__ because the JAX closed-form pvalue port
+    # would silently mismatch the closed form by sqrt(n_data). Use the
+    # Bernoulli + Beta combo to exercise a non-default n_data round-trip.
     cfg = ExperimentConfig(
         scheme_name="power_law",
         statistic_name="waldo",
-        prior=NormalDistribution(0.0, 1.0),
-        model=NormalNormalModel(sigma=1.0),
-        theta_distribution=UniformThetaDistribution(low=-5.0, high=5.0),
+        prior=BetaDistribution(alpha=2.0, beta=2.0),
+        model=BernoulliModel(),
+        theta_distribution=UniformThetaDistribution(low=0.01, high=0.99),
         n_grid=101,
         n_lhs=200,
         n_data=4,
