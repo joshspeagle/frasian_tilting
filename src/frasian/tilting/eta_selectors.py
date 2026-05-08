@@ -411,9 +411,16 @@ class DynamicNumericalEtaSelector:
     # `select(data=[D], ...)` shim falls back to NumericalEtaSelector at
     # θ=D and inherits its post-selection bias; prefer `select_grid`.
     is_post_selection: ClassVar[bool] = False
-    # Mutable cache; `compare=False, repr=False` keeps the dataclass's
-    # auto-generated `__eq__` / `__repr__` independent of the cache state.
-    _cache: dict = field(default_factory=dict, compare=False, repr=False)
+    # Memoization cache for `select_grid`. The selector is otherwise a
+    # value object (frozen dataclass + value-equal `compare=` fields);
+    # the cache is excluded from `__eq__` / `__hash__` / `__repr__`
+    # via `compare=False, repr=False, hash=False` so two selectors
+    # with the same configuration but different cache populations are
+    # equal AND interchangeable. Read by `select_grid` only; never
+    # written from outside this module.
+    _cache: dict = field(
+        default_factory=dict, compare=False, repr=False, hash=False
+    )
 
     def _inner(self) -> NumericalEtaSelector:
         return NumericalEtaSelector(eta_min_buffer=self.eta_min_buffer)
@@ -552,12 +559,10 @@ class LearnedDynamicEtaSelector:
     # Per-θ learned selector — η = MLP(θ), no D-conditioning. Calibrated
     # by construction (see learned_eta.md / dual-head training).
     is_post_selection: ClassVar[bool] = False
+    # Lazy-load latch for `artifact.load()`. Not part of equality —
+    # two selectors with the same artifact are equal regardless of
+    # whether either has loaded yet.
     _loaded: bool = field(default=False, init=False, repr=False, compare=False)
-    # Diagnostic counters tracking how often the runtime safety clamp
-    # has fired (skeptic E pre-PR review #2). Cumulative across calls
-    # in the lifetime of this selector instance.
-    _clamped_calls: int = field(default=0, init=False, repr=False, compare=False)
-    _last_clamped_fraction: float = field(default=0.0, init=False, repr=False, compare=False)
 
     def _ensure_loaded(self) -> None:
         if not self._loaded:
@@ -987,8 +992,6 @@ class LearnedDynamicEtaSelector:
             import warnings
 
             frac = float(out_of_range.mean())
-            self._clamped_calls += 1
-            self._last_clamped_fraction = frac
             warnings.warn(
                 f"{self.artifact.name}: {100*frac:.1f}% of predicted "
                 f"η values fell outside the admissible range "

@@ -93,6 +93,56 @@ class TestFixedEtaSelectorBehavior:
 
 @pytest.mark.L1
 @pytest.mark.properties
+class TestSelectorValueEquality:
+    """Selectors are values: cache state and lazy-load latches must
+    NOT participate in equality. Audit P2 (Cluster E) flagged the
+    `_clamped_calls` / `_last_clamped_fraction` counters on
+    `LearnedDynamicEtaSelector` as breaking the value contract;
+    they were never read and have been removed. The remaining
+    mutable state (`_cache` on dynamic selectors, `_loaded` on the
+    learned selector) is excluded from `__eq__` / `__hash__` /
+    `__repr__` via `compare=False, hash=False, repr=False`.
+    """
+
+    def test_dynamic_numerical_cache_population_does_not_break_equality(self):
+        sel_a = DynamicNumericalEtaSelector()
+        sel_b = DynamicNumericalEtaSelector()
+        assert sel_a == sel_b
+        # Populate sel_a's cache; sel_b's stays empty.
+        scheme = PowerLawTilting()
+        model = NormalNormalModel(sigma=1.0)
+        prior = NormalDistribution(loc=0.0, scale=1.0)
+        stat = WaldoStatistic()
+        sel_a.select_grid(
+            np.linspace(-1.0, 1.0, 5),
+            scheme,
+            statistic=stat,
+            model=model,
+            prior=prior,
+            alpha=0.05,
+        )
+        # Equality is unaffected.
+        assert sel_a == sel_b
+        # repr stays clean.
+        assert "_cache" not in repr(sel_a)
+        # Cache populated.
+        assert sel_a._cache, "cache should have been populated by select_grid"
+
+    def test_learned_dynamic_has_no_clamped_diagnostic_counters(self):
+        """Pin removal of the `_clamped_calls` / `_last_clamped_fraction`
+        counters. They were write-only diagnostics nobody consumed.
+        """
+        from dataclasses import fields
+
+        from frasian.tilting.eta_selectors import LearnedDynamicEtaSelector
+
+        names = {f.name for f in fields(LearnedDynamicEtaSelector)}
+        assert "_clamped_calls" not in names
+        assert "_last_clamped_fraction" not in names
+
+
+@pytest.mark.L1
+@pytest.mark.properties
 class TestDynamicSelectorThetaOnly:
     """`select_grid(theta_grid, ...)` must be independent of `data` (no D-leak)."""
 
