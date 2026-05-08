@@ -126,3 +126,5 @@ results/
 
 # Audit artifacts (Tier 0/1/2/3 multi-agent code audit outputs)
 audit/
+!docs/audit/
+!docs/audit/**

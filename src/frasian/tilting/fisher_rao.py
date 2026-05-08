@@ -29,14 +29,18 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from .._registry import register_tilting
-from ..models.base import Likelihood, Posterior, Prior
+from ..models.base import Likelihood, Model, Posterior, Prior
+from ..statistics.base import TestStatistic
 from .base import ParamSpec
+
+if TYPE_CHECKING:
+    from ..config import Config
 
 
 @register_tilting(name="fisher_rao", brief="docs/methods/fisher_rao.md", status="stub")
@@ -67,3 +71,45 @@ class FisherRaoTilting:
 
     def is_identity(self, eta: float) -> bool:
         return eta == self.param_space.eta_identity
+
+    # ----- Uniform CI / regions / pvalue interface (audit P0-10) -----
+
+    def confidence_interval(
+        self,
+        alpha: float,
+        data: NDArray[np.float64],
+        model: Model,
+        prior: Prior,
+        statistic: TestStatistic,
+        *,
+        config: "Config | None" = None,
+    ) -> tuple[float, float]:
+        raise NotImplementedError(
+            "FisherRaoTilting.confidence_interval is a stub; see docs/methods/fisher_rao.md."
+        )
+
+    def confidence_regions(
+        self,
+        alpha: float,
+        data: NDArray[np.float64],
+        model: Model,
+        prior: Prior,
+        statistic: TestStatistic,
+        *,
+        config: "Config | None" = None,
+    ) -> list[tuple[float, float]]:
+        raise NotImplementedError(
+            "FisherRaoTilting.confidence_regions is a stub; see docs/methods/fisher_rao.md."
+        )
+
+    def pvalue(
+        self,
+        theta: ArrayLike,
+        data: NDArray[np.float64],
+        model: Model,
+        prior: Prior,
+        statistic: TestStatistic,
+    ) -> NDArray[np.float64]:
+        raise NotImplementedError(
+            "FisherRaoTilting.pvalue is a stub; see docs/methods/fisher_rao.md."
+        )

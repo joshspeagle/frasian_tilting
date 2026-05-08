@@ -5,9 +5,15 @@ name: ci-full
 #
 # Schedule:
 # - On every push to main (catches regressions before they propagate).
+#   Excludes pushes that only touch .github/last-full-run.json so the
+#   marker commit (written below) does NOT retrigger a full run —
+#   GitHub Actions does not honor [skip ci] in commit messages, so
+#   `paths-ignore` is the explicit guard.
 # - Nightly cron at 06:00 UTC (catches non-determinism, env drift, and
 #   slow-flake regressions on the integration branch).
-# - Manual dispatch (devs can run before opening a PR).
+# - Manual dispatch (devs can run before opening a PR; only writes the
+#   marker when run on main, since the marker only carries meaning for
+#   the integration branch).
 #
 # Target wall: ~10-15 min per Python version (jobs run in parallel).
 #
@@ -19,6 +25,11 @@ on:
   push:
     branches:
       - main
+    paths-ignore:
+      # Avoid the infinite trigger loop: this workflow writes
+      # last-full-run.json on success, and that commit must not
+      # retrigger ci-full.
+      - ".github/last-full-run.json"
   schedule:
     # 06:00 UTC daily. Skipped automatically on forks (GitHub policy).
     - cron: "0 6 * * *"
@@ -47,10 +58,13 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
-      - name: Install package + dev deps
+      - name: Install package + dev + ml deps
+        # `[ml]` brings PyYAML, which the learned_eta illustration
+        # smoke needs (ExperimentConfig.from_yaml). Without it the
+        # final smoke step fails on a clean runner.
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          pip install -e ".[dev,ml]"
 
       - name: Record start time
         id: start
@@ -76,16 +90,20 @@ jobs:
   mark-last-run:
     name: commit .github/last-full-run.json
     needs: tests
-    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # Only mark on main: schedule defaults to the default branch, push
+    # is gated to main upstream, and workflow_dispatch should only
+    # write the marker when the dev intentionally ran the full tier
+    # against main. A workflow_dispatch on a feature branch must NOT
+    # commit a marker (would create non-fast-forward push attempts and
+    # pollute branch history).
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
         with:
-          # Need full history so we can push back. Token is the default
-          # GITHUB_TOKEN, which has write access via the permissions
-          # block above.
+          ref: main
           fetch-depth: 0
 
       - name: Write marker
@@ -106,6 +124,10 @@ jobs:
           EOF
 
       - name: Commit and push if changed
+        # Rebase onto the latest origin/main before pushing so a
+        # human merge during the full run doesn't fail this job.
+        # Retry once on push race (someone else committed between our
+        # rebase and our push).
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -114,11 +136,16 @@ jobs:
             exit 0
           fi
           git add .github/last-full-run.json
-          git commit -m "ci-full: mark last green run @ ${{ github.sha }}
+          git commit -m "ci-full: mark last green run @ ${{ github.sha }}"
 
-[skip ci]
-"
-          # Push back to whatever branch this ran on. For schedule events
-          # this is the default branch (main).
-          branch="${GITHUB_REF##*/}"
-          git push origin "HEAD:${branch}"
+          for attempt in 1 2; do
+            git fetch origin main
+            git rebase origin/main
+            if git push origin HEAD:main; then
+              echo "marker pushed (attempt $attempt)"
+              exit 0
+            fi
+            echo "push race on attempt $attempt; refetching"
+          done
+          echo "could not push marker after 2 attempts; failing this job"
+          exit 1

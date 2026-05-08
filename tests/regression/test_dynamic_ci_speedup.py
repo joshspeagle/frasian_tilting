@@ -315,8 +315,9 @@ def test_compute_pvalues_per_sample_matches_scalar_loop(scheme_factory):
     theta = rng.uniform(-3.0, 3.0, size=n)
     D = rng.normal(loc=theta, scale=1.0)
     if scheme.name == "ot":
-        # Mix of admissible (in [0,1]) and inadmissible η.
-        eta = rng.uniform(-0.2, 1.2, size=n)
+        # Audit P0-4: OT admissibility is now eta > -w/(1-w) (= -1.0 here).
+        # Sample across that bound so both paths exercise NaN handling.
+        eta = rng.uniform(-2.0, 1.5, size=n)
     else:  # power_law w=0.5: admissible eta < 2; sample slightly past.
         eta = rng.uniform(-0.5, 2.3, size=n)
 

@@ -149,20 +149,41 @@ class TiltingScheme(Protocol):
 class EtaSelector(Protocol):
     """Strategy for picking η given a tilting context.
 
-    Implementations: `NumericalEtaSelector` (Brent root-find on CI width),
-    `ClosedFormEtaSelector` (analytic approximation), `LearnedEtaSelector`
-    (wraps a `LearnedArtifact` such as the monotonic MLP).
+    Implementations: `FixedEtaSelector` (constant η),
+    `NumericalEtaSelector` (Brent root-find on CI width or integrated p
+    at a representative D — post-selection),
+    `DynamicNumericalEtaSelector` (per-θ static η, calibrated),
+    `LearnedDynamicEtaSelector` (per-θ MLP η, calibrated).
 
-    The call surface is θ-space and model-agnostic. `data`, `model`,
-    `prior` and `alpha` are passed at call time; selectors do not
-    consume Normal-Normal-specific `|Δ|` summaries. Selectors that
-    need η-bounds (e.g. `NumericalEtaSelector`'s minimization
-    bracket) compute them internally; the protocol does not expose
-    a `TiltingContext` or `admissible_range` indirection.
+    Signature: `select(...)` accepts `data`, `model`, `prior`, `alpha`,
+    `statistic` as keyword arguments and returns a scalar η. Selectors
+    that need η-bounds compute them internally; the protocol does not
+    expose a `TiltingContext` or `admissible_range` indirection.
+
+    **Post-selection / D-conditioning warning.** The signature accepts
+    `data`, but selectors split into two semantic flavours:
+
+      * ``is_post_selection = False`` — η is independent of D. The
+        WALDO p-value at any fixed η is U[0,1] under H0, so the
+        resulting CI is calibrated. `FixedEtaSelector`,
+        `DynamicNumericalEtaSelector` (via ``select_grid``), and
+        `LearnedDynamicEtaSelector` all satisfy this.
+      * ``is_post_selection = True`` — η is chosen by reading
+        ``D = data.mean()`` and minimising width / integrated-p AT that
+        D. The resulting CI is **post-selection** and undercovers
+        nominal level by ~2 points at α=0.05 (see
+        `tests/regression/test_post_selection_coverage.py`).
+        `NumericalEtaSelector` is the only such implementation.
+
+    The runner does **not** automatically reject post-selection
+    selectors; coverage / width experiments should consult
+    ``selector.is_post_selection`` to decide whether the resulting
+    interval is calibrated or merely a width baseline.
     """
 
     name: str
     is_dynamic: bool
+    is_post_selection: bool
 
     def select(
         self,
@@ -188,6 +209,7 @@ class DynamicEtaSelector(Protocol):
 
     name: str
     is_dynamic: bool
+    is_post_selection: bool
 
     def select(
         self,

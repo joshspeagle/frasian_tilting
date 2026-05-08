@@ -26,6 +26,15 @@ def main() -> None:
     parser.add_argument("--config", type=Path, required=True, help="ExperimentConfig YAML path.")
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Overwrite --out if it already exists. Audit P0-15: the script "
+            "previously overwrote committed v0_smoke artifacts silently; "
+            "default is now refuse-on-exists."
+        ),
+    )
+    parser.add_argument(
         "--loss", default="integrated_p", choices=["integrated_p", "cd_variance", "static_width"]
     )
     parser.add_argument(
@@ -78,6 +87,18 @@ def main() -> None:
     )
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
+
+    # Audit P0-15: refuse to silently overwrite an existing checkpoint.
+    # Committed v0_smoke artifacts in artifacts/ are at particular risk
+    # because they live at well-known paths; overwriting them silently
+    # changes the headline numbers without any prompt or version bump.
+    if args.out.exists() and not args.force:
+        raise SystemExit(
+            f"\nERROR: --out path already exists: {args.out!s}\n"
+            f"Pass --force to overwrite, or choose a different path.\n"
+            f"(Audit P0-15: the script previously overwrote silently;\n"
+            f" committed v0_smoke artifacts are at particular risk.)\n"
+        )
 
     bootstrap()
 

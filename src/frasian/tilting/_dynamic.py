@@ -249,9 +249,16 @@ def _run_dynamic_scan(
             )
 
     diff = p_theta - alpha
+    # Sign convention: +1 when p ≥ α (inside accept region), −1 otherwise.
+    # Using the closed `≥` boundary avoids dropping tangential α-touches
+    # that the strict `diff[i] * diff[i+1] < 0` test missed (audit P0-8):
+    # at a grid point where p exactly equals α, the previous test gave
+    # `0 * neighbour == 0 ≮ 0` and skipped the boundary, biasing the union
+    # width and occasionally folding two adjacent regions into one.
+    sgn = np.where(diff >= 0.0, 1, -1).astype(np.int64)
     crossings: list[float] = []
     for i in range(theta_grid.size - 1):
-        if diff[i] * diff[i + 1] < 0.0:
+        if sgn[i] != sgn[i + 1]:
 
             def _f(theta_val: float, _i=i) -> float:
                 # Phase 3a-1: coarse_eta is keyed on θ directly.
@@ -267,26 +274,53 @@ def _run_dynamic_scan(
                 )
                 crossings.append(float(cross))
             except ValueError:
-                t = diff[i] / (diff[i] - diff[i + 1])
-                crossings.append(float(theta_grid[i] + t * (theta_grid[i + 1] - theta_grid[i])))
+                # brentq refused (e.g. one endpoint is exactly zero); use
+                # linear interpolation as the crossing fallback.
+                denom = diff[i] - diff[i + 1]
+                if denom == 0.0:
+                    crossings.append(float(0.5 * (theta_grid[i] + theta_grid[i + 1])))
+                else:
+                    t = diff[i] / denom
+                    crossings.append(
+                        float(theta_grid[i] + t * (theta_grid[i + 1] - theta_grid[i]))
+                    )
 
     regions: list[tuple[float, float]] = []
     hit_boundary = False
-    if not crossings:
-        if p_theta[len(p_theta) // 2] >= alpha:
-            regions = [(float(theta_lo), float(theta_hi))]
-            # Whole window is the accept region — unambiguous truncation.
-            hit_boundary = True
-    else:
-        entries = list(crossings)
-        if p_theta[0] >= alpha:
-            entries = [float(theta_lo)] + entries
-            hit_boundary = True
-        if p_theta[-1] >= alpha:
-            entries = entries + [float(theta_hi)]
-            hit_boundary = True
-        for i in range(0, len(entries) - 1, 2):
-            regions.append((entries[i], entries[i + 1]))
+
+    # Pad the entries with window edges when the boundary is "inside" the
+    # accept region (sgn>0). This produces a flat list of (lo, hi) pairs.
+    # By construction:
+    #   * every internal sign-change contributes one entry;
+    #   * each window-edge that's inside the accept region contributes
+    #     one entry on the corresponding end;
+    # so even-parity is the only consistent state. Odd parity indicates a
+    # missed tangential touch or numerical noise on the boundary
+    # (audit P0-9 — previously the loop silently dropped the trailing
+    # crossing, under-reporting the union width).
+    entries = list(crossings)
+    if sgn[0] > 0:
+        entries = [float(theta_lo)] + entries
+        hit_boundary = True
+    if sgn[-1] > 0:
+        entries = entries + [float(theta_hi)]
+        hit_boundary = True
+
+    if len(entries) % 2 != 0:
+        from .._errors import BracketingFailed
+
+        raise BracketingFailed(
+            f"dynamic_ci_scan produced odd-parity entries (expected even "
+            f"after end-padding for accept-region pairing). Got "
+            f"{len(entries)} entries: {entries!r}. This usually indicates "
+            f"a tangential α-touch on the grid that the sign-change "
+            f"detector could not refine, or numerical noise at a window "
+            f"edge. Try a finer theta-grid (n_grid > {theta_grid.size}) "
+            f"or report this as a bug."
+        )
+
+    for i in range(0, len(entries), 2):
+        regions.append((entries[i], entries[i + 1]))
 
     total = float(sum(hi - lo for lo, hi in regions))
     return regions, total, len(regions), hit_boundary

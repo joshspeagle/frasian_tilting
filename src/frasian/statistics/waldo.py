@@ -74,6 +74,23 @@ def _is_normal_normal_pair(model: Model, prior: Prior | None) -> bool:
     return isinstance(model, NormalNormalModel) and isinstance(prior, NormalDistribution)
 
 
+def _is_normal_normal_n1(
+    model: Model, prior: Prior | None, data: ArrayLike
+) -> bool:
+    """The closed-form Normal-Normal+Normal path is correct only for the
+    n=1 sandbox (`NormalNormalModel.posterior` collapses ``data`` to its
+    mean and uses sigma^2, not sigma^2/n — see the comment at
+    ``normal_normal.py:106``). For n>1 callers we route through the
+    generic MC path, which uses ``n_obs = data.size`` correctly. Without
+    this guard the closed form silently disagrees with the generic path
+    on ``data.size > 1``.
+    """
+    if not _is_normal_normal_pair(model, prior):
+        return False
+    arr = np.atleast_1d(np.asarray(data, dtype=np.float64))
+    return arr.size == 1
+
+
 def _pvalue_components(
     theta: jax.Array, mu_n: float, mu0: float, w: float, sigma: float
 ) -> tuple[jax.Array, jax.Array]:
@@ -241,7 +258,15 @@ class WaldoStatistic:
         mu_post = jnp.asarray(posterior.mean(), dtype=jnp.float64)
         var_post = jnp.asarray(posterior.var(), dtype=jnp.float64)
         diff = mu_post - theta_arr
-        return diff * diff / jnp.maximum(var_post, 1e-300)
+        # Degenerate-variance contract: return NaN when var_post <= 0,
+        # NOT a tiny floor (which would inflate t to ~10^300 and pair
+        # with the mc-reference's `0.0`-on-degenerate behaviour to
+        # produce a false p ≈ 1/(n_mc+1)). Both code paths now agree on
+        # NaN; consumers treat NaN as "uninformative draw" (mc reference)
+        # or "ill-posed observed data" (raises in `_generic_pvalue`).
+        safe_var = jnp.where(var_post > 0.0, var_post, 1.0)
+        raw = diff * diff / safe_var
+        return jnp.where(var_post > 0.0, raw, jnp.nan)
 
     @staticmethod
     def _stable_seed(
@@ -299,7 +324,14 @@ class WaldoStatistic:
             mu = float(np.asarray(post_prime.mean()))
             var = float(np.asarray(post_prime.var()))
             if var <= 0.0 or not np.isfinite(var):
-                t_samples[i] = 0.0
+                # Degenerate MC draw: posterior is a point mass, t is
+                # ill-defined. Mark NaN; `_generic_pvalue` filters NaN
+                # from the reference and divides by n_eff. Previously
+                # this returned 0.0, which paired with `_generic_evaluate`'s
+                # 1e-300 floor to make t_obs huge and t_ref always-zero
+                # — collapsing the empirical p to 1/(n_mc+1) regardless
+                # of θ. Fixing both halves of the inconsistency together.
+                t_samples[i] = np.nan
             else:
                 d = mu - theta0_f
                 t_samples[i] = d * d / var
@@ -337,16 +369,34 @@ class WaldoStatistic:
             )
         n_obs = int(data_arr.size)
         t_obs = float(np.asarray(self._generic_evaluate(theta_f, data, model, prior)))
+        if not np.isfinite(t_obs):
+            raise ValueError(
+                f"WaldoStatistic._generic_pvalue: observed posterior variance "
+                f"is degenerate (var <= 0) at the supplied data, so the test "
+                f"statistic is ill-defined. theta0={theta_f!r}, "
+                f"data.shape={data_arr.shape!r}."
+            )
         if derived_seed is None:
             derived_seed = self._stable_seed(data_arr, model, prior, 0.0, self.seed)
         t_ref = self._generic_mc_reference(
             theta_f, n_obs, model, prior, self.n_mc, derived_seed
         )
+        # Drop MC draws with degenerate variance (NaN per the
+        # _generic_mc_reference contract) and renormalise.
+        finite = np.isfinite(t_ref)
+        n_eff = int(finite.sum())
+        if n_eff == 0:
+            raise ValueError(
+                f"WaldoStatistic._generic_pvalue: every MC reference draw "
+                f"produced a degenerate posterior at theta0={theta_f!r}. "
+                f"Cannot compute an empirical p-value."
+            )
+        t_ref_clean = t_ref[finite]
         # +1 smoothing: empirical p-value with continuity correction. This
         # is intentionally CONSERVATIVE — coverage is biased upward by
-        # O(1/n_mc), never downward. Bounded strictly in (0, 1] so brentq
+        # O(1/n_eff), never downward. Bounded strictly in (0, 1] so brentq
         # can bracket cleanly even at the extreme tails of the MC reference.
-        p = (float(np.sum(t_ref >= t_obs)) + 1.0) / (float(self.n_mc) + 1.0)
+        p = (float(np.sum(t_ref_clean >= t_obs)) + 1.0) / (float(n_eff) + 1.0)
         return jnp.asarray(p)
 
     def _generic_confidence_interval(
@@ -424,14 +474,14 @@ class WaldoStatistic:
     def evaluate(
         self, theta0: ArrayLike, data: NDArray[np.float64], model: Model, prior: Prior | None = None
     ) -> jax.Array:
-        if _is_normal_normal_pair(model, prior):
+        if _is_normal_normal_n1(model, prior, data):
             return self._closed_form_evaluate(theta0, data, model, prior)  # type: ignore[arg-type]
         return self._generic_evaluate(theta0, data, model, prior)
 
     def pvalue(
         self, theta0: ArrayLike, data: NDArray[np.float64], model: Model, prior: Prior | None = None
     ) -> jax.Array:
-        if _is_normal_normal_pair(model, prior):
+        if _is_normal_normal_n1(model, prior, data):
             return self._closed_form_pvalue(theta0, data, model, prior)  # type: ignore[arg-type]
         return self._generic_pvalue(theta0, data, model, prior)
 
@@ -450,7 +500,7 @@ class WaldoStatistic:
     def confidence_interval(
         self, alpha: float, data: NDArray[np.float64], model: Model, prior: Prior | None = None
     ) -> tuple[float, float]:
-        if _is_normal_normal_pair(model, prior):
+        if _is_normal_normal_n1(model, prior, data):
             return self._closed_form_confidence_interval(alpha, data, model, prior)  # type: ignore[arg-type]
         return self._generic_confidence_interval(alpha, data, model, prior)
 

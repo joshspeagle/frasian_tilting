@@ -87,9 +87,11 @@ empirical tail probability. No closed form is invoked; the only
 calibration assumption is that `model.sample_data(theta, ...)`
 correctly samples `likelihood(.|theta)`.
 
-A full algebraic derivation is scheduled to live in
-`docs/derivations/theorem_3_waldo_pvalue.md`; the `deriver` agent is
-already wired up.
+The algebraic derivation lives inline above; the longer typed-up
+form (and any future re-derivations driven by the `deriver` agent)
+will land alongside this brief in `docs/methods/`. There is no
+separate `docs/derivations/` directory at this point in the
+project.
 
 ## Predicted behavior
 
@@ -155,7 +157,7 @@ already wired up.
 
 - Implementation: `src/frasian/statistics/waldo.py`
 - Regression tests: `tests/regression/test_waldo_pvalue.py`
-- Property tests: `tests/properties/test_statistic_invariants.py::TestWaldoInvariants`
+- Property tests: `tests/properties/test_waldo_invariants.py`
 - Illustration: `src/frasian/experiments/illustrations/waldo_demo.py`
 
 ## Status notes

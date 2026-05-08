@@ -43,25 +43,71 @@ from frasian.models.distributions import BetaDistribution
 @pytest.mark.L5
 @pytest.mark.slow
 def test_bernoulli_coverage_smoke() -> None:
-    """Empirical coverage on (Bernoulli, Beta(2, 2), power_law, waldo)
-    at FixedEtaSelector(eta=0) is non-zero and bounded by the very
-    wide n_reps=3 Monte-Carlo SE band.
+    """Smoke: (Bernoulli, Beta, power_law[Fixed(0)], waldo) generic CI runs.
 
-    This is a smoke-only check that the generic CI inversion path
-    on a non-Normal-Normal model produces a plausible CI that
-    contains the truth with non-trivial probability. n_reps=3,
-    n_mc=20, n_obs=10 keeps wall-time under ~10 s on dev hardware
-    (each generic CI ~3 s); a tighter regression at n_reps=300+
-    would need hours and belongs in a nightly job.
+    Audit P0-17: the original assertion `0.0 <= empirical <= 1.0` was
+    vacuous (true by construction). The real calibration check is in
+    `test_bernoulli_coverage_calibrated_at_nominal` below — a nightly
+    L3 run that asserts |empirical - (1-alpha)| < 3·SE. This smoke test
+    is preserved as a no-crash check at minimal n_reps.
+    """
+    from frasian.tilting.power_law import _generic_tilted_confidence_interval
+
+    alpha = 0.10
+    n_reps = 3
+    n_obs = 10
+    n_mc = 20
+    rng = np.random.default_rng(seed=2026)
+
+    model = BernoulliModel()
+    prior = BetaDistribution(alpha=2.0, beta=2.0)
+    eta = 0.0
+    theta_true = 0.5
+
+    for _ in range(n_reps):
+        data = model.sample_data(theta_true, rng, n=n_obs)
+        lo, hi = _generic_tilted_confidence_interval(
+            alpha, data, model, prior, eta, "waldo", n_mc=n_mc,
+        )
+        # Smoke contract: no NaN / inf, lo <= hi, lo and hi inside the
+        # parameter support. Removes the previously-vacuous tautology.
+        assert np.isfinite(lo) and np.isfinite(hi)
+        assert lo <= hi
+        assert 0.0 <= lo <= 1.0 and 0.0 <= hi <= 1.0
+
+
+@pytest.mark.L3
+@pytest.mark.slow
+@pytest.mark.nightly
+def test_bernoulli_coverage_calibrated_at_nominal() -> None:
+    """Audit P0-17: real calibration regression on the Bernoulli generic path.
+
+    The CLAUDE.md headline claim "WALDO uses an MC reference distribution
+    under H_0 sampled via model.sample_data ... coverage at nominal
+    level" was previously unverified — the only Bernoulli coverage check
+    asserted `0.0 <= empirical <= 1.0` (vacuous). This test runs the
+    (BernoulliModel, BetaDistribution, FixedEtaSelector(0), waldo) cell
+    at n_reps≥300 and pins the calibration band:
+
+        |empirical_coverage - (1 - alpha)| < 3 · SE
+
+    where SE = sqrt(α(1-α)/n_reps). At alpha=0.10, n_reps=300 → SE≈0.017,
+    so 3·SE≈0.051 — wide enough to absorb MC noise in WaldoStatistic's
+    own n_mc=200 reference draws but tight enough to catch a real
+    calibration failure (e.g. the variance-floor bug from Cluster B that
+    would have driven coverage to ~10%).
+
+    Nightly: ~5 minutes wall-time on dev hardware. Marked `nightly` so
+    normal CI doesn't gate on it.
     """
     from frasian.tilting.power_law import _generic_tilted_confidence_interval
 
     alpha = 0.10
     target = 1.0 - alpha
-    n_reps = 3
-    n_obs = 10
-    n_mc = 20
-    rng = np.random.default_rng(seed=2026)
+    n_reps = 300
+    n_obs = 16
+    n_mc = 200
+    rng = np.random.default_rng(seed=20260507)
 
     model = BernoulliModel()
     prior = BetaDistribution(alpha=2.0, beta=2.0)
@@ -77,13 +123,11 @@ def test_bernoulli_coverage_smoke() -> None:
         if lo <= theta_true <= hi:
             n_covered += 1
     empirical = n_covered / n_reps
-    # n_reps=3 has essentially no statistical power; the only
-    # assertion is "the path doesn't catastrophically miss the truth".
-    # The lower bound 0.0 is meaningful (any coverage >= 0 is fine)
-    # but documenting target gives the reader the nominal context.
-    assert 0.0 <= empirical <= 1.0
-    # Defensive: catch a complete inversion of the path. A flat
-    # binomial test at n_reps=3 says we should see at least one
-    # cover most of the time; failure here is a strong signal.
-    assert empirical >= 0.0  # noqa: PLR2004 — vacuous; documents intent
-    _ = target  # noqa: F841 — kept for docstring readability
+
+    # Three-sigma calibration band on a binomial proportion.
+    se = np.sqrt(target * (1.0 - target) / n_reps)
+    assert abs(empirical - target) < 3.0 * se, (
+        f"Bernoulli generic-CI coverage failed calibration band: "
+        f"empirical={empirical:.4f}, target={target:.4f}, "
+        f"se={se:.4f}, |Δ|={abs(empirical - target):.4f} (3σ band {3 * se:.4f})"
+    )
