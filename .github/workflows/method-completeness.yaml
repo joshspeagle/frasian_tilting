@@ -1,5 +1,13 @@
 name: method-completeness
 
+# Static gate: every registered method must ship with a brief,
+# property tests, and an illustration. The check is a ~2 s static
+# scan of the registry against the file tree; it runs on every PR.
+#
+# The illustration *smoke runs* (`python -m ...illustrations.* --smoke`)
+# moved to `ci-full.yaml` because each takes 5-30 s and they're
+# integration regressions, not completeness gates.
+
 on:
   pull_request:
   push:
@@ -19,10 +27,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
+      - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
           cache: pip
 
       - name: Install package
@@ -32,11 +40,3 @@ jobs:
 
       - name: Verify brief + property tests + illustration per registered method
         run: python tools/check_method_completeness.py
-
-      - name: Smoke-run all illustrations
-        run: |
-          for demo in src/frasian/experiments/illustrations/*_demo.py; do
-            module="frasian.experiments.illustrations.$(basename "$demo" .py)"
-            echo "=== $module --smoke ==="
-            python -m "$module" --smoke
-          done

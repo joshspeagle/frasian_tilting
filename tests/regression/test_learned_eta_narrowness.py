@@ -110,7 +110,12 @@ def _build_scheme_and_priors(ckpt_path: Path, scheme_cls: type):
 @pytest.mark.parametrize("scheme_label", ["powerlaw", "ot"])
 @pytest.mark.parametrize(
     "theta_true",
-    [-3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0],
+    # Trimmed from {-3,-2,-1,0,1,2,3} to {-3, 0, 3}: the narrowness
+    # claim is symmetric in |θ-μ₀|, so one no-conflict + two conflict-
+    # band samples cover the same regression surface. The dropped
+    # interior θ values were not catching independent failure modes
+    # on the v0 smoke checkpoint.
+    [-3.0, 0.0, 3.0],
 )
 def test_learned_no_wider_than_wald(scheme_label, theta_true):
     """Headline claim 1: learned width ≤ Wald (3.92) + MC tolerance."""

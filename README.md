@@ -1,5 +1,13 @@
 # Frasian Inference Framework
 
+[![ci](https://github.com/joshspeagle/frasian_tilting/actions/workflows/ci.yaml/badge.svg)](https://github.com/joshspeagle/frasian_tilting/actions/workflows/ci.yaml)
+[![ci-full](https://github.com/joshspeagle/frasian_tilting/actions/workflows/ci-full.yaml/badge.svg?branch=main)](https://github.com/joshspeagle/frasian_tilting/actions/workflows/ci-full.yaml)
+[![method-completeness](https://github.com/joshspeagle/frasian_tilting/actions/workflows/method-completeness.yaml/badge.svg)](https://github.com/joshspeagle/frasian_tilting/actions/workflows/method-completeness.yaml)
+
+`ci` is the fast tier (PR / branch push, ~3 min). `ci-full` is the slow
+tier (main push / nightly, ~15 min) — the timestamp + sha of the most
+recent green full run is checked into [`.github/last-full-run.json`](.github/last-full-run.json).
+
 A research framework for studying alternatives to power-law tilting in
 the Frasian inference setting. The driving question:
 
@@ -139,11 +147,24 @@ cookbook.
 ## Tests
 
 ```bash
-python -m pytest                    # ~830 tests across L0-L4 (37 stub-skips), ~2 min
-python -m pytest -m "L0 or L1"      # math primitives + invariants
-python -m pytest -m L4              # end-to-end experiments only
-python tools/check_method_completeness.py    # gate every PR runs
+# Fast tier (what CI runs on every PR / branch push, ~3 min)
+python -m pytest -m "not L5 and not slow" -n auto
+
+# Full tier (what CI runs on main pushes + nightly, ~15 min)
+python -m pytest -m "not L5" -n auto
+
+# Layer subsets
+python -m pytest -m "L0 or L1" -n auto    # math primitives + invariants
+python -m pytest -m L4 -n auto            # end-to-end experiments only
+
+# Method-completeness gate (every PR; ~2 s)
+python tools/check_method_completeness.py
 ```
+
+The `slow` mark is applied to MC-heavy pins (post-selection coverage,
+generic-path bernoulli end-to-end, learned-η calibration) — they run
+in the full tier so they protect main, but they don't block PR
+iteration on a feature branch.
 
 Test layers (markers replace the legacy `tier1`–`tier5`):
 

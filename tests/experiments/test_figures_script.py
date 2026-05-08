@@ -14,16 +14,16 @@ from frasian.config import Config, GridSpec
 def _small_config() -> Config:
     """Smallest config that still produces a figure-able coverage table.
 
-    n_reps=10, 3×2 grid → ~60 CIs per cell × ~5 cells = ~300 CIs total.
-    Wall-time ~30 s on dev hardware (was ~3 min at the previous
-    n_reps=30 / 4×3 grid budget). The test only checks that
-    `regenerate` produces a PNG; it doesn't pin coverage values, so
-    a smaller budget is fine.
+    n_reps=3, 2×1 grid → ~6 CIs per cell × ~5 cells = ~30 CIs total.
+    The test only checks that ``regenerate`` produces a PNG and round-
+    trips the manifest; it doesn't pin coverage values or dimensions
+    beyond the file existing, so the smallest grid that still yields a
+    non-empty table is correct here.
     """
     return Config.fast().from_overrides(
-        n_reps=10,
-        theta_grid=GridSpec("theta", -1.5, 1.5, 3),
-        w_grid=GridSpec("w", 0.3, 0.7, 2),
+        n_reps=3,
+        theta_grid=GridSpec("theta", -1.0, 1.0, 2),
+        w_grid=GridSpec("w", 0.5, 0.5, 1),
     )
 
 
@@ -31,7 +31,10 @@ def _small_config() -> Config:
 class TestFiguresScript:
     def test_regenerate_from_results(self, tmp_path: Path, bootstrapped_registry):
         experiment = registry.experiments["coverage"]()
-        tiltings, statistics = default_cells(n_grid=81, coarse_n=9)
+        # Smaller dynamic-CI scan grids (defaults are 81/9). The figures
+        # smoke doesn't need the production-grade resolution; it only
+        # needs the cells to populate so the table + PNG can be drawn.
+        tiltings, statistics = default_cells(n_grid=21, coarse_n=5)
         run_experiment(
             experiment=experiment,
             tiltings=tiltings,

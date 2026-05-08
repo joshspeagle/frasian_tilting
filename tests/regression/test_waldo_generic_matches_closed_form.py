@@ -24,7 +24,17 @@ from frasian.statistics.waldo import WaldoStatistic
 
 
 @pytest.mark.L3
+@pytest.mark.slow
 class TestWaldoGenericMatchesClosedForm:
+    """Cross-path agreement tests: generic MC vs closed-form WALDO.
+
+    These are *full-tier* concerns: they pin "the generic math is
+    correct on Normal-Normal" and the assertion tolerances are tuned
+    to the n_mc budgets below. Cutting n_mc loosens the tolerance and
+    starts flaking. Marked ``@slow`` so the fast tier (per-PR) skips
+    them; they still run on main pushes + nightly cron.
+    """
+
     @pytest.mark.parametrize(
         "D, theta",
         [

@@ -46,7 +46,9 @@ def _dynamic_friendly_config() -> Config:
 class TestCoverageExperimentEndToEnd:
     def test_runs_and_produces_manifest(self, tmp_path: Path, bootstrapped_registry):
         experiment = registry.experiments["coverage"]()
-        tiltings, statistics = default_cells(n_grid=81, coarse_n=9)
+        # Reduced dynamic-CI scan grids vs production defaults (81/9):
+        # the manifest-shape assertions don't depend on scan resolution.
+        tiltings, statistics = default_cells(n_grid=21, coarse_n=5)
         cfg = _dynamic_friendly_config()
         run_experiment(
             experiment=experiment,
@@ -109,18 +111,27 @@ class TestCoverageExperimentEndToEnd:
 
     def test_byte_reproducible_at_same_inputs(self, tmp_path: Path, bootstrapped_registry):
         """Two runs with the same Config + same git-sha produce identical
-        cells and manifests *modulo* the figures (matplotlib timestamps)."""
+        cells and manifests *modulo* the figures (matplotlib timestamps).
+
+        This is a *byte-equality* assertion, not a statistical one: the
+        smallest config that produces a non-empty manifest is correct.
+        Running this through ``default_cells(n_grid=81, coarse_n=9)`` on
+        a 2×1 grid with n_reps=4 (the dynamic-friendly config) was the
+        bottleneck; we cut the dynamic-CI scan resolution further since
+        the test only checks that two identical inputs give identical
+        outputs — scan resolution doesn't affect that.
+        """
         a = tmp_path / "a"
         b = tmp_path / "b"
         cfg = _dynamic_friendly_config()
         experiment = registry.experiments["coverage"]()
-        tiltings, statistics = default_cells(n_grid=81, coarse_n=9)
+        tiltings, statistics = default_cells(n_grid=21, coarse_n=5)
         run_experiment(
             experiment=experiment, tiltings=tiltings, statistics=statistics, config=cfg, out_dir=a
         )
         # Reconstruct fresh instances (frozen dataclasses are hashable but
         # we want a clean state for the second run).
-        tiltings2, statistics2 = default_cells(n_grid=81, coarse_n=9)
+        tiltings2, statistics2 = default_cells(n_grid=21, coarse_n=5)
         run_experiment(
             experiment=experiment, tiltings=tiltings2, statistics=statistics2, config=cfg, out_dir=b
         )

@@ -40,6 +40,7 @@ from frasian.tilting.power_law import PowerLawTilting
 
 
 @pytest.mark.L4
+@pytest.mark.slow
 def test_full_public_api_bernoulli_powerlaw():
     """Full public API on (BernoulliModel, BetaDistribution, power_law,
     waldo) at FixedEtaSelector(eta=0). One canonical cell at the L4
@@ -54,11 +55,13 @@ def test_full_public_api_bernoulli_powerlaw():
     Pin: both return finite values on [0, 1]; CI contains the MLE;
     pvalue is in (0, 1].
 
-    Phase 4 wrap: dropped the redundant ``confidence_interval`` call
-    (which internally calls ``confidence_regions`` and takes the
-    convex hull — a 50 % wall-time reduction on the slow generic-MC
-    path; ``confidence_interval`` is pinned independently by the L0
-    cross-check tests).
+    Marked ``@slow`` (wall ~80 s): the public API for non-Normal pairs
+    routes through the generic MC path with default ``n_mc=200`` —
+    not overridable from the surface this test exercises. The cheaper
+    L0 paths in ``test_power_law_generic_pvalue_ci.py`` already pin
+    each generic helper at ``n_mc=50``; this test's marginal value is
+    confirming the public-API plumbing on top, which is a full-tier
+    concern, not a per-PR concern.
     """
     model = BernoulliModel()
     prior = BetaDistribution(alpha=2.0, beta=2.0)
@@ -86,10 +89,14 @@ def test_full_public_api_bernoulli_powerlaw():
 
 
 @pytest.mark.L4
+@pytest.mark.slow
 def test_full_public_api_bernoulli_ot_smoke():
     """OT scheme integration smoke: only ``confidence_regions`` to
     cover the OT-specific generic dispatch path; other surfaces are
-    pinned by dedicated tests."""
+    pinned by dedicated tests. ``@slow`` for the same reason as the
+    power_law sibling: default ``n_mc=200`` is wired by the public
+    API, not overridable here, and the cheaper helpers in
+    ``test_ot_generic_tilt.py`` already pin the math at ``n_mc=50``."""
     model = BernoulliModel()
     prior = BetaDistribution(alpha=2.0, beta=2.0)
     scheme = OTTilting(selector=FixedEtaSelector(eta=0.0))
@@ -103,6 +110,7 @@ def test_full_public_api_bernoulli_ot_smoke():
 
 
 @pytest.mark.L4
+@pytest.mark.slow
 def test_bernoulli_extreme_data_returns_support_boundary():
     """All-ones Bernoulli data: CI upper bound IS support_hi (=1.0).
 
@@ -110,6 +118,10 @@ def test_bernoulli_extreme_data_returns_support_boundary():
     support endpoint cleanly without silently falling through brentq's
     bracket-doubling exhaust + except. Tested on power_law only;
     ot follows the same brentq path.
+
+    ``@slow`` (~30 s): boundary-detection bug regression. The cheaper
+    L0 dispatch tests cover the non-boundary path; this case forces
+    the brentq-exhaustion branch and is full-tier territory.
     """
     model = BernoulliModel()
     prior = BetaDistribution(alpha=2.0, beta=2.0)
