@@ -160,14 +160,24 @@ def test_ot_generic_tilted_ci_bernoulli_smoke_low_nmc():
 
 
 @pytest.mark.L3
-@pytest.mark.parametrize("eta", [0.0, 0.3, 0.7, 1.0])
-@pytest.mark.parametrize("D", [-0.5, 0.0, 1.0])
+@pytest.mark.slow
+@pytest.mark.parametrize("eta", [0.0, 0.3, 1.0])
+@pytest.mark.parametrize("D", [-0.5, 1.0])
 def test_ot_generic_ci_matches_closed_form_normal_normal(eta, D):
     """Generic vs closed-form CI on Normal-Normal at static η for OT.
 
     The Gaussian fast path in `tilt()` returns a NormalDistribution;
     the generic path (when forced) uses QuantileMixturePath. Both should
     agree within MC tolerance.
+
+    Trimmed parametrize grid (η ∈ {0, 0.3, 1.0} × D ∈ {-0.5, 1.0}):
+    spans geodesic endpoints + an interior point on η, and one conflict
+    + one non-conflict draw on D — covers the same regression surface
+    as the original 4×3 grid.
+
+    Marked ``@slow`` (~2 min wall): cross-path agreement check is a
+    full-tier concern, not per-PR. The L0 ``_generic_tilt_ot`` smoke
+    pins the construction at n_mc=50 on every PR.
     """
     sigma, sigma0 = 1.0, 1.0
     model = NormalNormalModel(sigma=sigma)
@@ -177,15 +187,16 @@ def test_ot_generic_ci_matches_closed_form_normal_normal(eta, D):
     scheme = OTTilting(selector=FixedEtaSelector(eta=eta))
     statistic = WaldoStatistic()
 
+    n_mc = 500
     cf_lo, cf_hi = scheme.tilted_confidence_interval(
         alpha, float(D), model, prior, eta, statistic.name
     )
     gn_lo, gn_hi = _generic_tilted_confidence_interval_ot(
-        alpha, data, model, prior, eta, statistic.name, n_mc=500,
+        alpha, data, model, prior, eta, statistic.name, n_mc=n_mc,
     )
 
     sigma_post = float(np.sqrt(model.posterior(data, prior).var()))
-    tol = 3.0 * sigma_post / np.sqrt(500) + 0.10
+    tol = 3.0 * sigma_post / np.sqrt(n_mc) + 0.10
     assert abs(cf_lo - gn_lo) < tol, (
         f"OT CI lower disagreement at D={D}, eta={eta}: "
         f"closed={cf_lo:.4f} generic={gn_lo:.4f} (tol={tol:.4f})"

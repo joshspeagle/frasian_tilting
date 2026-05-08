@@ -1,0 +1,151 @@
+name: ci-full
+
+# Full tier: runs the complete L0-L4 suite (including @slow MC pins
+# and illustration smoke runs) across both supported Python versions.
+#
+# Schedule:
+# - On every push to main (catches regressions before they propagate).
+#   Excludes pushes that only touch .github/last-full-run.json so the
+#   marker commit (written below) does NOT retrigger a full run —
+#   GitHub Actions does not honor [skip ci] in commit messages, so
+#   `paths-ignore` is the explicit guard.
+# - Nightly cron at 06:00 UTC (catches non-determinism, env drift, and
+#   slow-flake regressions on the integration branch).
+# - Manual dispatch (devs can run before opening a PR; only writes the
+#   marker when run on main, since the marker only carries meaning for
+#   the integration branch).
+#
+# Target wall: ~10-15 min per Python version (jobs run in parallel).
+#
+# On success, commits .github/last-full-run.json so the repo carries
+# a visible "last green full run" marker. The README badge points to
+# this workflow's run history.
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      # Avoid the infinite trigger loop: this workflow writes
+      # last-full-run.json on success, and that commit must not
+      # retrigger ci-full.
+      - ".github/last-full-run.json"
+  schedule:
+    # 06:00 UTC daily. Skipped automatically on forks (GitHub policy).
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ci-full-${{ github.ref }}
+  cancel-in-progress: false  # never cancel a full run in flight
+
+jobs:
+  tests:
+    name: pytest L0-L4 (full, incl. slow)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    outputs:
+      runtime_s: ${{ steps.timer.outputs.runtime_s }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install package + dev + ml deps
+        # `[ml]` brings PyYAML, which the learned_eta illustration
+        # smoke needs (ExperimentConfig.from_yaml). Without it the
+        # final smoke step fails on a clean runner.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,ml]"
+
+      - name: Record start time
+        id: start
+        run: echo "epoch=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      - name: Run pytest L0-L4 (everything except L5 nightly)
+        run: python -m pytest -m "not L5" -n auto -q
+
+      - name: Smoke-run all illustrations
+        run: |
+          for demo in src/frasian/experiments/illustrations/*_demo.py; do
+            module="frasian.experiments.illustrations.$(basename "$demo" .py)"
+            echo "=== $module --smoke ==="
+            python -m "$module" --smoke
+          done
+
+      - name: Record runtime
+        id: timer
+        run: |
+          end=$(date +%s)
+          echo "runtime_s=$((end - ${{ steps.start.outputs.epoch }}))" >> "$GITHUB_OUTPUT"
+
+  mark-last-run:
+    name: commit .github/last-full-run.json
+    needs: tests
+    # Only mark on main: schedule defaults to the default branch, push
+    # is gated to main upstream, and workflow_dispatch should only
+    # write the marker when the dev intentionally ran the full tier
+    # against main. A workflow_dispatch on a feature branch must NOT
+    # commit a marker (would create non-fast-forward push attempts and
+    # pollute branch history).
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Write marker
+        run: |
+          mkdir -p .github
+          cat > .github/last-full-run.json <<EOF
+          {
+            "timestamp_utc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "commit_sha": "${{ github.sha }}",
+            "commit_short": "$(echo ${{ github.sha }} | cut -c1-7)",
+            "ref": "${{ github.ref }}",
+            "event": "${{ github.event_name }}",
+            "run_id": "${{ github.run_id }}",
+            "run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+            "python_versions": ["3.11", "3.12"],
+            "status": "success"
+          }
+          EOF
+
+      - name: Commit and push if changed
+        # Rebase onto the latest origin/main before pushing so a
+        # human merge during the full run doesn't fail this job.
+        # Retry once on push race (someone else committed between our
+        # rebase and our push).
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet .github/last-full-run.json; then
+            echo "no marker change; skipping commit"
+            exit 0
+          fi
+          git add .github/last-full-run.json
+          git commit -m "ci-full: mark last green run @ ${{ github.sha }}"
+
+          for attempt in 1 2; do
+            git fetch origin main
+            git rebase origin/main
+            if git push origin HEAD:main; then
+              echo "marker pushed (attempt $attempt)"
+              exit 0
+            fi
+            echo "push race on attempt $attempt; refetching"
+          done
+          echo "could not push marker after 2 attempts; failing this job"
+          exit 1

@@ -33,6 +33,7 @@ from frasian.tilting.power_law import PowerLawTilting
 
 
 @pytest.mark.L3
+@pytest.mark.slow
 class TestPostSelectionCoverage:
     """Pin the coverage gap between the calibrated dynamic selector and
     the post-selection static-η*-opt selector."""

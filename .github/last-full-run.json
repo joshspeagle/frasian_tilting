@@ -1,0 +1,11 @@
+{
+  "timestamp_utc": "1970-01-01T00:00:00Z",
+  "commit_sha": "0000000000000000000000000000000000000000",
+  "commit_short": "0000000",
+  "ref": "refs/heads/main",
+  "event": "placeholder",
+  "run_id": "",
+  "run_url": "",
+  "python_versions": ["3.11", "3.12"],
+  "status": "never_run"
+}
