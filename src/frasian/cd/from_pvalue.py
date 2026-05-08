@@ -46,7 +46,6 @@ Lecture Notes — Monograph Series* 54: 132–150.
 
 from __future__ import annotations
 
-import jax.numpy as jnp
 import numpy as np
 from numpy.typing import NDArray
 
@@ -163,25 +162,23 @@ def build_cd_from_pvalue(
     # average the absolute *one-sided* differences, which agrees with
     # central diffs on smooth regions but recovers the correct |dp/dθ|
     # at kinks.
-    pvals_j = jnp.asarray(pvals, dtype=jnp.float64)
-    theta_j = jnp.asarray(theta_grid, dtype=jnp.float64)
-    forward_inner = jnp.abs(jnp.diff(pvals_j)) / jnp.diff(theta_j)
+    forward_inner = np.abs(np.diff(pvals)) / np.diff(theta_grid)
     # Replicate the legacy boundary handling exactly: forward[-1] = forward[-2],
     # backward[0] = backward[1] (which equals forward[0]).
-    forward = jnp.concatenate([forward_inner, forward_inner[-1:]])
-    backward = jnp.concatenate([forward_inner[:1], forward_inner])
+    forward = np.concatenate([forward_inner, forward_inner[-1:]])
+    backward = np.concatenate([forward_inner[:1], forward_inner])
     abs_dp_dtheta = 0.5 * (forward + backward)
     c_unnorm = 0.5 * abs_dp_dtheta
 
     # 3. Z-normalise so pdf integrates to 1 exactly.
-    Z = float(jnp.trapezoid(c_unnorm, theta_j))
+    Z = float(np.trapezoid(c_unnorm, theta_grid))
     if Z <= 0.0:
         raise ValueError(
             f"density normalisation Z = {Z:.3e} is non-positive; "
             f"likely the p-value is constant on the grid (no support). "
             f"Try a wider θ-grid or check the tilting/statistic cell."
         )
-    pdf_values = np.asarray(c_unnorm / Z, dtype=np.float64)
+    pdf_values = c_unnorm / Z
 
     # 4. Inversion-based C(θ) — preserved verbatim as auxiliary diagnostic.
     signed = _signed_confidence_curve(theta_grid, pvals)

@@ -55,6 +55,7 @@ import jax.scipy.stats as jsp_stats
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from scipy import stats as _scalar_scipy_stats
+from scipy.special import ndtr as _ndtr
 
 from .. import _jax_setup as _x64  # noqa: F401  — ensure float64 active
 from .._errors import BracketingFailed
@@ -113,15 +114,14 @@ def _closed_form_pvalue_scalar(
     sigma: float,
 ) -> float:
     """Numpy-eager scalar mirror of `_closed_form_pvalue`. Used inside
-    brentq closures (~10 us/call vs ~200 us through `jsp_stats.norm.cdf`).
-    See `tilting/power_law.py::_tilted_pvalue_numpy_scalar` for the
-    same-pattern motivation.
+    brentq closures (~1 us/call via scipy.special.ndtr vs ~30 us via
+    scipy.stats.norm.cdf's argsreduce wrapper, vs ~200 us through
+    jsp_stats.norm.cdf). See `tilting/power_law.py::_tilted_pvalue_numpy_scalar`
+    for the same-pattern motivation.
     """
     a = abs(mu_n_f - theta_f) / (w * sigma)
     b = (1.0 - w) * (mu0 - theta_f) / (w * sigma)
-    return float(
-        _scalar_scipy_stats.norm.cdf(b - a) + _scalar_scipy_stats.norm.cdf(-a - b)
-    )
+    return float(_ndtr(b - a) + _ndtr(-a - b))
 
 
 @register_statistic(name="waldo", brief="docs/methods/waldo.md")
@@ -174,12 +174,16 @@ class WaldoStatistic:
         data: NDArray[np.float64],
         model: NormalNormalModel,
         prior: NormalDistribution,
-    ) -> jax.Array:
+    ) -> NDArray[np.float64]:
+        # NumPy + scipy.special.ndtr: ~50x faster than jsp_stats.norm.cdf
+        # for the small-array sizes the CD experiment evaluates per replicate.
         D = float(np.atleast_1d(np.asarray(data, dtype=np.float64)).mean())
-        mu_n, _, w = posterior_params(D, prior.loc, model.sigma, prior.scale)
-        theta_arr = jnp.asarray(theta0, dtype=jnp.float64)
-        a, b = _pvalue_components(theta_arr, float(mu_n), prior.loc, w, model.sigma)
-        return jsp_stats.norm.cdf(b - a) + jsp_stats.norm.cdf(-a - b)
+        mu_n_arr, _, w = posterior_params(D, prior.loc, model.sigma, prior.scale)
+        mu_n = float(mu_n_arr)
+        theta_arr = np.asarray(theta0, dtype=np.float64)
+        a = np.abs(mu_n - theta_arr) / (w * model.sigma)
+        b = (1.0 - w) * (prior.loc - theta_arr) / (w * model.sigma)
+        return _ndtr(b - a) + _ndtr(-a - b)
 
     def _closed_form_confidence_interval(
         self,
