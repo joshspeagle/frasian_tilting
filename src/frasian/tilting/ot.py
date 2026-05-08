@@ -192,7 +192,15 @@ def _generic_tilt_ot(
     n_grid: int = _GENERIC_TILT_N_GRID,
 ):
     """Numerical W2 tilt: QuantileMixturePath between posterior and
-    likelihood-as-distribution at parameter t = eta in [0, 1].
+    likelihood-as-distribution at parameter ``t = eta``.
+
+    The geodesic *segment* is ``t in [0, 1]``; extrapolation along the
+    W2 displacement line is admissible whenever the resulting law is
+    still a valid distribution (audit P0-4). The monotonicity check
+    that gates extrapolation is enforced by ``QuantileMixturePath``'s
+    own ``__post_init__`` validator — this helper only refuses
+    non-finite ``eta`` upfront so callers don't pay the
+    likelihood-as-distribution construction cost on a doomed call.
 
     Endpoints:
       - p = posterior (passed in, already a Distribution).
@@ -205,9 +213,16 @@ def _generic_tilt_ot(
     """
     from ._generic_pvalue import likelihood_as_distribution
 
-    if not (0.0 <= float(eta) <= 1.0):
-        raise TiltingDomainError(f"OTTilting requires eta in [0, 1], got {float(eta)!r}.")
+    if not np.isfinite(float(eta)):
+        raise TiltingDomainError(
+            f"OTTilting requires finite eta, got {float(eta)!r}."
+        )
     q = likelihood_as_distribution(model, data, support, n_grid=n_grid)
+    # Monotonicity probe at construction time (QuantileMixturePath
+    # __post_init__) raises ValueError for non-monotone extrapolation;
+    # callers in the validity helper / CI inversion already catch
+    # ValueError → NaN, so non-Gaussian extrapolation that violates
+    # the inverse-density slope balance fails loudly at the right gate.
     return QuantileMixturePath(p=posterior, q=q, t=float(eta))
 
 
@@ -305,8 +320,14 @@ def _generic_tilted_pvalue_ot(
     support = _resolve_support(model, data_arr)
     theta_f = float(theta)
     eta_f = float(eta)
-    if not (0.0 <= eta_f <= 1.0):
-        raise TiltingDomainError(f"OTTilting requires eta in [0, 1], got {eta_f!r}.")
+    # Audit P0-4: OT is well-defined on the full W2 displacement line.
+    # Per-eta admissibility (monotonicity of the linear quantile combo)
+    # is enforced inside `_generic_tilt_ot` → `QuantileMixturePath`;
+    # only refuse non-finite eta here, before the seed-derivation cost.
+    if not np.isfinite(eta_f):
+        raise TiltingDomainError(
+            f"OTTilting requires finite eta, got {eta_f!r}."
+        )
 
     if derived_seed is None:
         derived_seed = _stable_tilted_pvalue_seed(
@@ -379,10 +400,13 @@ def _generic_tilted_confidence_interval_ot(
     eta_f = float(eta)
     # Skeptic LOW #8: validate eta at function entry rather than letting
     # _generic_tilt_ot raise mid-inversion. Saves the seed-derivation +
-    # posterior-construction cost on a doomed call.
-    if not (0.0 <= eta_f <= 1.0):
+    # posterior-construction cost on a doomed call. Audit P0-4: only
+    # finite-eta is required upfront — admissibility along the W2
+    # displacement line is enforced by `QuantileMixturePath`'s runtime
+    # monotonicity probe, not a [0, 1] interval clamp.
+    if not np.isfinite(eta_f):
         raise TiltingDomainError(
-            f"OTTilting requires eta in [0, 1], got {eta_f!r}."
+            f"OTTilting requires finite eta, got {eta_f!r}."
         )
     derived_seed = _stable_tilted_pvalue_seed(
         data_arr, model, prior, eta_f, alpha, base_seed

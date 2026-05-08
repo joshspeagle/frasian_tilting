@@ -65,6 +65,57 @@ def test_ot_generic_tilt_runs_on_bernoulli_smoke():
 
 
 @pytest.mark.L0
+def test_ot_generic_tilt_only_refuses_non_finite_eta():
+    """Audit P0-4: `_generic_tilt_ot` no longer interval-clamps eta to
+    [0, 1]. Admissibility along the W2 displacement line is enforced by
+    `QuantileMixturePath`'s monotonicity probe at construction time;
+    this helper only refuses non-finite eta upfront.
+
+    On Bernoulli + Beta endpoints, mild extrapolation past the geodesic
+    segment (e.g. eta=1.1) is admissible whenever the linear quantile
+    combo is still monotone — verify it doesn't raise upfront, and that
+    QMP either returns a valid distribution or raises ``ValueError``
+    (caught by callers as NaN). Non-finite eta must still raise
+    ``TiltingDomainError`` at the function entry.
+    """
+    from frasian._errors import TiltingDomainError
+    from frasian.tilting._generic_pvalue import _resolve_support
+    model = BernoulliModel()
+    prior = BetaDistribution(alpha=2.0, beta=2.0)
+    data = np.asarray([1.0, 0.0, 1.0, 1.0, 0.0, 1.0])
+    posterior = model.posterior(data, prior)
+    likelihood = model.likelihood(data)
+    support = _resolve_support(model, data)
+
+    # Finite eta past the segment: the upfront guard must NOT fire.
+    # The QMP probe may admit (returning a valid QuantileMixturePath)
+    # or raise `ValueError` for non-monotone extrapolation; either is
+    # acceptable — what we're pinning is "no upfront [0, 1] clamp".
+    for eta in (-0.05, 1.05):
+        try:
+            qmp = _generic_tilt_ot(
+                posterior, likelihood, eta,
+                model=model, data=data, support=support,
+            )
+            assert isinstance(qmp, QuantileMixturePath)
+        except ValueError:
+            # QMP's runtime monotonicity probe legitimately rejected
+            # this extrapolation — that's the correct gate. The
+            # important contract is that the rejection comes from the
+            # QMP probe (ValueError), NOT from a stale [0, 1] clamp
+            # (TiltingDomainError).
+            pass
+
+    # Non-finite eta still raises at function entry.
+    for bad_eta in (float("inf"), float("-inf"), float("nan")):
+        with pytest.raises(TiltingDomainError, match="finite"):
+            _generic_tilt_ot(
+                posterior, likelihood, bad_eta,
+                model=model, data=data, support=support,
+            )
+
+
+@pytest.mark.L0
 def test_ot_dynamic_selector_raises_on_bernoulli():
     """Dynamic-η + non-Normal-Normal raises (parity with power_law)."""
     model = BernoulliModel()
