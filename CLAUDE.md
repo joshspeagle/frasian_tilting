@@ -278,10 +278,12 @@ src/frasian/
     bernoulli.py             # BernoulliModel + Beta-conjugate posterior
 
   tilting/
+    __init__.py              # Re-exports `TiltingScheme` / `EtaSelector` / `TiltingDomainError` only; concrete schemes are imported via `frasian._registry_bootstrap`.
     base.py                  # TiltingScheme, EtaSelector, TiltingDomainError
     _solvers.py              # ONE brentq_with_doubling
-    _admissible.py           # numerical_admissible_range probe (cached debug helper)
     _dynamic.py              # shared dynamic-η-per-θ CI scan (used by power_law/ot)
+    _generic_pvalue.py       # shared generic-MC tilted_pvalue helpers (CRN seed, support resolver)
+    _grid_distribution.py    # GridDistribution: tilted-density grid materialiser
     eta_selectors.py         # Fixed / Numerical / DynamicNumerical / LearnedDynamic
     identity.py              # IdentityTilting (no-op identity element)
     power_law.py             # PowerLawTilting (e-geodesic / Theorem 6)
@@ -333,16 +335,21 @@ src/frasian/
   learned/
     base.py                  # LearnedArtifact protocol
     null.py                  # NullArtifact (for tests)
-    eta_artifact.py          # Phase E EtaArtifact (loads dual-head v2 checkpoint)
+    eta_artifact.py          # Phase E EtaArtifact (loads dual-head v3 Equinox checkpoint)
     training/
       __init__.py            # public surface: EtaNet, ValidityNet, fit_eta_artifact, ...
       architecture.py        # EtaNet (θ → η) + ValidityNet ((θ, η) → logit), GELU MLPs
       losses.py              # integrated_p / cd_variance / static_width + boundary_penalty_from_validity
       validity.py            # is_pair_valid, validity_mask, compute_pvalues_per_sample
       sampling.py            # ExperimentConfig, ThetaDistribution, UniformThetaDistribution, lhs_1d
-      pvalue_torch.py        # torch ports of tilted_pvalue per scheme (autograd path)
-      cd_torch.py            # torch port of CD density (for cd_variance loss)
+      pvalue_jax.py          # JAX ports of tilted_pvalue per scheme (autograd path; post-Phase-F port from torch)
+      cd_jax.py              # JAX port of CD density (for cd_variance loss)
       train.py               # fit_eta_artifact: dual-head training loop
+      _setup.py              # device resolver / x64 / RNG plumbing for fit_eta_artifact
+      _train_loop.py         # the training step + eval loop driving optax
+      _losses_compose.py     # per-scheme loss composition (NN closed-form + generic-grid)
+      _checkpoint.py         # Equinox .eqx file I/O (CHECKPOINT_FORMAT_VERSION = 3)
+      _validity_data.py      # offline (θ, η, valid) sampler used to seed Head B
 
 tests/
   conftest.py                # autouse registry isolation + bootstrapped fixture
@@ -363,8 +370,9 @@ scripts/
   train_learned_eta.py       # train Phase E EtaNet+ValidityNet from an experiment YAML
 
 experiments/
-  canonical_normal_normal_powerlaw.yaml  # Phase E ExperimentConfig fixture
-  canonical_normal_normal_ot.yaml        # Phase E ExperimentConfig fixture
+  canonical_normal_normal_powerlaw.yaml  # Phase E ExperimentConfig fixture (NN + power_law)
+  canonical_normal_normal_ot.yaml        # Phase E ExperimentConfig fixture (NN + ot)
+  canonical_bernoulli_powerlaw.yaml      # Phase 4 ExperimentConfig fixture (Bernoulli + power_law)
 
 artifacts/                   # trained Phase E v0_smoke checkpoints (committed); v1 not committed
 
@@ -435,7 +443,7 @@ python -m scripts.run --fast experiment=smoothness
 python -m scripts.figures results/coverage
 
 # Run the test suite
-python -m pytest                    # ~830 tests across L0-L4 (37 stub-skips), ~2 min
+python -m pytest                    # ~1530 collected (~25 stub-skips), ~3 min
 python -m pytest -m L0              # math primitives only
 python -m pytest -m "L0 or L1"      # core + properties
 python -m pytest -m L4              # end-to-end
@@ -456,6 +464,21 @@ statistic, config_fingerprint, git_sha, raw_fingerprint, extra)` →
 uncommitted changes always recompute. Same `(config, sha)` on a
 clean tree is byte-reproducible.
 
+**Gitignored-artifact policy.** `git status --porcelain` ignores
+gitignored paths, so swapping a checkpoint at
+`artifacts/learned_eta_*_v1.eqx` (a gitignored production
+artifact) does **not** flip the tree to dirty and the cache key
+does not move on `git_sha` alone. Invalidation in that case hinges
+on `selector_artifact_fingerprint` (24-char digest of the artifact
+file) being plumbed into the cache key via the cell's `extra`
+dict — the `_runner` does this automatically for any selector
+that exposes `.artifact.fingerprint()`. If you train a fresh
+`v1` artifact, the next cache lookup returns a miss and recomputes;
+if the runner cannot read the fingerprint (artifact removed mid-
+run, fingerprint method raises), it bails to a recompute. Never
+edit a checkpoint file in place — replace atomically. Pinned by
+`tests/regression/test_cache_learned_invalidation.py`.
+
 ## Migration Status
 
 | Step | Status | Description                                                     |
@@ -469,7 +492,7 @@ clean tree is byte-reproducible.
 | 7    | done   | .claude/ subagents + slash commands + GitHub Actions CI gates   |
 | 8    | done   | Selector-as-tilting-member refactor: IdentityTilting + accepts_tilting + uniform `tilting.confidence_interval`; dynamic_ci subsumed by coverage/width |
 | 9    | done   | Geodesic taxonomy refactor: `ot_normal`→`ot` (general 1D W2 + Gaussian fast path implemented); `geodesic_normal`→`fisher_rao` (renamed stub); `exp_family` dropped (redundant with `power_law` on conjugate exp-families); `mixture` reframed as m-geodesic / dual partner of `power_law`'s e-geodesic |
-| 10   | done   | Phase E learned-η rewrite: model-agnostic dual-head selector (`EtaNet` + `ValidityNet`) trained per-experiment; replaces Phase D `MonotonicEtaNet` (deleted). `EtaNet`: smooth GELU-MLP from raw θ → η, no monotonicity prior, no bounded sigmoid. `ValidityNet`: learns `P(valid \| θ, η)` from observed `(θ, η, valid)` triples; provides `-log P(valid)` boundary penalty for Head A. Per-experiment fingerprints (`Prior.fingerprint()`/`Model.fingerprint()`) + strict cross-experiment refusal. New `ExperimentConfig` YAML schema. Smoke fixtures `learned_eta_canonical_normal_normal_<scheme>_v0_smoke.pt` committed for `power_law` and `ot`. |
+| 10   | done   | Phase E learned-η rewrite: model-agnostic dual-head selector (`EtaNet` + `ValidityNet`) trained per-experiment; replaces Phase D `MonotonicEtaNet` (deleted). `EtaNet`: smooth GELU-MLP from raw θ → η, no monotonicity prior, no bounded sigmoid. `ValidityNet`: learns `P(valid \| θ, η)` from observed `(θ, η, valid)` triples; provides `-log P(valid)` boundary penalty for Head A. Per-experiment fingerprints (`Prior.fingerprint()`/`Model.fingerprint()`) + strict cross-experiment refusal. New `ExperimentConfig` YAML schema. Smoke fixtures `learned_eta_canonical_normal_normal_<scheme>_v0_smoke.eqx` committed for `power_law` and `ot` (Equinox `.eqx` format after the Phase F JAX port; `.pt` torch checkpoints are gone). |
 
 ## Key Anti-Patterns to Avoid
 

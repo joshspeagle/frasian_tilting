@@ -7,9 +7,12 @@
 The Bernoulli model with a Beta-conjugate prior. The framework's
 second concrete `Model` implementation, included to demonstrate that
 the protocols in `src/frasian/models/base.py` accommodate non-Normal
-sampling distributions and non-Gaussian conjugate priors. Pairings
-with the existing tilting schemes / test statistics raise
-`NotImplementedError` (by design — see Failure modes).
+sampling distributions and non-Gaussian conjugate priors. After
+Phase 2, `WaldStatistic` and `WaldoStatistic` run generically on
+Bernoulli via the model-agnostic numerical paths (see `wald.md`
+and `waldo.md`). The tilting-scheme pairings (`power_law`, `ot`)
+still raise `NotImplementedError` for non-Normal models — the
+generic tilted-pvalue path is Phase-3 follow-up work.
 
 ## Motivation
 
