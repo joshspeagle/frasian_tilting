@@ -181,7 +181,7 @@ def test_extracted_helper_matches_inline(scheme_factory, D, sigma0):
     scheme = scheme_factory()
     model = NormalNormalModel(sigma=sigma)
     prior = NormalDistribution(loc=mu0, scale=sigma0)
-    selector = DynamicNumericalEtaSelector(sigma=sigma, mu0=mu0)
+    selector = DynamicNumericalEtaSelector()
 
     new_regions, new_total, new_n = scheme.dynamic_tilted_confidence_interval(
         alpha=alpha,

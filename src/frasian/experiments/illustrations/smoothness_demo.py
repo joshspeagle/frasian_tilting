@@ -31,7 +31,7 @@ def main(smoke: bool = False, out: Path | None = None) -> Path:
 
     scheme = PowerLawTilting()
     statistic = WaldoStatistic()
-    selector = NumericalEtaSelector(sigma=sigma, mu0=mu0)
+    selector = NumericalEtaSelector()
 
     sigma0 = float(np.sqrt(w / max(1.0 - w, 1e-12)) * sigma)
     model = NormalNormalModel(sigma=sigma)

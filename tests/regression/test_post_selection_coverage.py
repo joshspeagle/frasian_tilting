@@ -47,7 +47,7 @@ class TestPostSelectionCoverage:
 
         ident = IdentityTilting()
         static_opt = PowerLawTilting(
-            selector=NumericalEtaSelector(sigma=sigma, mu0=mu0),
+            selector=NumericalEtaSelector(),
         )
         dyn = PowerLawTilting(
             selector=DynamicNumericalEtaSelector(

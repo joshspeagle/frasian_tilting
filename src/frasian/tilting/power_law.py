@@ -362,7 +362,11 @@ def _generic_tilt(
 # so PowerLaw and OT share the same CRN seed at fixed (data, prior, eta,
 # alpha) — enables direct cross-scheme MC comparison in the smoothness
 # experiment.
-from ._generic_pvalue import _GENERIC_TILTED_PVALUE_BASE_SEED  # noqa: F401
+from ._generic_pvalue import (  # noqa: F401
+    _GENERIC_TILTED_PVALUE_BASE_SEED,
+    _resolve_support,
+    _stable_tilted_pvalue_seed,
+)
 
 _GENERIC_TILTED_PVALUE_N_MC: int = 200
 # The MC inner-loop t-statistic uses a coarser grid than the observed
@@ -372,26 +376,6 @@ _GENERIC_TILTED_PVALUE_N_MC: int = 200
 # n_grid_mc=256 brings per-CI cost down ~4x with negligible coverage
 # impact at n_mc>=200.
 _GENERIC_TILTED_PVALUE_N_GRID_MC: int = 256
-
-
-def _stable_tilted_pvalue_seed(*args, **kwargs) -> int:
-    """Backwards-compatible alias for the module-level helper.
-
-    The implementation moved to `_generic_pvalue.py` in Phase 3d so
-    OTTilting can share it. This wrapper preserves the import path
-    that existing code uses (and keeps the in-file docstring nearby
-    for readability).
-    """
-    from ._generic_pvalue import _stable_tilted_pvalue_seed as _impl
-
-    return _impl(*args, **kwargs)
-
-
-def _resolve_support(*args, **kwargs) -> tuple[float, float]:
-    """Backwards-compatible alias; impl in `_generic_pvalue.py`."""
-    from ._generic_pvalue import _resolve_support as _impl
-
-    return _impl(*args, **kwargs)
 
 
 def _generic_tilted_moments(

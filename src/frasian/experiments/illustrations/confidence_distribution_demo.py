@@ -55,8 +55,6 @@ def main(smoke: bool = False, out: Path | None = None) -> Path:
             "Dyn-WALDO",
             PowerLawTilting(
                 selector=DynamicNumericalEtaSelector(
-                    sigma=sigma,
-                    mu0=0.0,
                     n_grid=n_grid_dyn,
                     coarse_n=coarse_n,
                 )

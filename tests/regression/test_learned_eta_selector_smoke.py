@@ -57,6 +57,7 @@ class _StubEtaArtifact:
     name: str = "stub_phase_e"
     version: str = "v0"
     artifact_path: Path = Path("/dev/null")
+    format_version: int = 3
     _loaded: bool = field(default=False, init=False, repr=False)
 
     def load(self) -> None:
@@ -78,7 +79,7 @@ class _StubEtaArtifact:
     @property
     def metadata(self) -> dict[str, Any]:
         return {
-            "checkpoint_format_version": 2,
+            "checkpoint_format_version": self.format_version,
             "experiment_config": {
                 "scheme_name": self.scheme_name,
                 "statistic_name": self.statistic_name,
@@ -102,11 +103,7 @@ class TestLearnedDynamicEtaSelectorSmoke:
     def test_select_grid_returns_constant_eta(self):
         """Stub returning η=0 ⇒ select_grid returns 0 everywhere."""
         artifact = _StubEtaArtifact(eta_value=0.0)
-        selector = LearnedDynamicEtaSelector(
-            artifact=artifact,
-            sigma=1.0,
-            mu0=0.0,
-        )
+        selector = LearnedDynamicEtaSelector(artifact=artifact)
         scheme = PowerLawTilting()
         model, prior = _matched_pair(artifact)
 
@@ -125,11 +122,7 @@ class TestLearnedDynamicEtaSelectorSmoke:
     def test_end_to_end_confidence_interval(self):
         """At η=0 (constant), the dynamic CI matches bare WALDO."""
         artifact = _StubEtaArtifact(eta_value=0.0)
-        selector = LearnedDynamicEtaSelector(
-            artifact=artifact,
-            sigma=1.0,
-            mu0=0.0,
-        )
+        selector = LearnedDynamicEtaSelector(artifact=artifact)
         scheme = PowerLawTilting(selector=selector)
 
         D = 1.5
@@ -156,6 +149,28 @@ class TestLearnedDynamicEtaSelectorSmoke:
         np.testing.assert_allclose(union_lo, bare_lo, atol=1e-3)
         np.testing.assert_allclose(union_hi, bare_hi, atol=1e-3)
 
+    def test_legacy_v2_checkpoint_rejected(self):
+        """Audit P2 (Cluster A): selector must reject pre-Equinox v2
+        checkpoints. Pre-fix the gate accepted ``v in (2, 3)`` while
+        ``EtaArtifact.load`` only loads v3 — a v2 file would leak past
+        ``_ensure_loaded`` and fail at the artifact level. Now both
+        gates demand v3.
+        """
+        artifact = _StubEtaArtifact(format_version=2)
+        selector = LearnedDynamicEtaSelector(artifact=artifact)
+        scheme = PowerLawTilting()
+        model, prior = _matched_pair(artifact)
+
+        with pytest.raises(MissingArtifactError, match="v3"):
+            selector.select_grid(
+                np.asarray([0.5, 1.0]),
+                scheme,
+                statistic=WaldoStatistic(),
+                model=model,
+                prior=prior,
+                alpha=0.05,
+            )
+
     def test_scheme_mismatch_raises(self):
         """Artifact trained for scheme X must not be used with scheme Y."""
         artifact = _StubEtaArtifact(scheme_name="ot")
@@ -176,11 +191,7 @@ class TestLearnedDynamicEtaSelectorSmoke:
     def test_cross_experiment_fingerprint_mismatch_raises(self):
         """Strict tuple-equal compare on prior + model fingerprints."""
         artifact = _StubEtaArtifact(sigma=1.0, sigma0=1.0, mu0=0.0)
-        selector = LearnedDynamicEtaSelector(
-            artifact=artifact,
-            sigma=1.0,
-            mu0=0.0,
-        )
+        selector = LearnedDynamicEtaSelector(artifact=artifact)
         scheme = PowerLawTilting()
         # Different prior loc — same w, but different fingerprint.
         model = NormalNormalModel(sigma=1.0)
@@ -199,11 +210,7 @@ class TestLearnedDynamicEtaSelectorSmoke:
     def test_alpha_marginalised_works_at_any_alpha(self):
         """Marginalised checkpoint (alpha=None) accepts any α."""
         artifact = _StubEtaArtifact(alpha=None, eta_value=0.0)
-        selector = LearnedDynamicEtaSelector(
-            artifact=artifact,
-            sigma=1.0,
-            mu0=0.0,
-        )
+        selector = LearnedDynamicEtaSelector(artifact=artifact)
         scheme = PowerLawTilting()
         model, prior = _matched_pair(artifact)
 
@@ -223,11 +230,7 @@ class TestLearnedDynamicEtaSelectorSmoke:
         `alpha=`, `statistic=` kwargs (Phase 3a-1.5 — no `TiltingContext`).
         """
         artifact = _StubEtaArtifact(sigma=1.0, sigma0=1.0, mu0=0.0)
-        selector = LearnedDynamicEtaSelector(
-            artifact=artifact,
-            sigma=1.0,
-            mu0=0.0,
-        )
+        selector = LearnedDynamicEtaSelector(artifact=artifact)
         scheme = PowerLawTilting()
         model, prior = _matched_pair(artifact)
 
@@ -278,7 +281,7 @@ class TestLearnedDynamicEtaSelectorSmoke:
             @property
             def metadata(self):
                 return {
-                    "checkpoint_format_version": 2,
+                    "checkpoint_format_version": 3,
                     "experiment_config": {
                         "scheme_name": self.scheme_name,
                         "statistic_name": self.statistic_name,
@@ -309,11 +312,7 @@ class TestLearnedDynamicEtaSelectorSmoke:
     def test_select_mismatched_model_fingerprint_raises(self):
         """Artifact trained on σ=1 cannot serve inference at σ=2."""
         artifact = _StubEtaArtifact(sigma=1.0, sigma0=1.0, mu0=0.0)
-        selector = LearnedDynamicEtaSelector(
-            artifact=artifact,
-            sigma=1.0,
-            mu0=0.0,
-        )
+        selector = LearnedDynamicEtaSelector(artifact=artifact)
         scheme = PowerLawTilting()
         model = NormalNormalModel(sigma=2.0)
         prior = NormalDistribution(loc=0.0, scale=1.0)

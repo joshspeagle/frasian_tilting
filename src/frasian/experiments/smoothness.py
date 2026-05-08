@@ -135,7 +135,7 @@ class SmoothnessExperiment:
                 },
             )
 
-        selector = NumericalEtaSelector(sigma=self.sigma, mu0=self.mu0)
+        selector = NumericalEtaSelector()
 
         for i, abs_delta in enumerate(delta_grid):
             try:

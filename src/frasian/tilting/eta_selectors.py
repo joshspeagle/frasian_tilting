@@ -160,13 +160,6 @@ class NumericalEtaSelector:
     """
 
     name: ClassVar[str] = "numerical"
-    # Phase 3a-1: `sigma` and `mu0` are deprecated — they came in
-    # originally only because |Δ| had no model/prior context. The
-    # call-time signature now receives `model` and `prior`, so these
-    # are unused. Retained as informational fields for legacy demos
-    # / smoothness experiment; will be removed in commit 3a-3.
-    sigma: float = 1.0
-    mu0: float = 0.0
     eta_min_buffer: float = 1e-3
     is_dynamic: bool = False
     # NumericalEtaSelector reads `D = data.mean()` inside `select(...)`
@@ -408,12 +401,6 @@ class DynamicNumericalEtaSelector:
     """
 
     name: ClassVar[str] = "dynamic_numerical"
-    # `sigma` and `mu0` are retained as informational fields for the
-    # legacy demos that still inspect them; new code paths never read
-    # them — model/prior come in at call time. They are no longer
-    # required to match the inference-time model/prior.
-    sigma: float = 1.0
-    mu0: float = 0.0
     eta_min_buffer: float = 1e-3
     n_grid: int = 401
     coarse_n: int = 25
@@ -560,10 +547,8 @@ class LearnedDynamicEtaSelector:
     so no per-(w, α) cache is needed beyond the artifact load.
     """
 
-    artifact: LearnedArtifact  # any Phase E v2 dual-head artifact (concrete EtaArtifact, NullArtifact stub, ...)
+    artifact: LearnedArtifact  # any Phase E v3 dual-head artifact (concrete EtaArtifact, NullArtifact stub, ...)
     name: ClassVar[str] = "learned_dynamic"
-    sigma: float = 1.0
-    mu0: float = 0.0
     is_dynamic: bool = True
     # Per-θ learned selector — η = MLP(θ), no D-conditioning. Calibrated
     # by construction (see learned_eta.md / dual-head training).
@@ -579,20 +564,18 @@ class LearnedDynamicEtaSelector:
         if not self._loaded:
             self.artifact.load()
             self._loaded = True
-            # Phase E checkpoints: legacy torch format v2 + post-port
-            # Equinox format v3 are both accepted (the on-disk schema
-            # changed; the in-memory metadata fields are compatible).
             from .._errors import MissingArtifactError
+            from ..learned.eta_artifact import CHECKPOINT_FORMAT_VERSION
 
             meta = self.artifact.metadata
             v = meta.get("checkpoint_format_version", None)
-            if v not in (2, 3) or "experiment_config" not in meta:
+            if v != CHECKPOINT_FORMAT_VERSION or "experiment_config" not in meta:
                 raise MissingArtifactError(
-                    f"{self.artifact.name}: expected Phase E (v2 or v3) "
-                    f"checkpoint with `experiment_config`; got "
-                    f"format_version={v!r}. Re-train via "
-                    f"`python -m scripts.train_learned_eta --config "
-                    f"<experiment.yaml>`."
+                    f"{self.artifact.name}: expected Phase E "
+                    f"(v{CHECKPOINT_FORMAT_VERSION}) checkpoint with "
+                    f"`experiment_config`; got format_version={v!r}. "
+                    f"Re-train via `python -m scripts.train_learned_eta "
+                    f"--config <experiment.yaml>`."
                 )
 
     def _check_scheme(self, scheme: TiltingScheme) -> None:
