@@ -633,7 +633,10 @@ def test_compute_pvalues_per_sample_without_tilted_pvalue_raises():
 
 
 # ---------------------------------------------------------------------------
-# Skeptic block #5: OT raises on η outside [0, 1]
+# Skeptic block #5: OT raises on η below ``-w/(1-w)`` (closed-form ``s_t > 0``
+# bound, audit P0-4) or non-finite. The W2 displacement line itself extends
+# in both directions past the [0, 1] geodesic segment; only the s_t<=0 region
+# is excluded for the closed-form WALDO p-value.
 # ---------------------------------------------------------------------------
 
 
@@ -647,14 +650,22 @@ def test_ot_tilted_pvalue_rejects_eta_out_of_admissible_range(
 
     scheme = OTTilting()
     model = NormalNormalModel(sigma=1.0)
-    prior = NormalDistribution(0.0, 1.0)
-    # Admissible: [0, 1]; valid call works.
-    p = scheme.tilted_pvalue(np.array([0.0]), 0.0, model, prior, 0.5, "waldo")
-    p_scalar = float(np.asarray(p).reshape(-1)[0])
-    assert np.isfinite(p_scalar) and 0.0 <= p_scalar <= 1.0
-    # Reject η < 0 and η > 1.
-    for bad_eta in (-2.0, -1e-6, 1.0 + 1e-6, 5.0):
-        with pytest.raises(TiltingDomainError, match="eta in"):
+    prior = NormalDistribution(0.0, 1.0)  # → w = 0.5, eta_lower = -1.0
+    # Admissible covers the full open ray (-w/(1-w), ∞); spot-check that
+    # the segment endpoints AND a point past the upper segment endpoint
+    # AND a point in the (now-admissible) negative-extrapolation band
+    # all return finite p ∈ [0, 1].
+    for good_eta in (-0.5, 0.0, 0.5, 1.0, 1.5, 5.0):
+        p = scheme.tilted_pvalue(
+            np.array([0.0]), 0.0, model, prior, good_eta, "waldo"
+        )
+        p_scalar = float(np.asarray(p).reshape(-1)[0])
+        assert np.isfinite(p_scalar) and 0.0 <= p_scalar <= 1.0, (
+            f"OT η={good_eta} should be admissible (eta_lower=-1.0); got p={p_scalar}"
+        )
+    # Reject η at/below -w/(1-w) = -1.0 and non-finite η.
+    for bad_eta in (-1.0 - 1e-6, -2.0, -10.0, float("inf"), float("nan")):
+        with pytest.raises(TiltingDomainError, match=r"requires eta >"):
             scheme.tilted_pvalue(np.array([0.0]), 0.0, model, prior, bad_eta, "waldo")
 
 

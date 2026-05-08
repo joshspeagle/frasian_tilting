@@ -41,9 +41,18 @@ def _improper_etas_power_law(w: float) -> list[float]:
     return [eta_max + 1e-3, eta_max + 0.5, eta_max + 5.0]
 
 
-def _improper_etas_ot() -> list[float]:
-    """OT admissible: η ∈ [0, 1]."""
-    return [-5.0, -1e-3, 1.0 + 1e-3, 5.0, 100.0]
+def _improper_etas_ot(w: float) -> list[float]:
+    """OT admissible (closed-form WALDO): s_t > 0 ⇔ η > -w/(1-w).
+
+    Audit P0-4: OT is well-defined on the full W2 displacement line,
+    not just the geodesic segment [0, 1]. ``OTTilting.tilted_pvalue``
+    now raises only for non-finite η or η at/below ``-w/(1-w)`` (the
+    bound where ``s_t = (w + η(1-w))*σ`` collapses to zero). For
+    w=0.5 → η > -1 admissible; pick η values strictly below to
+    exercise the raise path.
+    """
+    eta_lower = -w / (1.0 - w)
+    return [eta_lower - 1e-3, eta_lower - 0.5, eta_lower - 5.0]
 
 
 @pytest.mark.L2
@@ -66,9 +75,10 @@ def test_power_law_tilted_pvalue_raises_on_improper_eta(eta):
 
 
 @pytest.mark.L2
-@pytest.mark.parametrize("eta", _improper_etas_ot())
+@pytest.mark.parametrize("eta", _improper_etas_ot(0.5))
 def test_ot_tilted_pvalue_raises_on_improper_eta(eta):
-    """OT: ``tilted_pvalue`` raises outside ``[0, 1]``."""
+    """OT: ``tilted_pvalue`` raises for η at or below ``-w/(1-w)``
+    (the closed-form ``s_t > 0`` bound, audit P0-4)."""
     scheme = OTTilting()
     model = NormalNormalModel(sigma=1.0)
     prior = NormalDistribution(loc=0.0, scale=1.0)
@@ -113,7 +123,7 @@ def test_power_law_validity_helper_rejects_improper_eta(eta):
 
 
 @pytest.mark.L2
-@pytest.mark.parametrize("eta", _improper_etas_ot())
+@pytest.mark.parametrize("eta", _improper_etas_ot(0.5))
 def test_ot_validity_helper_rejects_improper_eta(eta):
     """End-to-end: same as above for OT (numpy path raises, helper → NaN)."""
     from frasian.learned.training.validity import compute_pvalues_per_sample, validity_mask
