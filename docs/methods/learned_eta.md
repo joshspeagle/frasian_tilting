@@ -282,8 +282,19 @@ p-value at b=0; argmin-η drift ≤ 1.5 at |Δ|≥1.5) pinned by
 - **Degenerate `w`.** Priors so tight or so wide that
   `w := σ₀²/(σ²+σ₀²)` is outside `(0.001, 0.999)` are rejected at
   training time (`extract_normal_normal_params` `_W_EPS = 1e-3` in
-  `_losses_compose.py`). Delta priors and improper priors both put
-  the WALDO admissible range into a degenerate regime.
+  `_losses_compose.py:97`) and at inference time
+  (`LearnedDynamicEtaSelector._check_experiment` `_W_EPS = 1e-3` in
+  `eta_selectors.py:839`). Delta priors and improper priors both put
+  the WALDO admissible range into a degenerate regime: as `w → 0`
+  (delta prior) the WALDO denominator `s_t = (w + η(1−w))·σ` becomes
+  η-collinear with `(1−w)·σ`, and as `w → 1` (improper prior) the
+  prior contribution to the tilted posterior vanishes and the
+  problem degenerates to bare Wald. The JAX p-value port
+  (`pvalue_jax.py`) clamps the closed-form denominator at `1e-6` to
+  avoid `inf` mid-trace; that clamp distorts the gradient near the
+  degenerate boundary and would produce a learned-η surface with
+  silently biased coverage. The `_W_EPS` guard enforces a clean
+  margin away from the clamp on both sides (audit P1 J.2).
 
 - **CD-variance bias.** `Var_{F_D}[θ]` is the CD's spread around its
   own mean, not around `θ_true`. In conflict regimes where the CD

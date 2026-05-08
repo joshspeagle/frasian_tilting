@@ -285,6 +285,33 @@ class ExperimentConfig:
                 f"compatible statistic (e.g., 'waldo')."
             )
 
+        # Audit P1 J.4: pre-flight Normal-Normal + n_data > 1 check.
+        # The JAX p-value ports (pvalue_jax.py) operate on a single
+        # observation D per θ — `NormalNormalModel.posterior` collapses
+        # data to its mean and uses sigma^2, not sigma^2/n. Training
+        # with n_data > 1 on NN would silently mismatch the closed-form
+        # formula by a factor of sqrt(n) at the inference-time CI
+        # inversion. For non-NN models (Bernoulli + Beta) the generic
+        # MC path uses n_obs correctly, so n_data > 1 is supported.
+        try:
+            model_fp = self.model.fingerprint()
+        except Exception:
+            model_fp = None
+        if (
+            model_fp is not None
+            and tuple(model_fp)[0] == "normal_normal"
+            and self.n_data > 1
+        ):
+            raise ValueError(
+                f"ExperimentConfig with NormalNormalModel requires "
+                f"n_data == 1 (the JAX closed-form pvalue port assumes a "
+                f"single observation D per θ); got n_data={self.n_data}. "
+                f"NN+n_data>1 would silently mismatch the closed-form "
+                f"formula by sqrt(n_data) at the inference-time CI "
+                f"inversion. Use a non-NN model (e.g. BernoulliModel) "
+                f"if you need n_data > 1."
+            )
+
     @cached_property
     def theta_grid(self) -> NDArray[np.float64]:
         """Canonical grid for dynamic-pvalue evaluation + CI inversion."""
