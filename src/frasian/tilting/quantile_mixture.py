@@ -8,18 +8,23 @@ linear interpolation of the endpoint quantiles:
 
 Equivalently: the law of the random variable
 `(1 - t) * F_p^{-1}(U) + t * F_q^{-1}(U)` for `U ~ Uniform[0, 1]`. The
-geodesic segment is well-defined for any two endpoints exposing
-`quantile`. Extended to any finite `t in R`, the same formula traces
-the **W2 displacement line** through p (at t=0) and q (at t=1); the
-result is a valid distribution iff `(1-t) F_p^{-1}(u) + t F_q^{-1}(u)`
-remains non-decreasing in u, which always holds for `t in [0, 1]` and
-may fail for `t outside [0, 1]` depending on the endpoints. Callers
-that extrapolate are responsible for the result; downstream methods
-(`pdf`, `var`) detect failure via the resulting density / variance.
+geodesic *segment* `t in [0, 1]` is always a valid distribution: the
+quantile function is non-decreasing in u as a non-negative convex
+combination of two non-decreasing functions.
 
-The Gaussian-endpoint case collapses to the closed-form linear
-interpolation in `(mu, sigma)` that `OTTilting.tilt` uses as a fast
-path; sigma_t > 0 is the explicit admissibility condition there.
+Extrapolation outside `[0, 1]` traces the W2 displacement line and
+**may or may not** be a valid distribution: the linear combination is
+guaranteed monotone in u only as long as `(1-t) f_p^{-1}'(u) + t
+f_q^{-1}'(u) >= 0` for all u (where `f_p^{-1}'` is the derivative of
+the quantile, i.e. the inverse density). For two Gaussians this
+reduces to `sigma_t = (1-t) sigma_p + t sigma_q >= 0`; for general
+endpoints it can fail at some u. We therefore validate monotonicity
+on a u-grid at construction time when `t` is outside `[0, 1]`, and
+raise a clear `ValueError` if the resulting quantile would not be a
+valid distribution. This preserves the OT extrapolation goal (audit
+P0-4 — admissible `eta in (-w/(1-w), inf)` for the closed-form
+Gaussian WALDO pvalue) while guarding non-Gaussian endpoints from
+silently producing nonsense.
 
 JAX seam (`docs/jax_style.md`):
 - `quantile`, `mean`, `var`, `sample` are bulk kernels that return
@@ -67,8 +72,80 @@ class QuantileMixturePath:
     t: float
 
     def __post_init__(self) -> None:
-        if not np.isfinite(float(self.t)):
+        # Audit P0-review #2: extrapolation outside [0, 1] is allowed
+        # (the OT W2 displacement line — see audit P0-4), BUT we must
+        # verify the resulting law is still a valid distribution. The
+        # linear combination of quantile functions is guaranteed monotone
+        # only inside the segment; outside, it can decrease at some u
+        # and the downstream `pdf` / `var` / `sample` would silently
+        # produce nonsense. We probe a coarse u-grid here so callers
+        # who extrapolate get a clean error at construction rather than
+        # a corrupted distribution at first downstream use.
+        t = float(self.t)
+        if not np.isfinite(t):
             raise ValueError(f"t must be finite, got {self.t!r}.")
+        if t < 0.0 or t > 1.0:
+            self._validate_extrapolation_monotone(t)
+
+    def _validate_extrapolation_monotone(self, t: float) -> None:
+        """Probe the linear-combo quantile on a u-grid; raise if non-monotone.
+
+        Gaussian-Gaussian endpoints reduce to the closed-form check
+        `sigma_t = (1-t) sigma_p + t sigma_q >= 0`. For general
+        endpoints we sample on a 65-point u-grid (interior only — the
+        exact endpoints u=0 / u=1 may yield infinite quantiles for
+        unbounded supports). A small tolerance absorbs floating-point
+        noise on flat segments; anything below it is a true monotonicity
+        violation.
+        """
+        # Cheap closed-form fast path: both endpoints Gaussian.
+        from ..models.distributions import NormalDistribution
+        if isinstance(self.p, NormalDistribution) and isinstance(self.q, NormalDistribution):
+            sigma_t = (1.0 - t) * float(self.p.scale) + t * float(self.q.scale)
+            if sigma_t <= 0.0:
+                raise ValueError(
+                    f"QuantileMixturePath at t={t!r} produces a degenerate "
+                    f"or reversed Gaussian (sigma_t={sigma_t!r} <= 0); the "
+                    f"law is not a valid distribution. "
+                    f"Endpoints: sigma_p={self.p.scale!r}, sigma_q={self.q.scale!r}."
+                )
+            return
+
+        # General-1D probe: sample the quantile, check monotonicity.
+        u_grid = np.linspace(1.0e-4, 1.0 - 1.0e-4, 65)
+        try:
+            qp = np.asarray(self.p.quantile(u_grid), dtype=np.float64)
+            qq = np.asarray(self.q.quantile(u_grid), dtype=np.float64)
+        except Exception as exc:
+            raise ValueError(
+                f"QuantileMixturePath: cannot validate t={t!r} (outside "
+                f"[0, 1]) because endpoint quantile evaluation failed: "
+                f"{exc!r}."
+            ) from exc
+        qt = (1.0 - t) * qp + t * qq
+        if not (np.all(np.isfinite(qt))):
+            raise ValueError(
+                f"QuantileMixturePath at t={t!r} produces non-finite "
+                f"quantile values; the resulting law is not a valid "
+                f"distribution."
+            )
+        diffs = np.diff(qt)
+        scale = float(np.max(np.abs(qt))) + 1.0
+        # Tolerance: absorb fp noise on flat segments but flag genuine
+        # decreases. 1e-9 * scale is below MC noise but above fp.
+        if np.any(diffs < -1.0e-9 * scale):
+            bad = int(np.argmin(diffs))
+            raise ValueError(
+                f"QuantileMixturePath at t={t!r} (outside [0, 1]) "
+                f"produces a non-monotone quantile function — "
+                f"the resulting law is not a valid distribution. "
+                f"(1-t)*F_p^{{-1}}(u) + t*F_q^{{-1}}(u) decreases near "
+                f"u={u_grid[bad+1]:.4g} (from {qt[bad]:.4g} to "
+                f"{qt[bad+1]:.4g}). Extrapolation is admissible only "
+                f"when the endpoint inverse-density slopes balance: "
+                f"(1-t)/f_p(F_p^{{-1}}(u)) + t/f_q(F_q^{{-1}}(u)) >= 0 "
+                f"for every u."
+            )
 
     # ----- Closed-form pieces -----
 

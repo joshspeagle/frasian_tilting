@@ -41,6 +41,7 @@ from .. import _jax_setup as _x64  # noqa: F401  — ensure float64 active
 from .._errors import TiltingDomainError
 from .._registry import register_tilting
 from ..config import Config
+from ..models._dispatch import is_normal_normal
 from ..models.base import Likelihood, Model, Posterior, Prior
 from ..models.distributions import GaussianLikelihood, NormalDistribution
 from ..models.normal_normal import weight as _weight
@@ -834,7 +835,7 @@ class PowerLawTilting:
         """
         from ..models.normal_normal import NormalNormalModel
 
-        if not isinstance(model, NormalNormalModel):
+        if not is_normal_normal(model):
             raise NotImplementedError(
                 "tilted_pvalue currently requires NormalNormalModel; "
                 f"got {type(model).__name__!r}."
@@ -966,7 +967,7 @@ class PowerLawTilting:
         from ..models.normal_normal import NormalNormalModel
         from ._dynamic import dynamic_ci_scan
 
-        if not isinstance(model, NormalNormalModel):
+        if not is_normal_normal(model):
             raise NotImplementedError(
                 "dynamic_tilted_confidence_interval currently requires " "NormalNormalModel."
             )
@@ -1033,7 +1034,7 @@ class PowerLawTilting:
         """
         from ..models.normal_normal import NormalNormalModel
 
-        if not isinstance(model, NormalNormalModel):
+        if not is_normal_normal(model):
             raise NotImplementedError(
                 "PowerLawTilting requires NormalNormalModel; " f"got {type(model).__name__!r}."
             )
@@ -1050,7 +1051,7 @@ class PowerLawTilting:
         path and generic numerical fallback."""
         from ..models.normal_normal import NormalNormalModel
 
-        return isinstance(model, NormalNormalModel) and isinstance(prior, NormalDistribution)
+        return is_normal_normal(model) and isinstance(prior, NormalDistribution)
 
     def confidence_regions(
         self,
@@ -1331,7 +1332,7 @@ class PowerLawTilting:
         from ..models.normal_normal import NormalNormalModel
         from ._solvers import brentq_with_doubling
 
-        if not isinstance(model, NormalNormalModel):
+        if not is_normal_normal(model):
             raise NotImplementedError(
                 "tilted_confidence_interval currently requires NormalNormalModel."
             )

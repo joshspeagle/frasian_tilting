@@ -63,6 +63,7 @@ from scipy import stats as _scalar_scipy_stats
 from .. import _jax_setup as _x64  # noqa: F401  — ensure float64 active
 from .._errors import TiltingDomainError
 from .._registry import register_tilting
+from ..models._dispatch import is_normal_normal
 from ..models.base import Likelihood, Model, Posterior, Prior
 from ..models.distributions import GaussianLikelihood, NormalDistribution
 from ..statistics.base import TestStatistic
@@ -590,7 +591,7 @@ class OTTilting:
         """
         from ..models.normal_normal import NormalNormalModel
 
-        if not isinstance(model, NormalNormalModel):
+        if not is_normal_normal(model):
             raise NotImplementedError(
                 "OTTilting.tilted_pvalue currently requires NormalNormalModel; "
                 f"got {type(model).__name__!r}."
@@ -657,7 +658,7 @@ class OTTilting:
         from ..models.normal_normal import NormalNormalModel
         from ._solvers import brentq_with_doubling
 
-        if not isinstance(model, NormalNormalModel):
+        if not is_normal_normal(model):
             raise NotImplementedError(
                 "OTTilting.tilted_confidence_interval currently requires " "NormalNormalModel."
             )
@@ -738,7 +739,7 @@ class OTTilting:
         from ..models.normal_normal import NormalNormalModel
         from ._dynamic import dynamic_ci_scan
 
-        if not isinstance(model, NormalNormalModel):
+        if not is_normal_normal(model):
             raise NotImplementedError(
                 "OTTilting.dynamic_tilted_confidence_interval currently "
                 "requires NormalNormalModel."
@@ -802,7 +803,7 @@ class OTTilting:
         """
         from ..models.normal_normal import NormalNormalModel
 
-        if not isinstance(model, NormalNormalModel):
+        if not is_normal_normal(model):
             raise NotImplementedError(
                 f"OTTilting requires NormalNormalModel for the uniform CI "
                 f"interface; got {type(model).__name__!r}."
@@ -817,7 +818,7 @@ class OTTilting:
         """Predicate-only counterpart to `_require_normal_sandbox`."""
         from ..models.normal_normal import NormalNormalModel
 
-        return isinstance(model, NormalNormalModel) and isinstance(prior, NormalDistribution)
+        return is_normal_normal(model) and isinstance(prior, NormalDistribution)
 
     def confidence_regions(
         self,

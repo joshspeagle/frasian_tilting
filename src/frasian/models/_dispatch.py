@@ -47,3 +47,24 @@ def require_prior(prior: Prior | None, expected: type[T], *, caller: str) -> T:
             f"got {type(prior).__name__!r}."
         )
     return prior
+
+
+def is_normal_normal(model: Model) -> bool:
+    """True iff `model.fingerprint()[0] == "normal_normal"`.
+
+    Audit P1 G.5: prefer this over `isinstance(model, NormalNormalModel)`
+    so a future wrapper (or numerically-equivalent reimplementation)
+    can opt into the closed-form Normal-Normal dispatch path by
+    declaring its fingerprint, without inheriting from a specific
+    class. The fingerprint contract is the single source of truth for
+    "what kind of model is this" — the registry, cache, and learned-η
+    loader all key on it.
+    """
+    fp = getattr(model, "fingerprint", None)
+    if fp is None:
+        return False
+    try:
+        tup = fp()
+    except Exception:
+        return False
+    return bool(tup) and tup[0] == "normal_normal"

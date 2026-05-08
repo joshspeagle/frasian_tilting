@@ -59,9 +59,10 @@ from scipy import stats as _scalar_scipy_stats
 from .. import _jax_setup as _x64  # noqa: F401  — ensure float64 active
 from .._errors import BracketingFailed
 from .._registry import register_statistic
+from ..models._dispatch import is_normal_normal
 from ..models.base import Model, Prior
 from ..models.distributions import NormalDistribution
-from ..models.normal_normal import NormalNormalModel, posterior_params
+from ..models.normal_normal import NormalNormalModel, posterior_params  # noqa: F401  (legacy field-access)
 from .base import AsymptoticDistribution
 
 if TYPE_CHECKING:
@@ -71,7 +72,10 @@ _FORCE_X64 = _x64  # keep static-analysis from stripping the import
 
 
 def _is_normal_normal_pair(model: Model, prior: Prior | None) -> bool:
-    return isinstance(model, NormalNormalModel) and isinstance(prior, NormalDistribution)
+    # Audit P1 G.5: model is dispatched via fingerprint() instead of
+    # isinstance(NormalNormalModel) so the closed-form path is opt-in
+    # by fingerprint contract, not by inheritance.
+    return is_normal_normal(model) and isinstance(prior, NormalDistribution)
 
 
 def _is_normal_normal_n1(
@@ -419,13 +423,18 @@ class WaldoStatistic:
                 "WaldoStatistic.confidence_interval expects 1-D data; got "
                 f"data.ndim={data_arr.ndim}."
             )
-        # CRN seed: stable across processes, INDEPENDENT of theta. Threading
-        # this seed into every brentq probe makes the MC pvalue use the
-        # same internal uniform stream at each theta — `f(theta)` becomes
-        # a deterministic function of theta (piecewise-constant for
-        # Bernoulli, smooth for Normal) instead of a fresh stochastic
-        # process, so brentq actually converges (skeptic finding #1+#13).
-        derived_seed = self._stable_seed(data_arr, model, prior, alpha, self.seed)
+        # CRN seed: stable across processes, INDEPENDENT of theta AND
+        # of alpha (audit P1 G.3). Threading this seed into every brentq
+        # probe makes the MC pvalue use the same internal uniform stream
+        # at each theta — `f(theta)` becomes a deterministic function of
+        # theta (piecewise-constant for Bernoulli, smooth for Normal)
+        # instead of a fresh stochastic process, so brentq actually
+        # converges (skeptic finding #1+#13). Dropping alpha makes two
+        # cross-call invocations at different alphas (e.g. 0.05 and
+        # 0.10) share the same MC reference draws — the resulting CIs
+        # then nest cleanly (broader α → wider CI) instead of jumping
+        # at the MC noise level.
+        derived_seed = self._stable_seed(data_arr, model, prior, 0.0, self.seed)
         support_lo, support_hi = model.support()
 
         posterior = model.posterior(data, prior)
@@ -448,6 +457,8 @@ class WaldoStatistic:
             ) - alpha
 
         half = max(4.0 * sigma_post, 1e-3)
+        boundary_hit_lo = False
+        boundary_hit_hi = False
         try:
             lower = brentq_with_doubling(
                 f, midpoint=mu_post, initial_half_width=half, direction=-1
@@ -457,13 +468,34 @@ class WaldoStatistic:
             # boundary explicitly so callers see an honest "open CI".
             # We do NOT swallow other exceptions (silent CI=[support_lo,
             # support_hi] would mask real bugs; skeptic finding #4).
+            # Audit P1 G.4: emit a UserWarning so callers / runners can
+            # annotate metadata with the boundary-hit; the previous
+            # behaviour (silent fallback to support edge) hid the
+            # difference between "α-inversion zero at support_lo" and
+            # "we never bracketed; boundary returned by default".
             lower = float(support_lo)
+            boundary_hit_lo = True
         try:
             upper = brentq_with_doubling(
                 f, midpoint=mu_post, initial_half_width=half, direction=+1
             )
         except BracketingFailed:
             upper = float(support_hi)
+            boundary_hit_hi = True
+        if boundary_hit_lo or boundary_hit_hi:
+            import warnings as _w
+            sides = [s for s, hit in (("lower", boundary_hit_lo),
+                                       ("upper", boundary_hit_hi)) if hit]
+            _w.warn(
+                f"WaldoStatistic._generic_confidence_interval: bracket "
+                f"exhausted on the {' and '.join(sides)} side(s); "
+                f"returning model.support() boundary at alpha={alpha!r}. "
+                f"This may be a true open CI or a numerical pathology "
+                f"(e.g. all MC reference draws degenerate). Callers / "
+                f"runners should annotate this in metadata.",
+                UserWarning,
+                stacklevel=2,
+            )
         return (
             max(lower, float(support_lo)),
             min(upper, float(support_hi)),
@@ -488,6 +520,26 @@ class WaldoStatistic:
     def acceptance_region(
         self, alpha: float, theta0: ArrayLike, model: Model, prior: Prior | None = None
     ) -> tuple[jax.Array, jax.Array]:
+        """Data-space accept region for theta0 at level alpha.
+
+        **n=1 implicit convention** (audit P0-review #1, P1 G.6): this
+        method takes no `data`, so the closed-form NN+Normal derivation
+        treats the observation as a single scalar `D` (i.e. n=1). For
+        n>1 datasets the data-space region for the sample mean is
+        scaled by `sqrt(n)`; the closed form here does not carry a
+        sample-size parameter and therefore returns the n=1 region
+        unconditionally. This is asymmetric with `evaluate` /
+        `pvalue` / `confidence_interval`, which dispatch via
+        `_is_normal_normal_n1` (n>1 → generic MC). The asymmetry is
+        principled: the dispatch on `_is_normal_normal_pair` here is
+        the only honest answer the closed-form derivation can give,
+        and lifting to the generic (n>1) regime would require a
+        full MC inversion in data space — out of scope. Callers who
+        care about n>1 should use `confidence_interval` (theta-space)
+        instead. Audit P1 G.6 reclassifies `acceptance_region` as
+        an optional protocol method; feature-detect via
+        `has_acceptance_region(stat)`.
+        """
         if _is_normal_normal_pair(model, prior):
             return self._closed_form_acceptance_region(alpha, theta0, model, prior)  # type: ignore[arg-type]
         raise NotImplementedError(

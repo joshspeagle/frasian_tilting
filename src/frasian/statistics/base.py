@@ -52,7 +52,12 @@ class TestStatistic(Protocol):
         - `pvalue(...)` ∈ [0, 1] for all inputs.
         - Under H0 (data generated at θ₀), `pvalue` is Uniform[0, 1] (KS test).
         - `evaluate` is continuous in `data` away from a measure-zero set.
-        - `acceptance_region(alpha, ...)` has α-level frequentist coverage.
+
+    `acceptance_region` is **optional** (audit P1 G.6): only statistics
+    with a tractable data-space inversion implement it (Wald, WALDO on
+    the closed-form NN+Normal pair). Callers should probe via the
+    `has_acceptance_region(stat)` helper; statistics that don't
+    implement it omit the method entirely or raise `NotImplementedError`.
     """
 
     @property
@@ -69,14 +74,10 @@ class TestStatistic(Protocol):
         self, theta0: ArrayLike, data: NDArray[np.float64], model: Model, prior: Prior | None = None
     ) -> jax.Array: ...
 
-    def acceptance_region(
-        self, alpha: float, theta0: ArrayLike, model: Model, prior: Prior | None = None
-    ) -> tuple[jax.Array, jax.Array]: ...
-
     def confidence_interval(
         self, alpha: float, data: NDArray[np.float64], model: Model, prior: Prior | None = None
     ) -> tuple[float, float]:
-        """Dual of `acceptance_region`: parameter-space CI given data.
+        """Parameter-space CI given data.
 
         Returns `(lower, upper)` such that `pvalue(theta, data, ...) >= alpha`
         for all `theta` in the closed interval. Statistics that do not admit a
@@ -107,3 +108,19 @@ def accepts_tilting(statistic: TestStatistic, tilting: TiltingScheme) -> bool:
     if fn is None:
         return True
     return bool(fn(tilting))
+
+
+def has_acceptance_region(statistic: TestStatistic) -> bool:
+    """True iff `statistic` exposes a callable `acceptance_region` method.
+
+    Audit P1 G.6: `acceptance_region` is an **optional** part of the
+    `TestStatistic` interface — only Wald and WALDO on the closed-form
+    NN+Normal pair implement it (and even there, the result is the
+    n=1 data-space region; a single observed `D` is the implicit
+    convention since the closed-form derivation does not carry an `n`
+    parameter — see `waldo.py:_closed_form_acceptance_region`). Other
+    statistics (LRT, signed-root, Bartlett, generic-MC paths) omit
+    the method or raise `NotImplementedError`. Use this helper to
+    feature-detect rather than catching exceptions.
+    """
+    return callable(getattr(statistic, "acceptance_region", None))

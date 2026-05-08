@@ -55,9 +55,10 @@ import numpy as np
 from scipy import optimize
 
 from ..learned.base import LearnedArtifact
+from ..models._dispatch import is_normal_normal
 from ..models.base import Model, Prior
 from ..models.distributions import NormalDistribution
-from ..models.normal_normal import NormalNormalModel
+from ..models.normal_normal import NormalNormalModel  # noqa: F401  (legacy field-access typing)
 from ..models.normal_normal import weight as _weight
 from ..statistics.base import TestStatistic
 from .base import TiltingDomainError, TiltingScheme
@@ -196,7 +197,7 @@ class NumericalEtaSelector:
         Non-NormalNormal callers must use the generic numerical selector
         planned for Phase 3 follow-ups.
         """
-        if not isinstance(model, NormalNormalModel):
+        if not is_normal_normal(model):
             raise NotImplementedError(
                 f"NumericalEtaSelector currently requires NormalNormalModel; "
                 f"got {type(model).__name__!r}. Generic-model selector is a "
