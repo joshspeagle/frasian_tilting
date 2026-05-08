@@ -248,6 +248,65 @@ class TestOTBatchedTiltedMC:
         # MC SE ~0.011 at p~0.5 with n_mc=2000; allow 5σ.
         assert abs(cf_p - gn_p) < 0.06, f"closed-form={cf_p}, generic={gn_p}"
 
+    def test_jit_kernel_matches_pure_numpy_path(self):
+        """The JIT'd `_ot_tilted_kernel_jit` must produce numerically the
+        same `t_samples` as a pure-numpy reimplementation of the same
+        post-loglik block. Pinned with atol 1e-10 — XLA float64 ops
+        match numpy bit-for-bit on these vectorised primitives.
+        """
+        from frasian.tilting.ot import _ot_tilted_kernel_jit
+        import jax.numpy as jnp
+
+        rng = np.random.default_rng(0)
+        n_mc, n_grid, n_u = 50, 128, 32
+        log_lik = rng.normal(size=(n_mc, n_grid)) - 5.0
+        theta_grid = np.linspace(-3.0, 3.0, n_grid)
+        F_post_inv = rng.normal(size=(n_mc, n_u))
+        u_nodes_raw, weights_raw = np.polynomial.legendre.leggauss(n_u)
+        u01 = 0.5 * (u_nodes_raw + 1.0)
+        w01 = 0.5 * weights_raw
+        eta, theta_f = 0.4, 0.7
+
+        # JIT path
+        t_jit, n_coll_jit = _ot_tilted_kernel_jit(
+            jnp.asarray(log_lik), jnp.asarray(theta_grid),
+            jnp.asarray(F_post_inv), jnp.asarray(u01), jnp.asarray(w01),
+            jnp.asarray(eta), jnp.asarray(theta_f),
+        )
+        t_jit = np.asarray(t_jit)
+
+        # Reference numpy path (mirrors _ot_tilted_kernel_jit line-for-line)
+        ll = np.where(np.isfinite(log_lik), log_lik, -1e300)
+        ll_max = ll.max(axis=-1, keepdims=True)
+        pdf = np.exp(ll - ll_max)
+        Z = np.trapezoid(pdf, theta_grid, axis=-1)
+        Z_safe = np.where(Z > 0, Z, 1.0)
+        pdf = pdf / Z_safe[:, None]
+        dtheta = np.diff(theta_grid)
+        incr = 0.5 * (pdf[:, :-1] + pdf[:, 1:]) * dtheta[None, :]
+        cdf = np.concatenate([np.zeros((n_mc, 1)), np.cumsum(incr, axis=-1)], axis=-1)
+        cdf = np.clip(cdf / np.where(cdf[:, -1:] > 0, cdf[:, -1:], 1.0), 0.0, 1.0)
+        # Per-row inverse CDF (loop)
+        F_lik_inv = np.empty((n_mc, n_u))
+        for i in range(n_mc):
+            idx = np.clip(np.searchsorted(cdf[i], u01, side="right"), 1, n_grid - 1)
+            cdf_lo = cdf[i, idx - 1]; cdf_hi = cdf[i, idx]
+            denom = cdf_hi - cdf_lo
+            denom_safe = np.where(denom > 0, denom, 1.0)
+            frac = np.where(denom > 0, (u01 - cdf_lo) / denom_safe, 0.0)
+            F_lik_inv[i] = theta_grid[idx - 1] + frac * (theta_grid[idx] - theta_grid[idx - 1])
+        F_mixed = (1 - eta) * F_post_inv + eta * F_lik_inv
+        m1 = np.sum(w01[None, :] * F_mixed, axis=-1)
+        m2 = np.sum(w01[None, :] * F_mixed * F_mixed, axis=-1)
+        var = np.maximum(m2 - m1 * m1, 0.0)
+        finite_z = (Z > 0) & np.isfinite(Z)
+        finite_var = (var > 0) & np.isfinite(var)
+        finite_row = finite_z & finite_var
+        diff = m1 - theta_f
+        t_np = np.where(finite_row, diff * diff / np.where(finite_row, var, 1.0), 0.0)
+
+        np.testing.assert_allclose(t_jit, t_np, atol=1e-10, rtol=1e-10)
+
 
 @pytest.mark.L2
 class TestPowerLawBatchedTiltedMC:

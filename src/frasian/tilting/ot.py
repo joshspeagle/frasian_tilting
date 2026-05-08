@@ -319,6 +319,121 @@ def _batched_inverse_cdf(
     return out
 
 
+# Module-level cache for Gauss-Legendre nodes / weights at the
+# canonical n_u=64. `np.polynomial.legendre.leggauss(64)` costs ~700 µs
+# per call (eigenvalue decomposition of the 64-point Jacobi matrix);
+# pre-computed jnp views skip both the numpy compute AND the per-call
+# `jnp.asarray` boundary conversion in the kernel call. Wins ~700-800 µs
+# per OT MC reference call vs the legacy "compute every time" form.
+from functools import lru_cache as _lru_cache
+
+
+@_lru_cache(maxsize=8)
+def _gauss_legendre_01(n_u: int) -> tuple[jax.Array, jax.Array]:
+    """Return `(u01, w01)` Gauss-Legendre nodes/weights mapped to (0,1)
+    as `jnp.Array`s. Cached by `n_u` so the n_u=64 case (the only one
+    used by OT today) computes once per process.
+    """
+    nodes, weights = np.polynomial.legendre.leggauss(int(n_u))
+    return jnp.asarray(0.5 * (nodes + 1.0)), jnp.asarray(0.5 * weights)
+
+
+@jax.jit
+def _ot_tilted_kernel_jit(
+    log_lik_batch: jax.Array,
+    theta_grid: jax.Array,
+    F_post_inv: jax.Array,
+    u01: jax.Array,
+    w01: jax.Array,
+    eta: jax.Array,
+    theta_f: jax.Array,
+) -> tuple[jax.Array, jax.Array]:
+    """Pure-JAX kernel for OT-tilted MC reference post-likelihood block.
+
+    Inputs (all jnp.Array):
+      log_lik_batch (n_mc, n_grid): per-row log-likelihood on the
+        shared theta-grid. Caller computes via
+        `model.batch_loglik_grid(D_batch, theta_grid)` and converts.
+      theta_grid (n_grid,): the shared grid on which the likelihood-
+        as-distribution CDF is built.
+      F_post_inv (n_mc, n_u): per-row posterior inverse-CDF at the
+        Gauss-Legendre nodes, computed externally via
+        `model.posterior_quantile_batch(D_batch, prior, u01)`.
+      u01 (n_u,): Gauss-Legendre nodes mapped to (0, 1).
+      w01 (n_u,): Gauss-Legendre weights scaled to (0, 1).
+      eta, theta_f: scalars.
+
+    Returns `(t_samples, n_collapsed_int32)`. The pure-JAX block fuses
+    (i) `pdf_lik` normalisation via max-subtract + exp + trapezoid Z,
+    (ii) cumulative-trapezoid CDF construction, (iii) per-row
+    inverse-CDF lookup at `u01` via `vmap(searchsorted + linear interp)`
+    — replaces the python-loop `_batched_inverse_cdf` with vectorised
+    XLA, the main pre-JIT bottleneck — (iv) OT W2 quantile mixing,
+    (v) Gauss-Legendre 64-pt quadrature for `(m1, m2)`, (vi) collapsed-
+    row masking + final t-statistic.
+
+    Closes over no model state — pre-computed `F_post_inv` is the only
+    model-specific quantity, so the jit cache hits across cells with
+    the same shape signature instead of recompiling per (model, prior).
+    """
+    n_grid = theta_grid.shape[0]
+
+    # 1. Build the likelihood-as-distribution PDF on the grid.
+    log_lik = jnp.where(jnp.isfinite(log_lik_batch), log_lik_batch, -1e300)
+    log_lik_max = log_lik.max(axis=-1, keepdims=True)
+    pdf = jnp.exp(log_lik - log_lik_max)
+    Z = jnp.trapezoid(pdf, theta_grid, axis=-1)
+    Z_safe = jnp.where(Z > 0, Z, 1.0)
+    pdf = pdf / Z_safe[:, None]
+
+    # 2. Cumulative trapezoid → CDF, normalised to [0, 1] per row.
+    dtheta = jnp.diff(theta_grid)
+    incr = 0.5 * (pdf[:, :-1] + pdf[:, 1:]) * dtheta[None, :]
+    cdf = jnp.concatenate(
+        [jnp.zeros((pdf.shape[0], 1)), jnp.cumsum(incr, axis=-1)], axis=-1
+    )
+    cdf_total = cdf[:, -1:]
+    cdf = jnp.clip(cdf / jnp.where(cdf_total > 0, cdf_total, 1.0), 0.0, 1.0)
+
+    # 3. Per-row inverse CDF at u01 via vmap. Replaces the Python
+    #    `for i in range(n_mc)` searchsorted loop in the legacy
+    #    `_batched_inverse_cdf` — the dominant pre-JIT cost.
+    def _inverse_per_row(cdf_row: jax.Array) -> jax.Array:
+        idx = jnp.clip(
+            jnp.searchsorted(cdf_row, u01, side="right"),
+            1,
+            n_grid - 1,
+        )
+        cdf_lo = cdf_row[idx - 1]
+        cdf_hi = cdf_row[idx]
+        denom = cdf_hi - cdf_lo
+        denom_safe = jnp.where(denom > 0, denom, 1.0)
+        frac = jnp.where(denom > 0, (u01 - cdf_lo) / denom_safe, 0.0)
+        return theta_grid[idx - 1] + frac * (theta_grid[idx] - theta_grid[idx - 1])
+
+    F_lik_inv = jax.vmap(_inverse_per_row)(cdf)  # (n_mc, n_u)
+
+    # 4. OT W2 quantile mixing → tilted distribution's quantile at u01.
+    F_mixed = (1.0 - eta) * F_post_inv + eta * F_lik_inv
+
+    # 5. Gauss-Legendre quadrature for (m1, m2).
+    m1 = jnp.sum(w01[None, :] * F_mixed, axis=-1)
+    m2 = jnp.sum(w01[None, :] * F_mixed * F_mixed, axis=-1)
+    var_tilted = jnp.maximum(m2 - m1 * m1, 0.0)
+
+    # 6. Collapsed-row mask + final t.
+    finite_z = (Z > 0) & jnp.isfinite(Z)
+    finite_var = (var_tilted > 0) & jnp.isfinite(var_tilted)
+    finite_row = finite_z & finite_var
+    n_collapsed = jnp.sum(~finite_row).astype(jnp.int32)
+
+    diff = m1 - theta_f
+    safe_var = jnp.where(finite_row, var_tilted, 1.0)
+    t_raw = diff * diff / safe_var
+    t_samples = jnp.where(finite_row, t_raw, 0.0)
+    return t_samples, n_collapsed
+
+
 def _generic_tilted_mc_reference_batch_ot(
     *,
     theta_f: float,
@@ -393,56 +508,38 @@ def _generic_tilted_mc_reference_batch_ot(
 
     theta_grid = np.linspace(lo, hi, int(n_grid))
 
-    # 3. Build the likelihood-as-distribution CDF, batched across rows.
+    # 3. Build per-row log-likelihood on the shared grid (numpy).
     log_lik = _batch_loglik_grid(model, D_batch, theta_grid)  # (n_mc, n_grid)
-    log_lik = np.where(np.isfinite(log_lik), log_lik, -1e300)
-    log_lik_max = log_lik.max(axis=-1, keepdims=True)
-    pdf_lik = np.exp(log_lik - log_lik_max)  # (n_mc, n_grid)
-    Z_lik = np.trapezoid(pdf_lik, theta_grid, axis=-1)  # (n_mc,)
-    Z_safe = np.where(Z_lik > 0, Z_lik, 1.0)
-    pdf_lik = pdf_lik / Z_safe[:, None]
-    # Cumulative trapezoid → unnormalised CDF; renormalise to [0, 1].
-    dtheta = np.diff(theta_grid)
-    incr = 0.5 * (pdf_lik[:, :-1] + pdf_lik[:, 1:]) * dtheta[None, :]
-    cdf_lik = np.concatenate(
-        [np.zeros((int(n_mc), 1), dtype=np.float64), np.cumsum(incr, axis=-1)],
-        axis=-1,
-    )  # (n_mc, n_grid)
-    cdf_total = cdf_lik[:, -1:].copy()
-    cdf_total_safe = np.where(cdf_total > 0, cdf_total, 1.0)
-    cdf_lik = np.clip(cdf_lik / cdf_total_safe, 0.0, 1.0)
 
-    # 4. + 5. Per-row F_post^{-1}(u_nodes) and F_lik^{-1}(u_nodes) at
-    #    the Gauss-Legendre nodes. The Gauss-Legendre is over the
-    #    quantile so we need the inverse-CDF at the nodes for both
-    #    endpoints.
-    u_nodes_raw, weights_raw = np.polynomial.legendre.leggauss(64)
-    u01 = 0.5 * (u_nodes_raw + 1.0)  # shape (64,) on (0, 1)
-    w01 = 0.5 * weights_raw
+    # 4. Gauss-Legendre nodes + weights — cached jnp.Array per n_u so
+    #    we don't pay the ~700 µs leggauss eigendecomposition or the
+    #    per-call `jnp.asarray` conversion in the kernel-input list.
+    u01_j, w01_j = _gauss_legendre_01(64)
+    u01_np = np.asarray(u01_j)  # numpy view for `posterior_quantile_batch`
 
-    F_post_inv = _posterior_quantile_batch(
-        model, D_batch, prior, u01
-    )  # (n_mc, 64)
-    F_lik_inv = _batched_inverse_cdf(theta_grid, cdf_lik, u01)  # (n_mc, 64)
+    # 5. Per-row posterior inverse-CDF at u01 (numpy or scipy under
+    #    the hood — `model.posterior_quantile_batch` for NN uses
+    #    scipy.special.ndtri, for Bernoulli uses scipy.special.betaincinv).
+    F_post_inv = _posterior_quantile_batch(model, D_batch, prior, u01_np)
 
-    # 6. OT W2 quantile mixing.
-    F_mixed = (1.0 - float(eta_f)) * F_post_inv + float(eta_f) * F_lik_inv
-
-    # 7. Tilted moments via Gauss-Legendre.
-    m1 = np.sum(w01[None, :] * F_mixed, axis=-1)
-    m2 = np.sum(w01[None, :] * F_mixed * F_mixed, axis=-1)
-    var_tilted = np.maximum(m2 - m1 * m1, 0.0)
-
-    # Collapsed-row mask: bad likelihood normalisation OR zero variance.
-    finite_z = (Z_lik > 0) & np.isfinite(Z_lik)
-    finite_var = (var_tilted > 0) & np.isfinite(var_tilted)
-    finite_row = finite_z & finite_var
-    n_collapsed = int(np.sum(~finite_row))
-
-    diff = m1 - float(theta_f)
-    with np.errstate(invalid="ignore", divide="ignore"):
-        t = diff * diff / np.where(finite_row, var_tilted, 1.0)
-    t_samples = np.where(finite_row, t, 0.0)
+    # 6. Hand off to the jit-compiled XLA kernel for the post-loglik
+    #    pipeline: `pdf_lik` normalisation, cumulative-trapezoid CDF,
+    #    vectorised inverse-CDF lookup at `u01` (replaces the per-row
+    #    Python `searchsorted` loop — the dominant pre-JIT cost), OT W2
+    #    quantile mixing, Gauss-Legendre moments, collapsed-row masking.
+    #    `u01_j` and `w01_j` already jnp.Array (cached); only log_lik,
+    #    theta_grid, F_post_inv, and the two scalars need conversion.
+    t_samples_j, n_collapsed_j = _ot_tilted_kernel_jit(
+        jnp.asarray(log_lik),
+        jnp.asarray(theta_grid),
+        jnp.asarray(F_post_inv),
+        u01_j,
+        w01_j,
+        jnp.asarray(float(eta_f)),
+        jnp.asarray(float(theta_f)),
+    )
+    t_samples = np.asarray(t_samples_j, dtype=np.float64)
+    n_collapsed = int(np.asarray(n_collapsed_j))
     return t_samples, n_collapsed
 
 
