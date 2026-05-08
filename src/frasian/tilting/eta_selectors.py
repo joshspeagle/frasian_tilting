@@ -67,11 +67,12 @@ from .base import TiltingDomainError, TiltingScheme
 def _D_from_abs_delta(abs_delta: float, w: float, sigma: float, mu0: float) -> float:
     """Invert Delta = (1 - w)(mu0 - D)/sigma with the convention Delta >= 0.
 
-    Normal-Normal-specific helper retained for `experiments/smoothness.py`,
-    which still owns its own |Δ|-keyed sweep until commit 3a-3 relocates
-    it. New selector code paths consume θ directly via the model/prior
-    instances passed at call time; do not introduce new callers of this
-    function outside the smoothness experiment.
+    Normal-Normal-specific helper retained solely for
+    `experiments/smoothness.py`, which sweeps `|Δ|` and inverts
+    back to D for plotting. New selector code paths consume θ
+    directly via the model/prior instances passed at call time;
+    do not introduce new callers of this function outside the
+    smoothness experiment.
     """
     return float(mu0 - abs_delta * sigma / max(1.0 - w, 1e-12))
 
@@ -206,12 +207,10 @@ class NumericalEtaSelector:
     def _eta_bounds(self, model: Model, prior: Prior) -> tuple[float, float]:
         """η search bracket for `scipy.optimize.minimize_scalar`.
 
-        Internal helper — selectors no longer consult a public
-        `scheme.admissible_range`. The bracket is the closed-form
-        Normal-Normal `power_law` admissible range
-        `(-w/(1-w) + buffer, 1/(1-w) - buffer)` (also valid for
-        `ot` since `(0, 1) ⊂ (-w/(1-w), 1/(1-w))` for any
-        `w ∈ (0, 1)`); `scheme.tilted_pvalue` will raise
+        The bracket is the closed-form Normal-Normal `power_law`
+        admissible range `(-w/(1-w) + buffer, 1/(1-w) - buffer)`
+        (also valid for `ot` since `(0, 1) ⊂ (-w/(1-w), 1/(1-w))`
+        for any `w ∈ (0, 1)`); `scheme.tilted_pvalue` will raise
         `TiltingDomainError` for any η in the bracket that the
         scheme actually rejects, and `_make_*_objective` returns
         `+inf` on that exception, so over-broad brackets are

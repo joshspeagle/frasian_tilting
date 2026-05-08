@@ -207,7 +207,7 @@ preserved.
 Single-seed v0_smoke checkpoint; standard error ≈ 0.05 across α=0.05
 narrowness MC repeats. v1 production retraining will produce
 variability within ~1× this SE. To regenerate, run
-`python -m scripts.regen_headline` (requires torch).
+`python -m scripts.regen_headline` (requires jax + equinox).
 
 Headline numbers were trained with `antithetic=False` (the
 pre-Phase-4 default). The current default is `antithetic=True`
