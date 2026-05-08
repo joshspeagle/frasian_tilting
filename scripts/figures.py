@@ -61,6 +61,22 @@ def regenerate(results_dir: Path) -> list[Path]:
         raise KeyError(f"experiment '{experiment_name}' not registered")
     experiment = registry.experiments[experiment_name]()
 
+    # Audit P1 K.3: short-circuit on empty raw_results. A manifest with
+    # zero ran cells (every cell `incompatible` or `error`) yields an
+    # empty list; the diagnostic loop would silently produce no
+    # figures and no CSVs, leaving the user without any signal that
+    # nothing happened. Surface that explicitly.
+    if not raw_results:
+        import warnings as _w
+        _w.warn(
+            f"figures: manifest at {manifest_path} contains no ran cells "
+            f"(all cells were incompatible / errored). No figures or "
+            f"CSVs produced.",
+            UserWarning,
+            stacklevel=2,
+        )
+        return []
+
     fig_dir = results_dir / "figures"
     out: list[Path] = []
     for diag in experiment.diagnostics():

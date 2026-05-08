@@ -1,5 +1,10 @@
 """WidthExperiment: mean CI width (union of regions) on a (theta_true, w) grid.
 
+**Normal-Normal-only by construction** (audit P1 K.4 / Path A). The
+experiment hard-codes `model = NormalNormalModel(sigma=self.sigma)` and
+the `(theta, w)` grid maps to a Gaussian prior; same caveat as
+`CoverageExperiment`. Bernoulli / Beta does not enter this experiment.
+
 For each cell (TiltingScheme x TestStatistic) and each (theta_true, w):
   1. Generate `n_reps` samples D ~ N(theta_true, sigma).
   2. Compute the (1-α) CI regions via
@@ -82,16 +87,19 @@ class WidthExperiment:
 
         n_theta = theta_grid.size
         n_w = w_grid.size
-        mean_width = np.empty((n_theta, n_w), dtype=np.float64)
-        width_se = np.empty_like(mean_width)
-        mean_n_regions = np.empty_like(mean_width)
+        # Audit P1 K.1: initialise with NaN (was `np.empty`, which
+        # leaves uninitialised garbage on cells that early-exit).
+        # `np.nanmean` downstream is then unbiased.
+        mean_width = np.full((n_theta, n_w), np.nan, dtype=np.float64)
+        width_se = np.full((n_theta, n_w), np.nan, dtype=np.float64)
+        mean_n_regions = np.full((n_theta, n_w), np.nan, dtype=np.float64)
 
         for j, w in enumerate(w_grid):
             sigma0 = _sigma0_from_w(float(w), self.sigma)
             prior = NormalDistribution(loc=self.mu0, scale=sigma0)
             for i in range(n_theta):
-                widths = np.empty(n_reps, dtype=np.float64)
-                n_regions_arr = np.empty(n_reps, dtype=np.float64)
+                widths = np.full(n_reps, np.nan, dtype=np.float64)
+                n_regions_arr = np.full(n_reps, np.nan, dtype=np.float64)
                 supported = True
                 for k in range(n_reps):
                     D = raw.D[i, k]
@@ -113,14 +121,19 @@ class WidthExperiment:
                         break
                     widths[k] = float(sum(hi - lo for lo, hi in regions))
                     n_regions_arr[k] = float(len(regions))
-                if not supported:
-                    mean_width[i, j] = np.nan
-                    width_se[i, j] = np.nan
-                    mean_n_regions[i, j] = np.nan
-                else:
-                    mean_width[i, j] = float(widths.mean())
-                    width_se[i, j] = float(widths.std(ddof=1) / np.sqrt(n_reps))
-                    mean_n_regions[i, j] = float(n_regions_arr.mean())
+                if supported:
+                    # Audit P1 K.1: use `np.nanmean` / `np.nanstd` to be
+                    # robust against per-rep failures that fill `widths[k]`
+                    # with NaN (e.g. a single brentq bracket failure
+                    # mid-loop that we want to skip rather than abort).
+                    mean_width[i, j] = float(np.nanmean(widths))
+                    if np.sum(~np.isnan(widths)) >= 2:
+                        width_se[i, j] = float(
+                            np.nanstd(widths, ddof=1) / np.sqrt(n_reps)
+                        )
+                    else:
+                        width_se[i, j] = np.nan
+                    mean_n_regions[i, j] = float(np.nanmean(n_regions_arr))
 
         cell_name = getattr(tilting, "cell_name", tilting.name)
         return RawResult(
