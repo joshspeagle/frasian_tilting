@@ -147,7 +147,11 @@ def test_dynamic_tilted_pvalue_vectorised_matches_loop(scheme_factory):
 def test_dynamic_tilted_pvalue_at_admissibility_boundary(scheme_factory):
     """Phase 3 review §5: bulk path agrees with scalar loop at η boundaries.
 
-    OT admits η in [0, 1] — sweep includes the closed endpoints exactly.
+    OT admits η > -w/(1-w) (audit P0-4: open ray; the W2 displacement
+    line extends past the [0, 1] geodesic segment). At w=0.5 the strict
+    bound is η > -1.0, so we sweep across the segment endpoints AND a
+    point just inside the lower bound AND a point past the upper segment
+    endpoint to cover the bulk-vs-scalar agreement on the admissible ray.
     power_law admits η < 1/(1-w); at w=0.5 the strict bound is 2.0, so we
     probe just below it (1/(1-w) - 1e-9) to verify the bulk path agrees
     with the scalar loop at the edge. The legacy random sweep
@@ -163,8 +167,13 @@ def test_dynamic_tilted_pvalue_at_admissibility_boundary(scheme_factory):
     w = sigma0**2 / (sigma**2 + sigma0**2)
 
     if scheme.name == "ot":
-        # Inclusive endpoints + interior mix.
-        eta = np.array([0.0, 0.25, 0.5, 0.75, 1.0], dtype=np.float64)
+        # Just inside the lower bound -w/(1-w) at w=0.5 → -1.0, segment
+        # endpoints, and a point past the upper segment endpoint (W2
+        # displacement line is open on the right).
+        eta_low_inside = -w / (1.0 - w) + 1e-9
+        eta = np.array(
+            [eta_low_inside, 0.0, 0.5, 1.0, 1.5], dtype=np.float64
+        )
     else:  # power_law
         # Just inside the strict raise bound 1/(1-w) at w=0.5 → 2.0.
         eta_high_inside = 1.0 / (1.0 - w) - 1e-9

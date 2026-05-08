@@ -7,7 +7,12 @@ W2 geodesic between N(mu_a, sigma_a^2) and N(mu_b, sigma_b^2):
 Plus the boundary contracts:
   - eta = 0 reproduces the input posterior (W2 identity element).
   - eta = 1 reproduces the likelihood-induced Gaussian N(D, sigma^2).
-  - eta outside [0, 1] raises TiltingDomainError.
+  - eta is admissible whenever the tilted distribution is well-defined
+    along the W2 displacement line (audit P0-4): Gaussian fast path
+    requires sigma_t = (1-eta)*sigma_post + eta*sigma > 0; closed-form
+    pvalue requires s_t = (w + eta*(1-w))*sigma > 0 (i.e. eta > -w/(1-w)).
+    The geodesic *segment* is [0, 1], but extrapolation along the same
+    straight line is admissible while the math holds.
 
 Plus the OT-tilted WALDO p-value closed form:
   s_t      = (w + eta * (1 - w)) * sigma
