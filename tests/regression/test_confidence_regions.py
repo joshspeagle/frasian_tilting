@@ -83,7 +83,7 @@ class TestConfidenceRegionsBasics:
 
     def test_power_law_numerical_static_is_single_region(self):
         m, p = _model_prior()
-        sel_static = NumericalEtaSelector(sigma=1.0, mu0=0.0)
+        sel_static = NumericalEtaSelector()
         scheme = PowerLawTilting(selector=sel_static)
         for D in (-2.0, 0.0, 2.0, 5.0):
             regions = scheme.confidence_regions(
@@ -109,7 +109,7 @@ class TestConfidenceRegionsBasics:
         will detect this via the `signed_confidence` non-monotonicity.
         """
         m, p = _model_prior()
-        sel = DynamicNumericalEtaSelector(sigma=1.0, mu0=0.0, n_grid=401, coarse_n=25)
+        sel = DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)
         scheme = PowerLawTilting(selector=sel)
 
         # Direct dynamic-p evaluation; count local maxima.
@@ -155,7 +155,7 @@ class TestConfidenceRegionsBasics:
         rare on the realistic sandbox (see test above) but the plumbing
         must work regardless."""
         m, p = _model_prior()
-        sel = DynamicNumericalEtaSelector(sigma=1.0, mu0=0.0, n_grid=401, coarse_n=25)
+        sel = DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)
         scheme = PowerLawTilting(selector=sel)
         for D in np.linspace(-3.0, 3.0, 11):
             regions = scheme.confidence_regions(
@@ -176,7 +176,7 @@ class TestConfidenceRegionsStructure:
     def test_regions_are_sorted_and_disjoint(self):
         """For any cell that returns regions, lo_i < hi_i and hi_i ≤ lo_{i+1}."""
         m, p = _model_prior()
-        sel = DynamicNumericalEtaSelector(sigma=1.0, mu0=0.0, n_grid=401, coarse_n=25)
+        sel = DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)
         scheme = PowerLawTilting(selector=sel)
         for D in np.linspace(-3.0, 3.0, 11):
             regions = scheme.confidence_regions(
@@ -198,7 +198,7 @@ class TestConfidenceRegionsStructure:
         """For multi-region cells, union ≤ convex hull always; equal when
         single-region. This is the relationship that motivated the uplift."""
         m, p = _model_prior()
-        sel = DynamicNumericalEtaSelector(sigma=1.0, mu0=0.0, n_grid=401, coarse_n=25)
+        sel = DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)
         scheme = PowerLawTilting(selector=sel)
         for D in np.linspace(-3.0, 3.0, 11):
             regions = scheme.confidence_regions(
@@ -217,7 +217,7 @@ class TestConfidenceRegionsStructure:
     def test_confidence_interval_matches_convex_hull_of_regions(self):
         """`confidence_interval` should equal `(min lo, max hi)` of regions."""
         m, p = _model_prior()
-        sel = DynamicNumericalEtaSelector(sigma=1.0, mu0=0.0, n_grid=401, coarse_n=25)
+        sel = DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)
         scheme = PowerLawTilting(selector=sel)
         for D in (-2.0, 0.0, 1.5, 3.0):
             regions = scheme.confidence_regions(
@@ -256,7 +256,7 @@ class TestMultiRegionEmpiricallyExercised:
 
     def test_dyn_waldo_two_regions_at_alpha_0p86(self):
         m, p = _model_prior()
-        sel = DynamicNumericalEtaSelector(sigma=1.0, mu0=0.0, n_grid=401, coarse_n=25)
+        sel = DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)
         scheme = PowerLawTilting(selector=sel)
         regions = scheme.confidence_regions(
             0.86,

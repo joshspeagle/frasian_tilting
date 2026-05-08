@@ -108,12 +108,8 @@ def main(smoke: bool = False, out: Path | None = None) -> Path:
 
     # Built for parity with legacy_selector below; the demo plots predict_eta
     # directly so the selector itself is unused (kept to document the wiring).
-    _learned_selector = LearnedDynamicEtaSelector(
-        artifact=artifact,
-        sigma=sigma,
-        mu0=mu0,
-    )
-    legacy_selector = DynamicNumericalEtaSelector(sigma=sigma, mu0=mu0)
+    _learned_selector = LearnedDynamicEtaSelector(artifact=artifact)
+    legacy_selector = DynamicNumericalEtaSelector()
     scheme = PowerLawTilting()
 
     n_grid = 51 if smoke else 201

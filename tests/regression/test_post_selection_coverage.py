@@ -47,12 +47,10 @@ class TestPostSelectionCoverage:
 
         ident = IdentityTilting()
         static_opt = PowerLawTilting(
-            selector=NumericalEtaSelector(sigma=sigma, mu0=mu0),
+            selector=NumericalEtaSelector(),
         )
         dyn = PowerLawTilting(
             selector=DynamicNumericalEtaSelector(
-                sigma=sigma,
-                mu0=mu0,
                 n_grid=201,
                 coarse_n=11,
             ),
@@ -84,14 +82,21 @@ class TestPostSelectionCoverage:
         assert abs(cov["waldo"] - 0.95) < 0.027, cov
         assert abs(cov["dyn"] - 0.95) < 0.027, cov
 
-        # Static η*-opt: empirically ~0.93 at θ=−2; pin a one-sided floor
-        # well below nominal so the test asserts the *direction* of the
-        # post-selection effect rather than a fragile point estimate.
-        assert cov["static"] < 0.945, (
-            f"static η*-opt selector unexpectedly hit nominal coverage "
-            f"{cov['static']:.3f}; either MC sample landed above the mean "
-            f"(rerun with a different seed) or the post-selection effect "
-            f"has been corrected — investigate. Other cells: {cov}"
+        # Static η*-opt: empirically ~0.93 at θ=−2 (the CLAUDE.md
+        # claim is "~2 points" below nominal). Audit P2 (Cluster H)
+        # noted that the previous assertion only pinned direction
+        # (`< 0.945`), so a drift to 0.94 — only ~1 point off
+        # nominal — would silently pass. Pin both direction AND
+        # magnitude: assert cov falls in the documented
+        # post-selection range `[0.90, 0.945]` (lower bound is
+        # the true 0.93 mean minus 3·MC SE ≈ 0.010 at n_reps=600;
+        # tightens the contract from one-sided to two-sided).
+        assert 0.90 < cov["static"] < 0.945, (
+            f"static η*-opt coverage {cov['static']:.3f} outside the "
+            f"documented post-selection range [0.90, 0.945]; either "
+            f"MC noise drove it past the band (rerun with a different "
+            f"seed) or the post-selection effect has been corrected / "
+            f"worsened — investigate. Other cells: {cov}"
         )
         # And the gap should run the right way:
         assert cov["static"] < cov["dyn"], cov

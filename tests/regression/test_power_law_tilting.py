@@ -98,7 +98,7 @@ class TestPowerLawDomain:
         sigma0 = float(np.sqrt(w / (1.0 - w)) * sigma)
         model = NormalNormalModel(sigma=sigma)
         prior = NormalDistribution(loc=mu0, scale=sigma0)
-        sel = NumericalEtaSelector(sigma=sigma, mu0=mu0)
+        sel = NumericalEtaSelector()
         lo, hi = sel._eta_bounds(model, prior)
         scheme = PowerLawTilting()
         assert lo < scheme.param_space.eta_identity < hi
@@ -115,7 +115,7 @@ class TestPowerLawDomain:
         sigma0 = 1e6
         model = NormalNormalModel(sigma=sigma)
         prior = NormalDistribution(loc=mu0, scale=sigma0)
-        sel = NumericalEtaSelector(sigma=sigma, mu0=mu0)
+        sel = NumericalEtaSelector()
         lo, hi = sel._eta_bounds(model, prior)
         # Bounds should still be finite + ordered.
         assert np.isfinite(lo) and np.isfinite(hi)

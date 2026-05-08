@@ -112,7 +112,29 @@ def extract_normal_normal_params(
 # over grid-discretisation noise at training-time, and per-step cost is
 # the dominant wall-time of training. Bernoulli v0_smoke target is ~30 min
 # at this setting.
-_N_GRID_GENERIC_TRAINING: int = 512
+#
+# Audit P2 (Cluster G): exposed via the env var
+# ``FRASIAN_N_GRID_GENERIC_TRAINING`` for sweeps. Read once at
+# module import. Defaults to 512.
+def _resolve_n_grid_generic_training() -> int:
+    import os
+
+    raw = os.environ.get("FRASIAN_N_GRID_GENERIC_TRAINING", "512")
+    try:
+        v = int(raw)
+    except ValueError as exc:
+        raise ValueError(
+            f"FRASIAN_N_GRID_GENERIC_TRAINING must be int; got {raw!r}."
+        ) from exc
+    if v < 16:
+        raise ValueError(
+            f"FRASIAN_N_GRID_GENERIC_TRAINING must be >= 16 "
+            f"(grid integration breaks below that); got {v}."
+        )
+    return v
+
+
+_N_GRID_GENERIC_TRAINING: int = _resolve_n_grid_generic_training()
 
 
 def _call_normal_normal_pvalue(

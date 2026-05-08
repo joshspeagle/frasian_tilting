@@ -94,7 +94,7 @@ def test_dynamic_ci_scan_vectorised_matches_scalar_loop(scheme_factory, D):
     scheme = scheme_factory()
     model = NormalNormalModel(sigma=1.0)
     prior = NormalDistribution(loc=0.0, scale=1.0)
-    selector = DynamicNumericalEtaSelector(sigma=1.0, mu0=0.0)
+    selector = DynamicNumericalEtaSelector()
 
     regions_v, total_v, n_v = _scan_with_mode(
         scheme, model, prior,
@@ -235,7 +235,7 @@ def test_dynamic_ci_scan_scalar_fallback_against_production_scheme():
     scheme = PowerLawTilting()
     model = NormalNormalModel(sigma=1.0)
     prior = NormalDistribution(loc=0.0, scale=1.0)
-    selector = DynamicNumericalEtaSelector(sigma=1.0, mu0=0.0)
+    selector = DynamicNumericalEtaSelector()
     sigma = float(model.sigma)
     mu0 = float(prior.loc)
     sigma0 = float(prior.scale)
@@ -357,7 +357,7 @@ def test_dynamic_ci_scan_speedup():
     scheme = PowerLawTilting()
     model = NormalNormalModel(sigma=1.0)
     prior = NormalDistribution(loc=0.0, scale=1.0)
-    selector = DynamicNumericalEtaSelector(sigma=1.0, mu0=0.0)
+    selector = DynamicNumericalEtaSelector()
 
     def _run(vectorised: bool):
         return _scan_with_mode(

@@ -116,7 +116,7 @@ class TestTiltingPvalueDispatch:
         """Dynamic dispatch: scheme.pvalue should match
         dynamic_tilted_pvalue when given the same eta_at_theta lookup
         the selector would produce."""
-        sel = DynamicNumericalEtaSelector(sigma=1.0, mu0=0.0, n_grid=401, coarse_n=25)
+        sel = DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)
         scheme = PowerLawTilting(selector=sel)
 
         scheme_p = scheme.pvalue(

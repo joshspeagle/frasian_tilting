@@ -101,11 +101,7 @@ def _build_scheme_and_priors(ckpt_path: Path, scheme_cls: type):
     sigma = float(cfg["model_fingerprint"][1])
     mu0 = float(cfg["prior_fingerprint"][1])
     sigma0 = float(cfg["prior_fingerprint"][2])
-    selector = LearnedDynamicEtaSelector(
-        artifact=artifact,
-        sigma=sigma,
-        mu0=mu0,
-    )
+    selector = LearnedDynamicEtaSelector(artifact=artifact)
     scheme = scheme_cls(selector=selector)
     prior = NormalDistribution(loc=mu0, scale=sigma0)
     model = NormalNormalModel(sigma=sigma)

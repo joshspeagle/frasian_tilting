@@ -1,8 +1,9 @@
-"""CLI entry point: `python -m scripts.run [--list] [experiment=<name>]`.
+"""CLI entry point: `python -m scripts.run [--list] [--fast] [experiment=<name>]`.
 
-Step-1 implementation supports `--list` (enumerate registered methods) and
-will print a stub message for any non-empty `experiment=` value until Step 4
-ports the concrete experiments.
+`--list` enumerates registered methods. `experiment=<name>` runs the
+named experiment end-to-end through the cross-product runner using
+`default_cells(experiment=<name>)`. `--fast` swaps `Config.default()`
+for `Config.fast()` (smaller grids, fewer reps; ~30s for `coverage`).
 """
 
 from __future__ import annotations
@@ -38,7 +39,9 @@ def main(argv: list[str] | None = None) -> int:
             if not entries:
                 print("  (none)")
         if not any_found:
-            print("\nNo concrete methods are registered yet. " "Step 2 of the migration adds them.")
+            print("\nNo concrete methods are registered. Check that "
+                  "`frasian._registry_bootstrap.bootstrap()` ran (it "
+                  "should fire on `import frasian`).")
         return 0
 
     if args.experiment is None:

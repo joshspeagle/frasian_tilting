@@ -85,7 +85,7 @@ class TestDynamicTiltedConfidenceInterval:
         model = NormalNormalModel(sigma=1.0)
         prior = NormalDistribution(loc=0.0, scale=1.0)
         scheme = PowerLawTilting()
-        selector = NumericalEtaSelector(sigma=1.0, mu0=0.0)
+        selector = NumericalEtaSelector()
         regions, total, n_reg = scheme.dynamic_tilted_confidence_interval(
             0.05,
             1.5,
@@ -107,7 +107,7 @@ class TestDynamicTiltedConfidenceInterval:
         model = NormalNormalModel(sigma=1.0)
         prior = NormalDistribution(loc=0.0, scale=1.0)
         scheme = PowerLawTilting()
-        selector = NumericalEtaSelector(sigma=1.0, mu0=0.0)
+        selector = NumericalEtaSelector()
         alpha = 0.05
         regions, _, _ = scheme.dynamic_tilted_confidence_interval(
             alpha,
@@ -145,7 +145,7 @@ class TestDynamicTiltedConfidenceInterval:
         model = NormalNormalModel(sigma=1.0)
         prior = NormalDistribution(loc=0.0, scale=1.0)
         scheme = PowerLawTilting()
-        selector = NumericalEtaSelector(sigma=1.0, mu0=0.0)
+        selector = NumericalEtaSelector()
         for D in (-3.0, 0.0, 2.0, 6.0):
             regions, _, n_reg = scheme.dynamic_tilted_confidence_interval(
                 0.05,

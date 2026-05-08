@@ -80,11 +80,7 @@ def test_calibration_at_multiple_alphas(scheme_label, theta_true, alpha):
     mu0 = float(cfg["prior_fingerprint"][1])
     sigma0 = float(cfg["prior_fingerprint"][2])
 
-    selector = LearnedDynamicEtaSelector(
-        artifact=artifact,
-        sigma=sigma,
-        mu0=mu0,
-    )
+    selector = LearnedDynamicEtaSelector(artifact=artifact)
     if scheme_label == "powerlaw":
         scheme = PowerLawTilting(selector=selector)
     else:

@@ -67,11 +67,12 @@ from .base import TiltingDomainError, TiltingScheme
 def _D_from_abs_delta(abs_delta: float, w: float, sigma: float, mu0: float) -> float:
     """Invert Delta = (1 - w)(mu0 - D)/sigma with the convention Delta >= 0.
 
-    Normal-Normal-specific helper retained for `experiments/smoothness.py`,
-    which still owns its own |Δ|-keyed sweep until commit 3a-3 relocates
-    it. New selector code paths consume θ directly via the model/prior
-    instances passed at call time; do not introduce new callers of this
-    function outside the smoothness experiment.
+    Normal-Normal-specific helper retained solely for
+    `experiments/smoothness.py`, which sweeps `|Δ|` and inverts
+    back to D for plotting. New selector code paths consume θ
+    directly via the model/prior instances passed at call time;
+    do not introduce new callers of this function outside the
+    smoothness experiment.
     """
     return float(mu0 - abs_delta * sigma / max(1.0 - w, 1e-12))
 
@@ -160,13 +161,6 @@ class NumericalEtaSelector:
     """
 
     name: ClassVar[str] = "numerical"
-    # Phase 3a-1: `sigma` and `mu0` are deprecated — they came in
-    # originally only because |Δ| had no model/prior context. The
-    # call-time signature now receives `model` and `prior`, so these
-    # are unused. Retained as informational fields for legacy demos
-    # / smoothness experiment; will be removed in commit 3a-3.
-    sigma: float = 1.0
-    mu0: float = 0.0
     eta_min_buffer: float = 1e-3
     is_dynamic: bool = False
     # NumericalEtaSelector reads `D = data.mean()` inside `select(...)`
@@ -213,12 +207,10 @@ class NumericalEtaSelector:
     def _eta_bounds(self, model: Model, prior: Prior) -> tuple[float, float]:
         """η search bracket for `scipy.optimize.minimize_scalar`.
 
-        Internal helper — selectors no longer consult a public
-        `scheme.admissible_range`. The bracket is the closed-form
-        Normal-Normal `power_law` admissible range
-        `(-w/(1-w) + buffer, 1/(1-w) - buffer)` (also valid for
-        `ot` since `(0, 1) ⊂ (-w/(1-w), 1/(1-w))` for any
-        `w ∈ (0, 1)`); `scheme.tilted_pvalue` will raise
+        The bracket is the closed-form Normal-Normal `power_law`
+        admissible range `(-w/(1-w) + buffer, 1/(1-w) - buffer)`
+        (also valid for `ot` since `(0, 1) ⊂ (-w/(1-w), 1/(1-w))`
+        for any `w ∈ (0, 1)`); `scheme.tilted_pvalue` will raise
         `TiltingDomainError` for any η in the bracket that the
         scheme actually rejects, and `_make_*_objective` returns
         `+inf` on that exception, so over-broad brackets are
@@ -408,12 +400,6 @@ class DynamicNumericalEtaSelector:
     """
 
     name: ClassVar[str] = "dynamic_numerical"
-    # `sigma` and `mu0` are retained as informational fields for the
-    # legacy demos that still inspect them; new code paths never read
-    # them — model/prior come in at call time. They are no longer
-    # required to match the inference-time model/prior.
-    sigma: float = 1.0
-    mu0: float = 0.0
     eta_min_buffer: float = 1e-3
     n_grid: int = 401
     coarse_n: int = 25
@@ -425,9 +411,16 @@ class DynamicNumericalEtaSelector:
     # `select(data=[D], ...)` shim falls back to NumericalEtaSelector at
     # θ=D and inherits its post-selection bias; prefer `select_grid`.
     is_post_selection: ClassVar[bool] = False
-    # Mutable cache; `compare=False, repr=False` keeps the dataclass's
-    # auto-generated `__eq__` / `__repr__` independent of the cache state.
-    _cache: dict = field(default_factory=dict, compare=False, repr=False)
+    # Memoization cache for `select_grid`. The selector is otherwise a
+    # value object (frozen dataclass + value-equal `compare=` fields);
+    # the cache is excluded from `__eq__` / `__hash__` / `__repr__`
+    # via `compare=False, repr=False, hash=False` so two selectors
+    # with the same configuration but different cache populations are
+    # equal AND interchangeable. Read by `select_grid` only; never
+    # written from outside this module.
+    _cache: dict = field(
+        default_factory=dict, compare=False, repr=False, hash=False
+    )
 
     def _inner(self) -> NumericalEtaSelector:
         return NumericalEtaSelector(eta_min_buffer=self.eta_min_buffer)
@@ -513,6 +506,14 @@ class DynamicNumericalEtaSelector:
 # fraction of the batch, raise rather than silently clamp — a checkpoint
 # that drifts that far is either undertrained or for the wrong
 # experiment, and silently clamping would mask a calibration failure.
+#
+# Audit P2 (Cluster G) considered exposing this as a tunable. Kept
+# private: this is a calibration-correctness gate, not a precision
+# tradeoff. A user that wants the gate disabled is asking the
+# framework to silently produce uncalibrated CIs — re-train the
+# checkpoint instead. Loosening it requires a code change with a
+# regression test demonstrating that the new threshold still
+# catches the documented failure modes.
 _CLAMP_FAIL_THRESHOLD = 0.20
 
 
@@ -560,39 +561,33 @@ class LearnedDynamicEtaSelector:
     so no per-(w, α) cache is needed beyond the artifact load.
     """
 
-    artifact: LearnedArtifact  # any Phase E v2 dual-head artifact (concrete EtaArtifact, NullArtifact stub, ...)
+    artifact: LearnedArtifact  # any Phase E v3 dual-head artifact (concrete EtaArtifact, NullArtifact stub, ...)
     name: ClassVar[str] = "learned_dynamic"
-    sigma: float = 1.0
-    mu0: float = 0.0
     is_dynamic: bool = True
     # Per-θ learned selector — η = MLP(θ), no D-conditioning. Calibrated
     # by construction (see learned_eta.md / dual-head training).
     is_post_selection: ClassVar[bool] = False
+    # Lazy-load latch for `artifact.load()`. Not part of equality —
+    # two selectors with the same artifact are equal regardless of
+    # whether either has loaded yet.
     _loaded: bool = field(default=False, init=False, repr=False, compare=False)
-    # Diagnostic counters tracking how often the runtime safety clamp
-    # has fired (skeptic E pre-PR review #2). Cumulative across calls
-    # in the lifetime of this selector instance.
-    _clamped_calls: int = field(default=0, init=False, repr=False, compare=False)
-    _last_clamped_fraction: float = field(default=0.0, init=False, repr=False, compare=False)
 
     def _ensure_loaded(self) -> None:
         if not self._loaded:
             self.artifact.load()
             self._loaded = True
-            # Phase E checkpoints: legacy torch format v2 + post-port
-            # Equinox format v3 are both accepted (the on-disk schema
-            # changed; the in-memory metadata fields are compatible).
             from .._errors import MissingArtifactError
+            from ..learned.eta_artifact import CHECKPOINT_FORMAT_VERSION
 
             meta = self.artifact.metadata
             v = meta.get("checkpoint_format_version", None)
-            if v not in (2, 3) or "experiment_config" not in meta:
+            if v != CHECKPOINT_FORMAT_VERSION or "experiment_config" not in meta:
                 raise MissingArtifactError(
-                    f"{self.artifact.name}: expected Phase E (v2 or v3) "
-                    f"checkpoint with `experiment_config`; got "
-                    f"format_version={v!r}. Re-train via "
-                    f"`python -m scripts.train_learned_eta --config "
-                    f"<experiment.yaml>`."
+                    f"{self.artifact.name}: expected Phase E "
+                    f"(v{CHECKPOINT_FORMAT_VERSION}) checkpoint with "
+                    f"`experiment_config`; got format_version={v!r}. "
+                    f"Re-train via `python -m scripts.train_learned_eta "
+                    f"--config <experiment.yaml>`."
                 )
 
     def _check_scheme(self, scheme: TiltingScheme) -> None:
@@ -1005,8 +1000,6 @@ class LearnedDynamicEtaSelector:
             import warnings
 
             frac = float(out_of_range.mean())
-            self._clamped_calls += 1
-            self._last_clamped_fraction = frac
             warnings.warn(
                 f"{self.artifact.name}: {100*frac:.1f}% of predicted "
                 f"η values fell outside the admissible range "

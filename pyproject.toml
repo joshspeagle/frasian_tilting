@@ -58,6 +58,14 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = "-v --tb=short --strict-markers"
+# `scripts/` is not an installed package; tests import from it
+# (e.g. `tests/integration/test_regen_headline_smoke.py` →
+# `scripts.regen_headline._compute_table`). `python -m pytest`
+# auto-prepends CWD to `sys.path` so this works at the CI command
+# line, but invoking the `pytest` binary directly does not. Adding
+# the project root to `pythonpath` makes both invocations resolve
+# `import scripts.<x>` consistently.
+pythonpath = ["."]
 filterwarnings = [
     # Phase 4 skeptic §5: surface every RuntimeWarning emitted by the
     # learned-η subpackage so a metadata-mismatch / NaN-drift / class-

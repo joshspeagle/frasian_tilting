@@ -1,14 +1,15 @@
 """TiltingScheme protocol and its companions.
 
-A `TiltingScheme` interpolates between (prior, likelihood, posterior) by some
-parameter η. The simplest scheme — `PowerLawTilting` — is the existing
-framework's η-tilting (Step 2 ports it). Future schemes (OT, Fisher–Rao
-geodesic, mixture, exponential-family path) plug into the same interface.
+A `TiltingScheme` interpolates between (prior, likelihood, posterior) by
+some parameter η. `PowerLawTilting` is the e-geodesic / log-linear
+scheme; `OTTilting` is the W2 geodesic; `FisherRaoTilting` and
+`MixtureTilting` are stubs for the Levi-Civita and m-geodesic variants
+(see CLAUDE.md for the full taxonomy).
 
-`EtaSelector` is a separate protocol for choosing η given context. It exists
-because the legacy code conflated three solvers (numerical, closed-form
-approximation, MLP-learned) inside `tilting.py`; here, all three live behind
-the same interface and can be swapped.
+`EtaSelector` is a separate protocol for choosing η given context. It
+exists because the legacy code conflated three solvers (numerical,
+closed-form approximation, MLP-learned) inside `tilting.py`; here, all
+three live behind the same interface and can be swapped.
 """
 
 from __future__ import annotations
@@ -157,8 +158,11 @@ class EtaSelector(Protocol):
 
     Signature: `select(...)` accepts `data`, `model`, `prior`, `alpha`,
     `statistic` as keyword arguments and returns a scalar η. Selectors
-    that need η-bounds compute them internally; the protocol does not
-    expose a `TiltingContext` or `admissible_range` indirection.
+    that need η-bounds compute them internally — the protocol does not
+    require callers to thread a separate context object or query an
+    admissible-range API. (Earlier drafts of the framework had a
+    `TiltingContext` plus a public `scheme.admissible_range`; both
+    were dropped in Phase 3a.)
 
     **Post-selection / D-conditioning warning.** The signature accepts
     `data`, but selectors split into two semantic flavours:

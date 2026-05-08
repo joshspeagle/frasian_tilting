@@ -54,7 +54,29 @@ _FORCE_X64 = _x64
 
 # Number of D draws per training step for the width-loss MC average
 # (skeptic block #1).
-N_MC_TRAIN: int = 8
+#
+# Audit P2 (Cluster G): exposed via the env var
+# ``FRASIAN_N_MC_TRAIN`` so production sweeps can crank precision up
+# without code changes. Defaults to 8 (the published headline-table
+# value); raise carefully — wallclock scales linearly. Read once at
+# module import, NOT every step (re-importing is the only way to
+# pick up a new value).
+def _resolve_n_mc_train() -> int:
+    import os
+
+    raw = os.environ.get("FRASIAN_N_MC_TRAIN", "8")
+    try:
+        v = int(raw)
+    except ValueError as exc:
+        raise ValueError(
+            f"FRASIAN_N_MC_TRAIN must be a positive int; got {raw!r}."
+        ) from exc
+    if v < 1:
+        raise ValueError(f"FRASIAN_N_MC_TRAIN must be >= 1; got {v}.")
+    return v
+
+
+N_MC_TRAIN: int = _resolve_n_mc_train()
 
 
 @dataclass

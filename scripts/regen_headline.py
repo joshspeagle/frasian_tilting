@@ -1,15 +1,23 @@
 """Regenerate the headline empirical CI-width table.
 
 Reproduces the table cited in ``CLAUDE.md`` and
-``docs/methods/learned_eta.md``:
+``docs/methods/learned_eta.md`` (post-Phase-F JAX/Equinox numbers
+from the v0_smoke checkpoint):
 
 ```
                             θ=0    θ=1    θ=2    θ=3    θ=4
 Wald                        3.92   3.92   3.92   3.92   3.92
-bare WALDO                  3.32   3.44   3.75   4.24   4.85
-power_law[numerical]        3.35   3.50   3.92   4.53   5.23
-power_law[learned]          3.67   3.67   3.67   3.71   3.80
+bare WALDO                  3.33   3.43   3.75   4.23   4.78
+power_law[numerical]        3.36   3.49   3.91   4.54   5.24
+power_law[learned]          3.63   3.64   3.68   3.75   3.82
 ```
+
+Numbers above are NOT bit-equal to the pre-port torch numbers — JAX's
+PRNG primitive differs from torch's even at the same nominal seed, so
+re-trained Equinox weights drift within ~1× MC standard error (~0.05
+across α=0.05 narrowness MC repeats). The qualitative pattern
+(power_law[learned] calibrated AND ≤ Wald, narrow at conflict) is
+preserved.
 
 jax + equinox required; the script lazily imports them and prints a
 clear error if either is unavailable. See ``docs/methods/learned_eta.md``
@@ -105,8 +113,8 @@ def _compute_table(theta_grid: list[float], n_reps: int) -> dict[str, list[float
     power_law[learned]) at each θ in ``theta_grid`` and return a dict
     mapping cell name to mean CI width per θ.
 
-    Imports happen here (after the torch check) so the module is
-    inspectable without torch installed.
+    Imports happen here (after the jax availability check) so the
+    module is inspectable without jax installed.
     """
     import numpy as np
 

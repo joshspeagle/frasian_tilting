@@ -189,7 +189,7 @@ class TestDynWaldoConstructor:
     @pytest.mark.parametrize("D", [2.0, 3.0])
     def test_dyn_waldo_cd_is_valid_probability_distribution(self, D):
         m, prior = _model_prior()
-        sel = DynamicNumericalEtaSelector(sigma=1.0, mu0=0.0, n_grid=401, coarse_n=25)
+        sel = DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)
         scheme = PowerLawTilting(selector=sel)
         theta = np.linspace(D - 10, D + 10, 2001)
         cd = build_cd_from_pvalue(
@@ -217,7 +217,7 @@ class TestDynWaldoConstructor:
         signed_confidence is non-monotone — the smoothness pathology
         surfaces directly in the CD."""
         m, prior = _model_prior()
-        sel = DynamicNumericalEtaSelector(sigma=1.0, mu0=0.0, n_grid=401, coarse_n=25)
+        sel = DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)
         scheme = PowerLawTilting(selector=sel)
         D = 3.0
         theta = np.linspace(D - 10, D + 10, 2001)
@@ -235,7 +235,7 @@ class TestDynWaldoConstructor:
 
     def test_dyn_waldo_cd_validate_flags_nonmonotone(self):
         m, prior = _model_prior()
-        sel = DynamicNumericalEtaSelector(sigma=1.0, mu0=0.0, n_grid=401, coarse_n=25)
+        sel = DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)
         scheme = PowerLawTilting(selector=sel)
         D = 3.0
         theta = np.linspace(D - 10, D + 10, 2001)

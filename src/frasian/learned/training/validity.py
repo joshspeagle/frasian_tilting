@@ -32,6 +32,13 @@ from numpy.typing import NDArray
 
 from ..._errors import TiltingDomainError
 
+# `_FP_SLACK` is the numerical slack used to admit p-values that are
+# in [0, 1] modulo FP noise (e.g. `scipy.stats.norm.cdf` rounding at
+# ±5σ). NOT user-tunable: tightening it below 1e-9 would falsely
+# reject FP-noisy-but-correct pairs; loosening it would let truly
+# off-domain p-values into the validity mask. Audit P2 (Cluster G)
+# considered exposing this via env var; correctness-tuning knob, kept
+# private by design.
 _FP_SLACK = 1e-9
 
 # Per-sample MC budget when routing through the scheme-specific generic
@@ -41,7 +48,26 @@ _FP_SLACK = 1e-9
 # inference-time CI inversion. n_mc=32 keeps per-step cost tractable
 # while still producing reliable validity labels (< ~3% disagreement
 # vs n_mc=200 on Bernoulli + Beta smoke at training-typical (θ, η)).
-_N_MC_VALIDITY: int = 32
+#
+# Audit P2 (Cluster G): exposed via the env var ``FRASIAN_N_MC_VALIDITY``
+# for sweeps that want tighter agreement with the n_mc=200 reference.
+# Read once at module import. Defaults to 32.
+def _resolve_n_mc_validity() -> int:
+    import os
+
+    raw = os.environ.get("FRASIAN_N_MC_VALIDITY", "32")
+    try:
+        v = int(raw)
+    except ValueError as exc:
+        raise ValueError(
+            f"FRASIAN_N_MC_VALIDITY must be int; got {raw!r}."
+        ) from exc
+    if v < 1:
+        raise ValueError(f"FRASIAN_N_MC_VALIDITY must be >= 1; got {v}.")
+    return v
+
+
+_N_MC_VALIDITY: int = _resolve_n_mc_validity()
 
 
 def is_pair_valid(p_scalar: float) -> bool:

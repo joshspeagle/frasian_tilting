@@ -3,8 +3,6 @@
 Importing this module triggers all `@register_*` side effects. The framework
 calls it lazily from `frasian.run_experiment` so `import frasian` itself stays
 side-effect-free.
-
-Until concrete methods are ported (Step 2+), this module imports nothing.
 """
 
 from __future__ import annotations

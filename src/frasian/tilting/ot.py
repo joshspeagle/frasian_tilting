@@ -600,7 +600,7 @@ class OTTilting:
         prior: NormalDistribution,
         eta: ArrayLike,
         statistic_name: str,
-    ) -> jax.Array:
+    ) -> float | jax.Array:
         """Tilted p-value evaluated against the W2-tilted Gaussian.
 
         Specialized for (ot, waldo) and (ot, wald) on Normal-Normal:
@@ -658,8 +658,10 @@ class OTTilting:
         D_np = np.asarray(D, dtype=np.float64)
         if theta_np.size == 1 and eta_np.size == 1 and D_np.size == 1:
             # Returns Python float, NOT jnp.asarray(float) — see the
-            # corresponding note in PowerLawTilting.tilted_pvalue.
-            return _ot_tilted_pvalue_numpy_scalar(  # type: ignore[return-value]
+            # corresponding note in PowerLawTilting.tilted_pvalue. The
+            # signature's `float | jax.Array` union makes the relaxed
+            # return type honest at the type level.
+            return _ot_tilted_pvalue_numpy_scalar(
                 float(theta_np.item()),
                 float(eta_np.item()),
                 float(D_np.item()),

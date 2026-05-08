@@ -54,6 +54,15 @@ def _resolve_dynamic_eta_mode() -> str:
         production path. Calibrated AND narrow (the headline claim).
 
     Default is `numerical`.
+
+    Audit P2 (Cluster F): the env var is read on every call rather
+    than cached at import time. This is deliberate so tests can
+    flip the mode via `monkeypatch.setenv(...)`, but the caller
+    should be aware that flipping the var mid-process produces a
+    **fresh** `EtaArtifact` with a cold artifact cache — every
+    new call to `default_tiltings()` will re-read the .eqx file
+    from disk. Set the env var once before launching Python (or
+    in a session-scoped fixture) for production runs.
     """
     import os
 
@@ -110,8 +119,6 @@ def _make_learned_selector(scheme_name: str):
 
 def default_tiltings(
     *,
-    sigma: float = 1.0,
-    mu0: float = 0.0,
     n_grid: int = 401,
     coarse_n: int = 25,
 ) -> list[TiltingScheme]:
@@ -140,14 +147,10 @@ def default_tiltings(
         ot_selector = _make_learned_selector("ot")
     elif mode == "numerical":
         pl_selector = DynamicNumericalEtaSelector(
-            sigma=sigma,
-            mu0=mu0,
             n_grid=n_grid,
             coarse_n=coarse_n,
         )
         ot_selector = DynamicNumericalEtaSelector(
-            sigma=sigma,
-            mu0=mu0,
             n_grid=n_grid,
             coarse_n=coarse_n,
         )
@@ -163,11 +166,7 @@ def default_tiltings(
     ]
 
 
-def post_selection_demo_tiltings(
-    *,
-    sigma: float = 1.0,
-    mu0: float = 0.0,
-) -> list[TiltingScheme]:
+def post_selection_demo_tiltings() -> list[TiltingScheme]:
     """Tiltings for the **post-selection coverage demo**.
 
     Returns `[IdentityTilting(), PowerLawTilting(NumericalEtaSelector())]`.
@@ -187,7 +186,7 @@ def post_selection_demo_tiltings(
     return [
         IdentityTilting(),
         PowerLawTilting(
-            selector=NumericalEtaSelector(sigma=sigma, mu0=mu0),
+            selector=NumericalEtaSelector(),
         ),
     ]
 

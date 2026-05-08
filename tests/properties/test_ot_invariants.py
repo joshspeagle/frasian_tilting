@@ -127,6 +127,27 @@ class TestOTInvariants:
         with pytest.raises(TiltingDomainError):
             OTTilting().tilt(post, prior, lik, float("nan"))
 
+    def test_tilted_pvalue_scalar_returns_python_float(self):
+        """Audit P2 (Cluster D): the scalar fast path returns ``float``
+        and the bulk path returns ``jax.Array``. Pinned for OT in
+        parallel with the same contract on PowerLawTilting; the
+        signature was relaxed to ``float | jax.Array`` so the union is
+        type-honest at the boundary.
+        """
+        import jax  # local import keeps the suite jax-optional at collection
+
+        model = NormalNormalModel(sigma=1.0)
+        prior = NormalDistribution(loc=0.0, scale=1.0)
+        scheme = OTTilting()
+
+        scalar = scheme.tilted_pvalue(0.0, 1.0, model, prior, 0.5, "waldo")
+        assert isinstance(scalar, float)
+
+        bulk = scheme.tilted_pvalue(
+            np.asarray([0.0, 0.5]), 1.0, model, prior, 0.5, "waldo"
+        )
+        assert isinstance(bulk, jax.Array)
+
     def test_extrapolation_beyond_segment_admissible(self):
         """W2 displacement line: eta>1 and small eta<0 produce valid Gaussians."""
         sigma, sigma0 = 1.0, 1.0

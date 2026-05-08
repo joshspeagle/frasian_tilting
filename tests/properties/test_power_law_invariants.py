@@ -81,6 +81,29 @@ class TestPowerLawInvariants:
         with pytest.raises(TiltingDomainError):
             PowerLawTilting().tilt(post, prior, lik, 3.0)
 
+    def test_tilted_pvalue_scalar_returns_python_float(self):
+        """Audit P2 (Cluster D): the scalar fast path returns a Python
+        ``float`` and the bulk path returns a ``jax.Array``. The
+        signature was relaxed to ``float | jax.Array`` so the union is
+        type-honest at the boundary; this test pins both branches.
+        """
+        import jax  # local import keeps the suite jax-optional at collection
+
+        model = NormalNormalModel(sigma=1.0)
+        prior = NormalDistribution(loc=0.0, scale=1.0)
+        scheme = PowerLawTilting()
+
+        # Scalar fast path: theta, eta, D all scalar => Python float.
+        scalar = scheme.tilted_pvalue(0.0, 1.0, model, prior, 0.0, "waldo")
+        assert isinstance(scalar, float)
+
+        # Bulk JAX kernel: any of theta/eta/D being length>=2 routes
+        # through the jit kernel and returns a jax.Array.
+        bulk = scheme.tilted_pvalue(
+            np.asarray([0.0, 0.5]), 1.0, model, prior, 0.0, "waldo"
+        )
+        assert isinstance(bulk, jax.Array)
+
     @given(
         eta=st.floats(min_value=-0.4, max_value=0.9, allow_nan=False),
         sigma0=st.floats(min_value=0.5, max_value=2.0, allow_nan=False),

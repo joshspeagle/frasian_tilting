@@ -225,15 +225,47 @@ class EtaArtifact:
         return dict(self._metadata)
 
 
+_MAX_METADATA_BYTES: int = 16 * 1024 * 1024  # 16 MiB hard cap
+
+
 def _read_metadata_only(path: Path) -> dict[str, Any]:
     """Read just the JSON metadata header of a .eqx file.
 
     Layout: 4-byte BE length prefix, then JSON metadata bytes, then
     the equinox-serialised leaves (which we ignore here).
+
+    Audit P2 (Cluster F): the 4-byte length prefix can declare up to
+    ~4 GiB. A maliciously-crafted .eqx file could request a multi-GiB
+    allocation before any JSON parsing happens. Real headers are tens
+    of KiB; we cap at 16 MiB and refuse anything larger with a
+    `MissingArtifactError`. The cap also bounds the file-size sanity
+    check (raises if the on-disk file is smaller than the declared
+    header, which would be `read()` returning truncated bytes that
+    `json.loads` would fail on with a less clear error).
     """
     import json
     import struct
 
+    file_size = path.stat().st_size
+    if file_size < 4:
+        raise MissingArtifactError(
+            f"EtaArtifact: {path} is too small ({file_size} bytes) "
+            f"to contain a metadata length prefix; checkpoint is "
+            f"corrupt."
+        )
     with open(path, "rb") as fh:
         (meta_len,) = struct.unpack(">I", fh.read(4))
+        if meta_len > _MAX_METADATA_BYTES:
+            raise MissingArtifactError(
+                f"EtaArtifact: {path} declares a {meta_len}-byte metadata "
+                f"header (cap is {_MAX_METADATA_BYTES} bytes / "
+                f"{_MAX_METADATA_BYTES // (1024*1024)} MiB). Refusing to "
+                f"read; checkpoint is either corrupt or adversarial."
+            )
+        if 4 + meta_len > file_size:
+            raise MissingArtifactError(
+                f"EtaArtifact: {path} declares a {meta_len}-byte metadata "
+                f"header but the file is only {file_size} bytes; "
+                f"checkpoint is truncated."
+            )
         return json.loads(fh.read(meta_len).decode("utf-8"))
