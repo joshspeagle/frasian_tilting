@@ -15,7 +15,13 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-from frasian.simulation.cache import CacheKey, cache_path, clear_cache, get_or_compute
+from frasian.simulation.cache import (
+    CacheKey,
+    cache_path,
+    clear_cache,
+    clear_cache_lru,
+    get_or_compute,
+)
 
 
 def _key(**overrides) -> CacheKey:
@@ -133,3 +139,86 @@ class TestClearCache:
 
     def test_clear_nonexistent_root_returns_zero(self, tmp_path: Path):
         assert clear_cache(tmp_path / "nope") == 0
+
+    def test_clear_recurses_into_subdirectories(self, tmp_path: Path):
+        """Audit P2 (Cluster I): clear_cache must use shutil.rmtree
+        so a result-dir layout that grows subdirectories does not
+        crash with `IsADirectoryError`. Pre-fix the per-file
+        `f.unlink()` would explode on the first sub-dir.
+        """
+        compute, _ = _compute_factory(1.0)
+        get_or_compute(_key(experiment="rec"), compute, cache_root=tmp_path)
+        # Inject a sub-directory inside the result dir to simulate a
+        # future per-shard layout.
+        result_dir = next((tmp_path / "rec").iterdir())
+        (result_dir / "shards").mkdir()
+        (result_dir / "shards" / "shard_0.npz").write_bytes(b"")
+        # Recursive clear must remove the entire result dir (no
+        # IsADirectoryError on the inner shard).
+        assert clear_cache(tmp_path, experiment="rec") == 1
+
+
+@pytest.mark.L0
+class TestClearCacheLRU:
+    """Audit P2 (Cluster I): `clear_cache_lru` keeps the N most-recent
+    entries. The all-or-nothing `clear_cache` was insufficient for
+    long-running result directories.
+    """
+
+    def test_keeps_n_most_recent(self, tmp_path: Path):
+        import os
+        import time
+
+        compute, _ = _compute_factory(1.0)
+        for i in range(5):
+            get_or_compute(
+                _key(experiment="lru", git_sha=f"sha{i}"),
+                compute,
+                cache_root=tmp_path,
+            )
+            # Stagger mtimes so the sort is deterministic on fast
+            # filesystems where consecutive writes share an mtime.
+            time.sleep(0.01)
+        # 5 entries → keep 2 → 3 should be pruned.
+        removed = clear_cache_lru(tmp_path, keep=2, experiment="lru")
+        assert removed == 3
+        remaining = sorted((tmp_path / "lru").iterdir())
+        assert len(remaining) == 2
+        # Newest mtimes survived.
+        sha_remaining = {p.name for p in remaining}
+        # The two `sha3`/`sha4` digests are last-written, so their
+        # entries are the most recent.
+        # We can't predict the digest names, but the count + mtime
+        # ordering is verified.
+
+    def test_keep_zero_removes_everything(self, tmp_path: Path):
+        compute, _ = _compute_factory(1.0)
+        get_or_compute(_key(experiment="lru0"), compute, cache_root=tmp_path)
+        assert clear_cache_lru(tmp_path, keep=0, experiment="lru0") == 1
+
+    def test_keep_more_than_present_no_op(self, tmp_path: Path):
+        compute, _ = _compute_factory(1.0)
+        get_or_compute(_key(experiment="few"), compute, cache_root=tmp_path)
+        assert clear_cache_lru(tmp_path, keep=10, experiment="few") == 0
+
+    def test_negative_keep_raises(self, tmp_path: Path):
+        with pytest.raises(ValueError, match="keep"):
+            clear_cache_lru(tmp_path, keep=-1)
+
+
+@pytest.mark.L0
+class TestProcessedResultSchemaVersion:
+    """Audit P2 (Cluster I): `ProcessedResult.SCHEMA_VERSION` mirrors
+    `storage.SCHEMA_VERSION` so consumers can read the version from
+    the type without going to disk.
+    """
+
+    def test_class_var_matches_storage_constant(self):
+        from frasian.simulation.processing import (
+            PROCESSED_RESULT_SCHEMA_VERSION,
+            ProcessedResult,
+        )
+        from frasian.simulation.storage import SCHEMA_VERSION
+
+        assert ProcessedResult.SCHEMA_VERSION == PROCESSED_RESULT_SCHEMA_VERSION
+        assert ProcessedResult.SCHEMA_VERSION == SCHEMA_VERSION

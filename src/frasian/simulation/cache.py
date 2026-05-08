@@ -167,7 +167,17 @@ def get_or_compute(
 
 
 def clear_cache(cache_root: Path, *, experiment: str | None = None) -> int:
-    """Delete cached results. Returns count removed."""
+    """Delete cached results. Returns count removed.
+
+    Audit P2 (Cluster I): pre-fix this iterated each result directory
+    and called `f.unlink()` on every entry, then `child.rmdir()`. If
+    a future change introduced a subdirectory inside a result dir
+    (e.g. per-shard sub-results), `f.unlink()` on the sub-directory
+    would crash with `IsADirectoryError`. Switched to `shutil.rmtree`
+    so removal recurses cleanly regardless of result-dir layout.
+    """
+    import shutil
+
     cache_root = Path(cache_root)
     if not cache_root.exists():
         return 0
@@ -178,8 +188,63 @@ def clear_cache(cache_root: Path, *, experiment: str | None = None) -> int:
             continue
         for child in target.iterdir():
             if child.is_dir() and result_exists(child):
-                for f in child.iterdir():
-                    f.unlink()
-                child.rmdir()
+                shutil.rmtree(child)
                 n += 1
+    return n
+
+
+def clear_cache_lru(
+    cache_root: Path,
+    *,
+    keep: int,
+    experiment: str | None = None,
+) -> int:
+    """Prune the cache to the `keep` most-recently-modified entries.
+
+    Returns the count of entries removed. ``keep`` must be a non-
+    negative int; ``keep=0`` is equivalent to `clear_cache(...)`.
+
+    Audit P2 (Cluster I): the original `clear_cache` was all-or-
+    nothing (delete every entry under the experiment subdir). Long-
+    running result directories can accumulate stale cells from
+    abandoned sweeps; this helper lets callers prune by recency
+    without nuking active state. "Recency" is `Path.stat().st_mtime`
+    on the result dir itself — the cache writer touches it on every
+    save, so this approximates LRU.
+
+    Concurrency: the prune is best-effort. If a parallel worker
+    creates a fresh entry between the listing and the
+    `shutil.rmtree`, that entry is not pruned (correctness
+    preserved). If a parallel worker rmtree's an entry we already
+    selected for deletion, the second rmtree is a no-op (we ignore
+    `FileNotFoundError`).
+    """
+    import shutil
+
+    if keep < 0:
+        raise ValueError(f"clear_cache_lru: keep must be >= 0, got {keep}.")
+    cache_root = Path(cache_root)
+    if not cache_root.exists():
+        return 0
+    targets = [cache_root / experiment] if experiment is not None else list(cache_root.iterdir())
+    n = 0
+    for target in targets:
+        if not target.exists() or not target.is_dir():
+            continue
+        entries = [
+            child
+            for child in target.iterdir()
+            if child.is_dir() and result_exists(child)
+        ]
+        if len(entries) <= keep:
+            continue
+        # Sort newest-first; everything past the keep cutoff is pruned.
+        entries.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        for stale in entries[keep:]:
+            try:
+                shutil.rmtree(stale)
+                n += 1
+            except FileNotFoundError:
+                # Race with a parallel pruner; skip.
+                pass
     return n

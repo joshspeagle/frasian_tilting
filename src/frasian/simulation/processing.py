@@ -9,15 +9,26 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 from numpy.typing import NDArray
+
+# Audit P2 (Cluster I): schema version for the `ProcessedResult` type
+# is mirrored here so static consumers (and the cache invalidation
+# story documented in `simulation/storage.py`) can read the version
+# from the type itself instead of relying on the on-disk
+# `_schema_version` metadata field. Bump in lockstep with
+# `storage.SCHEMA_VERSION` whenever the public ProcessedResult shape
+# changes (adding/removing array keys, changing dtype contracts, etc.).
+PROCESSED_RESULT_SCHEMA_VERSION: int = 1
 
 
 @dataclass(frozen=True)
 class ProcessedResult:
     """Output of any Layer-1 transform; shape mirrors `simulation.raw.RawSamples`."""
+
+    SCHEMA_VERSION: ClassVar[int] = PROCESSED_RESULT_SCHEMA_VERSION
 
     name: str
     arrays: Mapping[str, NDArray]
