@@ -28,9 +28,8 @@ Villani, C. (2009). *Optimal Transport: Old and New*. Springer. — the
 
 from __future__ import annotations
 
-import jax.numpy as jnp
-import jax.scipy.stats as jsp_stats
 import numpy as np
+from scipy.special import ndtr as _ndtr
 
 from .. import _jax_setup as _x64  # noqa: F401  — ensure float64 active
 from .grid import GridConfidenceDistribution
@@ -64,10 +63,9 @@ def wasserstein_1(a: GridConfidenceDistribution, b: GridConfidenceDistribution) 
     to ~1e-7. CDF-form is the right method here.
     """
     grid = _merge_grids(a, b)
-    grid_j = jnp.asarray(grid, dtype=jnp.float64)
     fa = a.cdf(grid)
     fb = b.cdf(grid)
-    return float(jnp.trapezoid(jnp.abs(fa - fb), grid_j))
+    return float(np.trapezoid(np.abs(fa - fb), grid))
 
 
 def wasserstein_2(
@@ -112,15 +110,14 @@ def wasserstein_2(
     # `∫ f(z) e^{-z²/2} dz ≈ Σ w_i f(z_i)`. Dividing by √(2π) converts
     # to expectation under the standard normal density φ(z).
     z, w = hermegauss(n_quad)
-    z = jnp.asarray(z, dtype=jnp.float64)
     # Probabilist's normalisation: divide weights by √(2π).
-    w = jnp.asarray(w, dtype=jnp.float64) / jnp.sqrt(2.0 * jnp.pi)
-    u = jsp_stats.norm.cdf(z)
+    w = w / np.sqrt(2.0 * np.pi)
+    u = _ndtr(z)
     qa = a.quantile(u)
     qb = b.quantile(u)
     sq_diff = (qa - qb) ** 2
-    integral = float(jnp.sum(w * sq_diff))
-    return float(jnp.sqrt(max(integral, 0.0)))
+    integral = float(np.sum(w * sq_diff))
+    return float(np.sqrt(max(integral, 0.0)))
 
 
 def total_variation(a: GridConfidenceDistribution, b: GridConfidenceDistribution) -> float:
@@ -131,7 +128,7 @@ def total_variation(a: GridConfidenceDistribution, b: GridConfidenceDistribution
     differ by at most the expected MC noise.
     """
     grid = _merge_grids(a, b)
-    return float(jnp.max(jnp.abs(a.cdf(grid) - b.cdf(grid))))
+    return float(np.max(np.abs(a.cdf(grid) - b.cdf(grid))))
 
 
 # ----- Closed-form references for testing -----

@@ -12,10 +12,9 @@ universal constructor agrees with the analytic closed form to within
 
 from __future__ import annotations
 
-import jax.numpy as jnp
-import jax.scipy.stats as jsp_stats
 import numpy as np
 from numpy.typing import NDArray
+from scipy.special import ndtr as _ndtr
 
 from .. import _jax_setup as _x64  # noqa: F401  — ensure float64 active
 from ..models.distributions import NormalDistribution
@@ -23,6 +22,11 @@ from ..models.normal_normal import NormalNormalModel
 from .grid import GridConfidenceDistribution
 
 _FORCE_X64 = _x64  # keep static-analysis from stripping the import
+
+
+def _norm_pdf(x: NDArray[np.float64], loc: float, scale: float) -> NDArray[np.float64]:
+    z = (x - loc) / scale
+    return np.exp(-0.5 * z * z) / (scale * np.sqrt(2.0 * np.pi))
 
 
 def wald_cd(
@@ -42,13 +46,12 @@ def wald_cd(
         half = half_width_sigma * sigma
         theta_grid = np.linspace(D - half, D + half, n_grid)
     theta_grid = np.asarray(theta_grid, dtype=np.float64)
-    theta_j = jnp.asarray(theta_grid, dtype=jnp.float64)
-    pdf_j = jsp_stats.norm.pdf(theta_j, loc=D, scale=sigma)
+    pdf_arr = _norm_pdf(theta_grid, loc=D, scale=sigma)
     # Renormalise so trapezoidal cdf reaches 1 exactly on the truncated grid
     # — the closed-form is from a 2-sided Gaussian, with tiny tail mass cut.
-    Z = float(jnp.trapezoid(pdf_j, theta_j))
-    pdf_values = np.asarray(pdf_j / Z, dtype=np.float64)
-    signed = np.asarray(jsp_stats.norm.cdf(theta_j, loc=D, scale=sigma), dtype=np.float64)
+    Z = float(np.trapezoid(pdf_arr, theta_grid))
+    pdf_values = pdf_arr / Z
+    signed = _ndtr((theta_grid - D) / sigma)
     return GridConfidenceDistribution(
         name=f"wald_cd@D={float(D):+.3f}",
         theta_grid=theta_grid,
@@ -87,7 +90,6 @@ def waldo_cd(
         half = half_width_sigma * model.sigma
         theta_grid = np.linspace(D - half, D + half, n_grid)
     theta_grid = np.asarray(theta_grid, dtype=np.float64)
-    theta_j = jnp.asarray(theta_grid, dtype=jnp.float64)
 
     sigma = model.sigma
     sigma0 = prior.scale
@@ -95,25 +97,24 @@ def waldo_cd(
     w = sigma0**2 / (sigma**2 + sigma0**2)
     mu_n = w * D + (1.0 - w) * mu0
 
-    a = jnp.abs(mu_n - theta_j) / (w * sigma)
-    b = (1.0 - w) * (mu0 - theta_j) / (w * sigma)
-    pvals_j = jsp_stats.norm.cdf(b - a) + jsp_stats.norm.cdf(-a - b)
-    pvals_j = jnp.clip(pvals_j, 0.0, 1.0)
+    a = np.abs(mu_n - theta_grid) / (w * sigma)
+    b = (1.0 - w) * (mu0 - theta_grid) / (w * sigma)
+    pvals = _ndtr(b - a) + _ndtr(-a - b)
+    pvals = np.clip(pvals, 0.0, 1.0)
 
     # Robust |dp/dθ|: average of absolute one-sided differences. Avoids
     # the central-diff cancellation at kinks (e.g. θ = μ_n for WALDO).
-    forward_inner = jnp.abs(jnp.diff(pvals_j)) / jnp.diff(theta_j)
-    forward = jnp.concatenate([forward_inner, forward_inner[-1:]])
-    backward = jnp.concatenate([forward_inner[:1], forward_inner])
+    forward_inner = np.abs(np.diff(pvals)) / np.diff(theta_grid)
+    forward = np.concatenate([forward_inner, forward_inner[-1:]])
+    backward = np.concatenate([forward_inner[:1], forward_inner])
     abs_dp = 0.5 * (forward + backward)
     c_unnorm = 0.5 * abs_dp
-    Z = float(jnp.trapezoid(c_unnorm, theta_j))
-    pdf_values = np.asarray(c_unnorm / max(Z, 1e-300), dtype=np.float64)
+    Z = float(np.trapezoid(c_unnorm, theta_grid))
+    pdf_values = c_unnorm / max(Z, 1e-300)
 
     # Signed-inversion C(θ) from two-sided p-value:
     #   C(θ) = p(θ)/2 on lower tail (θ ≤ mode);
     #   C(θ) = 1 − p(θ)/2 on upper tail (θ ≥ mode).
-    pvals = np.asarray(pvals_j, dtype=np.float64)
     mode_idx = int(np.argmax(pvals))
     signed = np.empty_like(pvals)
     signed[:mode_idx] = pvals[:mode_idx] / 2.0
@@ -156,7 +157,6 @@ def tilted_waldo_cd(
         half = half_width_sigma * model.sigma
         theta_grid = np.linspace(D - half, D + half, n_grid)
     theta_grid = np.asarray(theta_grid, dtype=np.float64)
-    theta_j = jnp.asarray(theta_grid, dtype=jnp.float64)
 
     sigma = model.sigma
     sigma0 = prior.scale
@@ -171,25 +171,24 @@ def tilted_waldo_cd(
 
     mu_eta = (w * D + (1.0 - eta) * (1.0 - w) * mu0) / denom
     norm_factor = w * sigma / denom
-    a_eta = jnp.abs(mu_eta - theta_j) / norm_factor
-    b_eta = (1.0 - eta) * (1.0 - w) * (mu0 - theta_j) / (denom * norm_factor)
-    pvals_j = jsp_stats.norm.cdf(b_eta - a_eta) + jsp_stats.norm.cdf(-a_eta - b_eta)
-    pvals_j = jnp.clip(pvals_j, 0.0, 1.0)
+    a_eta = np.abs(mu_eta - theta_grid) / norm_factor
+    b_eta = (1.0 - eta) * (1.0 - w) * (mu0 - theta_grid) / (denom * norm_factor)
+    pvals = _ndtr(b_eta - a_eta) + _ndtr(-a_eta - b_eta)
+    pvals = np.clip(pvals, 0.0, 1.0)
 
     # Robust |dp/dθ|: average of absolute one-sided differences. Avoids
     # the central-diff cancellation at kinks (e.g. θ = μ_n for WALDO).
-    forward_inner = jnp.abs(jnp.diff(pvals_j)) / jnp.diff(theta_j)
-    forward = jnp.concatenate([forward_inner, forward_inner[-1:]])
-    backward = jnp.concatenate([forward_inner[:1], forward_inner])
+    forward_inner = np.abs(np.diff(pvals)) / np.diff(theta_grid)
+    forward = np.concatenate([forward_inner, forward_inner[-1:]])
+    backward = np.concatenate([forward_inner[:1], forward_inner])
     abs_dp = 0.5 * (forward + backward)
     c_unnorm = 0.5 * abs_dp
-    Z = float(jnp.trapezoid(c_unnorm, theta_j))
-    pdf_values = np.asarray(c_unnorm / max(Z, 1e-300), dtype=np.float64)
+    Z = float(np.trapezoid(c_unnorm, theta_grid))
+    pdf_values = c_unnorm / max(Z, 1e-300)
 
     # Signed-inversion C(θ) from two-sided p-value:
     #   C(θ) = p(θ)/2     on lower tail (θ ≤ mode);
     #   C(θ) = 1 − p(θ)/2 on upper tail (θ ≥ mode).
-    pvals = np.asarray(pvals_j, dtype=np.float64)
     mode_idx = int(np.argmax(pvals))
     signed = np.empty_like(pvals)
     signed[:mode_idx] = pvals[:mode_idx] / 2.0

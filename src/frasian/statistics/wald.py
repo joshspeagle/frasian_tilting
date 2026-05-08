@@ -21,6 +21,7 @@ import jax.numpy as jnp
 import jax.scipy.stats as jsp_stats
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
+from scipy.special import ndtr as _ndtr, ndtri as _ndtri
 
 from .. import _jax_setup as _x64  # noqa: F401  — ensure float64 active
 from .._registry import register_statistic
@@ -72,23 +73,25 @@ class WaldStatistic:
 
     def _closed_form_pvalue(
         self, theta0: ArrayLike, data: NDArray[np.float64], model: NormalNormalModel
-    ) -> jax.Array:
+    ) -> NDArray[np.float64]:
+        # scipy.special.ndtr (raw C) is ~50x faster than jsp_stats.norm.cdf
+        # for the small-array sizes the CD experiment evaluates per replicate.
         D = float(np.atleast_1d(np.asarray(data, dtype=np.float64)).mean())
-        z = jnp.abs(D - jnp.asarray(theta0, dtype=jnp.float64)) / model.sigma
-        return 2.0 * (1.0 - jsp_stats.norm.cdf(z))
+        z = np.abs(D - np.asarray(theta0, dtype=np.float64)) / model.sigma
+        return 2.0 * (1.0 - _ndtr(z))
 
     def _closed_form_acceptance_region(
         self, alpha: float, theta0: ArrayLike, model: NormalNormalModel
-    ) -> tuple[jax.Array, jax.Array]:
-        z_crit = jsp_stats.norm.ppf(1.0 - alpha / 2.0)
-        theta_arr = jnp.asarray(theta0, dtype=jnp.float64)
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        z_crit = float(_ndtri(1.0 - alpha / 2.0))
+        theta_arr = np.asarray(theta0, dtype=np.float64)
         return (theta_arr - z_crit * model.sigma, theta_arr + z_crit * model.sigma)
 
     def _closed_form_confidence_interval(
         self, alpha: float, data: NDArray[np.float64], model: NormalNormalModel
     ) -> tuple[float, float]:
         D = float(np.atleast_1d(np.asarray(data, dtype=np.float64)).mean())
-        z = float(jsp_stats.norm.ppf(1.0 - alpha / 2.0))
+        z = float(_ndtri(1.0 - alpha / 2.0))
         half = z * model.sigma
         return (D - half, D + half)
 
