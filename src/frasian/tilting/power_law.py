@@ -826,7 +826,7 @@ class PowerLawTilting:
         prior: NormalDistribution,
         eta: ArrayLike,
         statistic_name: str,
-    ) -> jax.Array:
+    ) -> float | jax.Array:
         """p-value of `statistic_name` evaluated against the tilted posterior.
 
         Specialized for (power_law, waldo) — Theorem 8 closed form — and
@@ -897,23 +897,23 @@ class PowerLawTilting:
             )
 
         # Shape dispatch: scalar inputs route through the numpy fast path
-        # (~10 us per call), bulk inputs through the autodiff-clean JAX
-        # kernel (~10 us per call after jit warmup; the first call per
-        # unique shape pays a ~50 ms compile). The criterion is "all of
-        # theta, eta, D are scalar" — when even one is an array, the JAX
-        # broadcast handles the result. Both branches return jax.Array.
+        # (~10 us per call) returning a Python float; bulk inputs route
+        # through the autodiff-clean JAX kernel (~10 us per call after
+        # jit warmup; the first call per unique shape pays a ~50 ms
+        # compile) returning a jax.Array. The criterion is "all of
+        # theta, eta, D are scalar" — when even one is an array, the
+        # JAX broadcast handles the result. The return-type union is
+        # declared in the signature; callers that need a uniform type
+        # convert at their boundary (see `dynamic_tilted_pvalue` ->
+        # `np.asarray(...)`).
         theta_np = np.asarray(theta, dtype=np.float64)
         D_np = np.asarray(D, dtype=np.float64)
         if theta_np.size == 1 and eta_np.size == 1 and D_np.size == 1:
             # Scalar fast path: return Python float directly, NOT
             # jnp.asarray(float). Wrapping in jnp.asarray would cost
             # ~200 us per call (dwarfing the ~10 us scalar arithmetic
-            # below) and defeat the dispatch. Callers wrap in float()
-            # or jnp.asarray() at their own boundary; the protocol's
-            # nominal jax.Array return type is honoured by the bulk
-            # path and explicitly relaxed for this scalar fast path
-            # (documented in the docstring above).
-            return _tilted_pvalue_numpy_scalar(  # type: ignore[return-value]
+            # below) and defeat the dispatch.
+            return _tilted_pvalue_numpy_scalar(
                 # .item() handles shape-(), shape-(1,), shape-(1,1) uniformly;
                 # plain float(arr) fails on >0-d single-element arrays.
                 float(theta_np.item()),
