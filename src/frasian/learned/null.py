@@ -46,8 +46,17 @@ class NullArtifact:
             raise MissingArtifactError(f"{self.name} not loaded; call .load()")
         return np.full_like(np.asarray(x, dtype=np.float64), self.value)
 
-    def predict_eta(self, theta: NDArray[np.float64]) -> NDArray[np.float64]:
-        """Phase E surface: constant η = ``value`` everywhere."""
+    def predict_eta(
+        self,
+        theta: NDArray[np.float64],
+        prior_hp: NDArray[np.float64] | None = None,
+        lik_hp: NDArray[np.float64] | None = None,
+    ) -> NDArray[np.float64]:
+        """Phase G conditional surface: constant η = ``value`` everywhere.
+
+        ``prior_hp`` / ``lik_hp`` accepted for signature compatibility but
+        ignored — the null artifact returns a constant.
+        """
         if not self._loaded:
             raise MissingArtifactError(f"{self.name} not loaded; call .load()")
         theta_arr = np.asarray(theta, dtype=np.float64)
@@ -56,11 +65,17 @@ class NullArtifact:
     def predict_validity(
         self,
         theta: NDArray[np.float64],
-        eta: NDArray[np.float64],
+        prior_hp: NDArray[np.float64] | None = None,
+        lik_hp: NDArray[np.float64] | None = None,
+        eta: NDArray[np.float64] | None = None,
     ) -> NDArray[np.float64]:
-        """Phase E surface: every (θ, η) pair is treated as valid (P=1)."""
+        """Phase G conditional surface: every (θ, prior_hp, lik_hp, η)
+        pair is treated as valid (P=1).
+        """
         if not self._loaded:
             raise MissingArtifactError(f"{self.name} not loaded; call .load()")
+        if eta is None:
+            return np.ones(np.asarray(theta).shape, dtype=np.float64)
         out_shape = np.broadcast(theta, eta).shape
         return np.ones(out_shape, dtype=np.float64)
 

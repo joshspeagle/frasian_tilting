@@ -48,7 +48,7 @@ if TYPE_CHECKING:
     from .architecture import EtaNet, ValidityNet
 
 
-CHECKPOINT_FORMAT_VERSION = 3  # bumped from 2 for the Equinox port.
+CHECKPOINT_FORMAT_VERSION = 4  # Phase G: conditional architecture.
 
 
 def _architecture_version() -> str:

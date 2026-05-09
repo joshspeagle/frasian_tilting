@@ -1,24 +1,16 @@
-"""Per-epoch training loop for the Phase E dual-head selector (JAX/Equinox port).
+"""Per-epoch training loop for the Phase G conditional dual-head selector.
 
-The orchestrator builds nets / RNGs / optimisers / held-out sets;
-``run_epoch_loop`` here owns the minibatch / optimiser / per-step
-pattern.
+Per-batch hyperparam threading:
+- Each minibatch step samples (prior_hp, lik_hp) per element from
+  ``config.hyperparam_distribution``.
+- The conditional EtaNet/ValidityNet receive the per-batch hyperparams
+  as additional input blocks.
 
 Training step (per minibatch):
-1. Forward Head A + collect validity labels (mix aux batch so Head B
-   sees both classes every step). Validity labels are computed in
-   numpy via ``scheme.tilted_pvalue``; only the JAX boundary needs
-   the per-step ``jnp.asarray``.
-2. Train Head B (BCE on (θ, η, valid)).
-3. Train Head A (width loss + λ · boundary penalty).
-
-Each gradient computation is wrapped in ``@eqx.filter_jit`` for
-fused-kernel speed; the numpy-side validity collection and the
-optax update step run eagerly between jit-compiled forwards.
-``compose_width_loss`` carries a string ``loss_kind`` and a Python
-``alpha`` plus the ``ExperimentConfig`` dataclass — none of those
-are valid JAX-array leaves, so we close over them via a per-epoch
-factory rather than passing them through the jit boundary.
+1. Sample per-batch (prior_hp, lik_hp).
+2. Forward Head A + collect per-element validity labels (numpy-side).
+3. Train Head B BCE on (θ, prior_hp, lik_hp, η, valid).
+4. Train Head A width loss + λ · boundary penalty.
 """
 
 from __future__ import annotations
@@ -42,25 +34,13 @@ from ._losses_compose import (
     lambda_schedule,
     precompute_generic_grids,
 )
-from ._validity_data import (
-    collect_validity_batch,
-    sample_data_per_theta,
-    validity_net_inputs,
-)
+from ._validity_data import collect_validity_batch
 from .architecture import EtaNet, ValidityNet
 from .sampling import ExperimentConfig
 
 _FORCE_X64 = _x64
 
-# Number of D draws per training step for the width-loss MC average
-# (skeptic block #1).
-#
-# Audit P2 (Cluster G): exposed via the env var
-# ``FRASIAN_N_MC_TRAIN`` so production sweeps can crank precision up
-# without code changes. Defaults to 8 (the published headline-table
-# value); raise carefully — wallclock scales linearly. Read once at
-# module import, NOT every step (re-importing is the only way to
-# pick up a new value).
+
 def _resolve_n_mc_train() -> int:
     import os
 
@@ -79,21 +59,18 @@ def _resolve_n_mc_train() -> int:
 N_MC_TRAIN: int = _resolve_n_mc_train()
 
 
-# Module-level jit wrappers for the training-loop's *un-jitted* forward
-# calls (label collection, eval, final-rate diagnostics). The legacy
-# code called `args.eta_net(theta_batch_t)` etc. in eager Python, which
-# traces the MLP forward on every step (~25-50 ms each in cProfile of
-# the canonical NN training). filter_jit caches by (module-static-spec,
-# input-shape), so gradient updates (which change array leaves only)
-# still hit the cache. Saved ~3-5 s on a 10-epoch NN training run.
 @eqx.filter_jit
-def _eta_forward_jit(net: Any, theta: jax.Array) -> jax.Array:
-    return net(theta)
+def _eta_forward_jit(
+    net: Any, theta: jax.Array, prior_hp: jax.Array, lik_hp: jax.Array,
+) -> jax.Array:
+    return net(theta, prior_hp, lik_hp)
 
 
 @eqx.filter_jit
-def _val_forward_jit(net: Any, inputs: jax.Array) -> jax.Array:
-    return net(inputs)
+def _val_forward_jit(
+    net: Any, theta: jax.Array, prior_hp: jax.Array, lik_hp: jax.Array, eta: jax.Array,
+) -> jax.Array:
+    return net(theta, prior_hp, lik_hp, eta)
 
 
 @dataclass
@@ -115,8 +92,6 @@ class EpochLoopOutputs:
 
 @dataclass
 class _EpochAggregates:
-    """Accumulators reset at the top of every epoch."""
-
     train_loss: float = 0.0
     width_loss: float = 0.0
     penalty_loss: float = 0.0
@@ -126,9 +101,7 @@ class _EpochAggregates:
 
 @dataclass
 class LoopArgs:
-    """All inputs to ``run_epoch_loop`` — bundled to keep helper
-    signatures small.
-    """
+    """All inputs to ``run_epoch_loop``."""
 
     eta_net: EtaNet
     val_net: ValidityNet
@@ -139,8 +112,12 @@ class LoopArgs:
     theta_train: np.ndarray
     theta_held: np.ndarray
     eta_held_aux: np.ndarray
+    prior_hp_held: np.ndarray
+    lik_hp_held: np.ndarray
     valid_held: np.ndarray
     D_val_t: jax.Array
+    prior_hp_val_t: jax.Array
+    lik_hp_val_t: jax.Array
     theta_grid_t: jax.Array
     config: ExperimentConfig
     scheme: Any
@@ -155,13 +132,8 @@ class LoopArgs:
     lambda_warmup_frac: float
     patience: int
     min_delta: float
-    antithetic: bool
     device: str
     verbose: bool
-    # Pre-computed integration grid for the Phase 4 generic tilted-pvalue
-    # path (Bernoulli + any non-Normal-Normal model). None for Normal-
-    # Normal experiments — those use the closed-form fast path that
-    # ignores the grids.
     support_theta_grid_np: np.ndarray | None = None
     log_p_lik_val_t: jax.Array | None = None
 
@@ -170,12 +142,19 @@ def evaluate_head_b_accuracy(
     val_net: ValidityNet,
     theta_held: np.ndarray,
     eta_held: np.ndarray,
+    prior_hp_held: np.ndarray,
+    lik_hp_held: np.ndarray,
     valid_held: np.ndarray,
     device: str,
 ) -> float:
     """Held-out classification accuracy of Head B at threshold 0.5."""
-    inputs = validity_net_inputs(jnp.asarray(theta_held), jnp.asarray(eta_held))
-    logits = _val_forward_jit(val_net, inputs)
+    logits = _val_forward_jit(
+        val_net,
+        jnp.asarray(theta_held),
+        jnp.asarray(prior_hp_held),
+        jnp.asarray(lik_hp_held),
+        jnp.asarray(eta_held),
+    )
     pred = (jax.nn.sigmoid(logits) >= 0.5)
     pred_np = np.asarray(pred)
     return float((pred_np == valid_held).mean())
@@ -187,35 +166,33 @@ def compute_final_eta_pred_valid_rate(
     scheme: Any,
     theta_held: np.ndarray,
     D_held: np.ndarray,
+    prior_hp_held: np.ndarray,
+    lik_hp_held: np.ndarray,
     config: ExperimentConfig,
     device: str,
 ) -> float:
-    """Empirical validity rate of Head A's predicted η on held-out θ.
+    """Empirical validity rate of Head A's predicted η on held-out θ."""
+    from .validity import compute_pvalues_per_sample_with_hp, validity_mask
 
-    For each held-out θ, predict η = EtaNet(θ); pair with the
-    pre-sampled D_held; ask the scheme's tilted_pvalue whether the
-    (θ, η, D) triple yields a finite p-value in [0, 1]. Mean of that
-    indicator is the rate. Used as a final calibration diagnostic.
-    """
-    from .validity import compute_pvalues_per_sample, validity_mask
-
-    eta_pred_held_t = _eta_forward_jit(eta_net, jnp.asarray(theta_held))
+    eta_pred_held_t = _eta_forward_jit(
+        eta_net,
+        jnp.asarray(theta_held),
+        jnp.asarray(prior_hp_held),
+        jnp.asarray(lik_hp_held),
+    )
     eta_pred_held = np.asarray(eta_pred_held_t, dtype=np.float64)
-    p_pred = compute_pvalues_per_sample(
+    p_pred = compute_pvalues_per_sample_with_hp(
         scheme,
         theta_held,
         D_held,
-        config.model,
-        config.prior,
+        config.prior_cls,
+        config.model_cls,
+        prior_hp_held,
+        lik_hp_held,
         eta_pred_held,
         config.statistic_name,
     )
     return float(validity_mask(p_pred).mean())
-
-
-# --------------------------------------------------------------------------
-# Per-epoch jit-step factory
-# --------------------------------------------------------------------------
 
 
 def _make_step_fns(
@@ -224,52 +201,53 @@ def _make_step_fns(
     alpha: float | None,
     use_beta: bool,
 ) -> tuple[Callable, Callable]:
-    """Build the (head_b_grad, head_a_grad) jit-compiled step functions
-    for the current ``(config, loss_kind, alpha)`` combination.
-
-    Closing over the static config / loss_kind / alpha avoids passing
-    them through the jit boundary as PyTree leaves (they are not
-    JAX arrays and cannot be hashed cheaply for jit's static_argnums).
-
-    Phase 4 skeptic #4 (closure-stale-config defense):
-    ``ExperimentConfig`` is ``frozen=True`` so direct mutation raises
-    ``FrozenInstanceError``. The closure here captures ``config`` by
-    reference; since the same ``config`` is used to build ``LoopArgs``
-    in ``fit_eta_artifact`` (lockstep construction), there is no path
-    in the orchestrator where the closure and ``args.config`` can
-    desync. ``run_epoch_loop`` asserts the lockstep at entry as a
-    defensive guard against external callers that build step fns +
-    LoopArgs separately.
-    """
+    """Build the (head_b_grad, head_a_grad) jit-compiled step functions."""
 
     @eqx.filter_jit
     def head_b_step(
         val_net: ValidityNet,
         theta_all_t: jax.Array,
+        prior_hp_all_t: jax.Array,
+        lik_hp_all_t: jax.Array,
         eta_all_t: jax.Array,
         valid_all_t: jax.Array,
     ) -> tuple[jax.Array, ValidityNet]:
-        """Compute (loss_b, grad_b) for the BCE step."""
         def loss_fn(vn: ValidityNet) -> jax.Array:
-            logits = vn(validity_net_inputs(theta_all_t, eta_all_t))
+            logits = vn(theta_all_t, prior_hp_all_t, lik_hp_all_t, eta_all_t)
             return optax.sigmoid_binary_cross_entropy(logits, valid_all_t).mean()
-
         return eqx.filter_value_and_grad(loss_fn)(val_net)
 
-    # For non-Normal-Normal experiments, precompute the integration
-    # grid + log-prior grid once per training run. JAX cannot trace
-    # through `model.support()` / `prior.logpdf` (Python state), so
-    # they live in the closure of the jit'd kernel. Per-step
-    # log_p_lik_grid is computed eagerly in `_training_step` and
-    # passed through as a jax.Array.
-    model_kind = config.model.fingerprint()[0]
-    if model_kind == "normal_normal":
+    # Generic-grid path: representative (rep_model, rep_prior) used for
+    # support + log_p_prior. For NN, these are unused.
+    is_generic = config.model_cls.__name__ != "NormalNormalModel"
+    if is_generic:
+        # Build a representative (model, prior) at the midpoint of the
+        # hyperparam ranges. The support is constant for Bernoulli; the
+        # log_p_prior is approximated at the midpoint.
+        prior_midpoint = {
+            n: 0.5 * (s.low + s.high)
+            for n, s in config.hyperparam_distribution.prior_specs.items()
+        }
+        lik_midpoint = {
+            n: 0.5 * (s.low + s.high)
+            for n, s in config.hyperparam_distribution.lik_specs.items()
+        }
+        rep_prior_hp = np.array(
+            [prior_midpoint[n] for n in config.prior_cls.hyperparam_names()],
+            dtype=np.float64,
+        )
+        rep_lik_hp = np.array(
+            [lik_midpoint[n] for n in config.model_cls.hyperparam_names()],
+            dtype=np.float64,
+        )
+        rep_prior = config.prior_cls.from_hyperparams(rep_prior_hp)
+        rep_model = config.model_cls.from_hyperparams(rep_lik_hp)
+        support_theta_grid_t, log_p_prior_grid_t = precompute_generic_grids(
+            rep_model, rep_prior,
+        )
+    else:
         support_theta_grid_t: jax.Array | None = None
         log_p_prior_grid_t: jax.Array | None = None
-    else:
-        support_theta_grid_t, log_p_prior_grid_t = precompute_generic_grids(
-            config.model, config.prior
-        )
 
     @eqx.filter_jit
     def head_a_step(
@@ -278,11 +256,12 @@ def _make_step_fns(
         theta_grid_t: jax.Array,
         D_batch_t: jax.Array,
         theta_batch_t: jax.Array,
+        prior_hp_batch_t: jax.Array,
+        lik_hp_batch_t: jax.Array,
         lam: jax.Array,
         beta: jax.Array,
         log_p_lik_grid_t: jax.Array | None = None,
     ) -> tuple[tuple[jax.Array, tuple[jax.Array, jax.Array]], EtaNet]:
-        """Compute (loss_a, (loss_width, penalty)), grad_a."""
         def loss_fn(en: EtaNet) -> tuple[jax.Array, tuple[jax.Array, jax.Array]]:
             beta_pass = beta if use_beta else None
             loss_width = compose_width_loss(
@@ -290,6 +269,8 @@ def _make_step_fns(
                 theta_grid_t=theta_grid_t,
                 D_batch_t=D_batch_t,
                 config=config,
+                prior_hp_batch_t=prior_hp_batch_t,
+                lik_hp_batch_t=lik_hp_batch_t,
                 loss_kind=loss_kind,
                 alpha=alpha,
                 beta=beta_pass,
@@ -297,14 +278,15 @@ def _make_step_fns(
                 support_theta_grid_t=support_theta_grid_t,
                 log_p_prior_grid_t=log_p_prior_grid_t,
             )
-            eta_pred = en(theta_batch_t)
+            eta_pred = en(theta_batch_t, prior_hp_batch_t, lik_hp_batch_t)
             penalty = compose_boundary_penalty(
                 val_net=val_net,
                 theta_batch_t=theta_batch_t,
+                prior_hp_batch_t=prior_hp_batch_t,
+                lik_hp_batch_t=lik_hp_batch_t,
                 eta_pred=eta_pred,
             )
             return loss_width + lam * penalty, (loss_width, penalty)
-
         return eqx.filter_value_and_grad(loss_fn, has_aux=True)(eta_net)
 
     return head_b_step, head_a_step
@@ -316,22 +298,40 @@ def _make_eval_fn(
     alpha: float | None,
     use_beta: bool,
 ) -> Callable:
-    """Jit'd held-out width-loss evaluator (closure over static fields)."""
-
-    model_kind = config.model.fingerprint()[0]
-    if model_kind == "normal_normal":
+    is_generic = config.model_cls.__name__ != "NormalNormalModel"
+    if is_generic:
+        prior_midpoint = {
+            n: 0.5 * (s.low + s.high)
+            for n, s in config.hyperparam_distribution.prior_specs.items()
+        }
+        lik_midpoint = {
+            n: 0.5 * (s.low + s.high)
+            for n, s in config.hyperparam_distribution.lik_specs.items()
+        }
+        rep_prior_hp = np.array(
+            [prior_midpoint[n] for n in config.prior_cls.hyperparam_names()],
+            dtype=np.float64,
+        )
+        rep_lik_hp = np.array(
+            [lik_midpoint[n] for n in config.model_cls.hyperparam_names()],
+            dtype=np.float64,
+        )
+        rep_prior = config.prior_cls.from_hyperparams(rep_prior_hp)
+        rep_model = config.model_cls.from_hyperparams(rep_lik_hp)
+        support_theta_grid_t, log_p_prior_grid_t = precompute_generic_grids(
+            rep_model, rep_prior,
+        )
+    else:
         support_theta_grid_t: jax.Array | None = None
         log_p_prior_grid_t: jax.Array | None = None
-    else:
-        support_theta_grid_t, log_p_prior_grid_t = precompute_generic_grids(
-            config.model, config.prior
-        )
 
     @eqx.filter_jit
     def eval_loss(
         eta_net: EtaNet,
         theta_grid_t: jax.Array,
         D_val_t: jax.Array,
+        prior_hp_val_t: jax.Array,
+        lik_hp_val_t: jax.Array,
         beta: jax.Array,
         log_p_lik_grid_t: jax.Array | None = None,
     ) -> jax.Array:
@@ -341,6 +341,8 @@ def _make_eval_fn(
             theta_grid_t=theta_grid_t,
             D_batch_t=D_val_t,
             config=config,
+            prior_hp_batch_t=prior_hp_val_t,
+            lik_hp_batch_t=lik_hp_val_t,
             loss_kind=loss_kind,
             alpha=alpha,
             beta=beta_pass,
@@ -362,76 +364,90 @@ def _training_step(
     lam: jax.Array,
     step_idx: int,
 ) -> tuple[float, float, float, float] | None:
-    """Run one minibatch step. Returns metrics or None if the step is skipped."""
-    theta_batch_t = jnp.asarray(theta_batch_np)
+    """Run one minibatch step (Phase G conditional)."""
+    config = args.config
+    prior_names = config.prior_cls.hyperparam_names()
+    lik_names = config.model_cls.hyperparam_names()
 
-    # Step (1): forward + collect validity batch (numpy-driven labels).
-    # Use the module-level jit wrapper so the EtaNet forward hits the
-    # filter_jit cache instead of re-tracing every step.
-    eta_pred = _eta_forward_jit(args.eta_net, theta_batch_t)
-    theta_all_t, eta_all_t, valid_all_t = collect_validity_batch(
-        eta_pred=eta_pred,
-        theta_batch_np=theta_batch_np,
-        config=args.config,
-        scheme=args.scheme,
-        n_aux=args.n_aux,
-        rng=args.rng_aux,
+    prior_hp_batch_np, lik_hp_batch_np = config.hyperparam_distribution.sample(
+        len(theta_batch_np), args.rng_train,
+        prior_names=prior_names, lik_names=lik_names,
+    )
+
+    theta_batch_t = jnp.asarray(theta_batch_np)
+    prior_hp_batch_t = jnp.asarray(prior_hp_batch_np)
+    lik_hp_batch_t = jnp.asarray(lik_hp_batch_np)
+
+    eta_pred = _eta_forward_jit(
+        args.eta_net, theta_batch_t, prior_hp_batch_t, lik_hp_batch_t,
+    )
+    theta_all_t, prior_hp_all_t, lik_hp_all_t, eta_all_t, valid_all_t = (
+        collect_validity_batch(
+            eta_pred=eta_pred,
+            theta_batch_np=theta_batch_np,
+            prior_hp_batch_np=prior_hp_batch_np,
+            lik_hp_batch_np=lik_hp_batch_np,
+            config=config,
+            scheme=args.scheme,
+            n_aux=args.n_aux,
+            rng=args.rng_aux,
+        )
     )
     aux_valid_rate = float(np.asarray(valid_all_t)[len(theta_batch_np):].mean())
 
-    # Step (2): Head B BCE step.
-    loss_b, grads_b = head_b_step(args.val_net, theta_all_t, eta_all_t, valid_all_t)
+    loss_b, grads_b = head_b_step(
+        args.val_net, theta_all_t, prior_hp_all_t, lik_hp_all_t,
+        eta_all_t, valid_all_t,
+    )
     updates_b, args.opt_state_b = args.optimizer_b.update(
-        grads_b, args.opt_state_b, args.val_net
+        grads_b, args.opt_state_b, args.val_net,
     )
     args.val_net = eqx.apply_updates(args.val_net, updates_b)
 
-    # Step (3): Head A width + boundary step.
     n_mc = min(N_MC_TRAIN, len(theta_batch_np))
-    D_batch_np = sample_data_per_theta(
-        args.config.model, theta_batch_np[:n_mc], args.rng_train,
-        antithetic=args.antithetic, n_data=args.config.n_data,
+    D_batch_np = config.model_cls.sample_data_batch_with_hp(
+        theta_batch_np[:n_mc], lik_hp_batch_np[:n_mc], args.rng_train,
+        n_data=config.n_data,
     )
+    if D_batch_np.ndim == 2 and D_batch_np.shape[1] == 1:
+        D_batch_np = D_batch_np[:, 0]
     D_batch_t = jnp.asarray(D_batch_np)
 
-    # For non-NN models, compute the per-step log-likelihood grid
-    # numpy-side. (model.likelihood is a Python factory; JAX cannot
-    # trace through `BernoulliLikelihood(int(arr.sum()), ...)`.)
     log_p_lik_grid_t: jax.Array | None = None
-    if args.config.model.fingerprint()[0] != "normal_normal":
+    if config.model_cls.__name__ != "NormalNormalModel":
         if args.support_theta_grid_np is None:
             raise RuntimeError(
-                "non-Normal-Normal training expects "
-                "args.support_theta_grid_np to be precomputed."
+                "non-NN training expects args.support_theta_grid_np precomputed."
             )
+        # Per-element model varies; use representative (first element) since
+        # batched_loglik_grid uses sufficient stats independent of individual
+        # model state for the Bernoulli + power_law case.
+        rep_model = config.model_cls.from_hyperparams(lik_hp_batch_np[0])
         log_p_lik_grid_np = compute_log_p_lik_grid_np(
-            args.config.model, D_batch_np, args.support_theta_grid_np
+            rep_model, D_batch_np, args.support_theta_grid_np,
         )
         log_p_lik_grid_t = jnp.asarray(log_p_lik_grid_np)
 
     try:
+        prior_hp_for_loss_t = jnp.asarray(prior_hp_batch_np[:n_mc])
+        lik_hp_for_loss_t = jnp.asarray(lik_hp_batch_np[:n_mc])
         (loss_a, (loss_width, penalty)), grads_a = head_a_step(
             args.eta_net,
             args.val_net,
             args.theta_grid_t,
             D_batch_t,
-            theta_batch_t,
+            theta_batch_t[:n_mc],
+            prior_hp_for_loss_t,
+            lik_hp_for_loss_t,
             lam,
             beta,
             log_p_lik_grid_t,
         )
     except (ValueError, RuntimeError, ArithmeticError) as e:
-        # Audit P1 J.8: also catch ArithmeticError (parent of
-        # FloatingPointError / ZeroDivisionError / OverflowError).
-        # Pre-fix only ValueError/RuntimeError were caught; a JAX
-        # FloatingPointError (raised when `jax_debug_nans=True` and a
-        # NaN propagates) or numpy OverflowError would crash the
-        # training loop instead of skipping the offending step. Both
-        # are recoverable: skip the step, gradient clip survives
-        # downstream.
         if args.verbose:
             warnings.warn(
-                f"[width loss] step {step_idx} skipped: {e}", RuntimeWarning, stacklevel=2
+                f"[width loss] step {step_idx} skipped: {e}",
+                RuntimeWarning, stacklevel=2,
             )
         return None
 
@@ -439,13 +455,12 @@ def _training_step(
         if args.verbose:
             warnings.warn(
                 f"[width loss] step {step_idx} produced non-finite loss; skipping",
-                RuntimeWarning,
-                stacklevel=2,
+                RuntimeWarning, stacklevel=2,
             )
         return None
 
     updates_a, args.opt_state_a = args.optimizer_a.update(
-        grads_a, args.opt_state_a, args.eta_net
+        grads_a, args.opt_state_a, args.eta_net,
     )
     args.eta_net = eqx.apply_updates(args.eta_net, updates_a)
 
@@ -462,7 +477,6 @@ def _run_epoch_steps(
     beta: jax.Array,
     lam: jax.Array,
 ) -> _EpochAggregates:
-    """Inner per-step loop. Returns one epoch's aggregates."""
     ep_perm = args.rng_train.permutation(n_train)
     agg = _EpochAggregates()
     for step in range(steps_per_epoch):
@@ -492,25 +506,25 @@ def _run_epoch_steps(
 def _evaluate_epoch(
     args: LoopArgs, eval_fn: Callable, beta: jax.Array
 ) -> tuple[float, float]:
-    """Compute (val_loss, head_b_accuracy) on the frozen held-out set."""
     try:
         v_loss = float(
             eval_fn(
                 args.eta_net,
                 args.theta_grid_t,
                 args.D_val_t,
+                args.prior_hp_val_t,
+                args.lik_hp_val_t,
                 beta,
                 args.log_p_lik_val_t,
             )
         )
     except (ValueError, RuntimeError, ArithmeticError):
-        # Audit P1 J.8: catch ArithmeticError parent on the eval path
-        # too (mirrors the training-step guard).
         v_loss = float("inf")
     if not np.isfinite(v_loss):
         v_loss = float("inf")
     head_b_acc = evaluate_head_b_accuracy(
-        args.val_net, args.theta_held, args.eta_held_aux, args.valid_held, args.device
+        args.val_net, args.theta_held, args.eta_held_aux,
+        args.prior_hp_held, args.lik_hp_held, args.valid_held, args.device,
     )
     return v_loss, head_b_acc
 
@@ -518,16 +532,6 @@ def _evaluate_epoch(
 def _maybe_warn_class_degenerate(
     epoch: int, mean_aux_rate: float, model_kind: str = "normal_normal"
 ) -> None:
-    """Warn on class-degenerate Head-B BCE batch.
-
-    Bernoulli + power_law (and other non-NN models with the generic
-    grid path) have no closed-form admissibility boundary — virtually
-    every (θ, η) in ``eta_explore_box`` produces a finite p-value in
-    [0, 1] under MC labelling. ValidityNet has nothing to learn, and
-    the boundary penalty becomes a near-no-op. That is the design,
-    not a bug — the dual-head architecture is over-specified for
-    these models. Skip the warning.
-    """
     if model_kind != "normal_normal":
         return
     if 0.05 <= mean_aux_rate <= 0.95:
@@ -535,7 +539,7 @@ def _maybe_warn_class_degenerate(
     warnings.warn(
         f"[head B] epoch {epoch + 1} aux validity rate = "
         f"{mean_aux_rate:.3f} (outside (0.05, 0.95)). Head B's BCE is "
-        f"class-degenerate; widen `eta_explore_box` for this scheme.",
+        f"class-degenerate.",
         RuntimeWarning,
         stacklevel=2,
     )
@@ -546,7 +550,6 @@ def _maybe_log_epoch(
     v_loss: float, head_b_acc: float, mean_aux_rate: float,
     lam: float, beta_val: float | None, verbose: bool,
 ) -> None:
-    """Print one verbose-mode line every ~10 % of epochs (and on epoch 0)."""
     if not verbose:
         return
     if not ((epoch + 1) % max(n_epochs // 10, 1) == 0 or epoch == 0):
@@ -576,10 +579,6 @@ def _epoch_iteration(
     n_train: int,
     steps_per_epoch: int,
 ) -> bool:
-    """Run one full epoch: train steps + validation + best-state update.
-
-    Returns ``improved`` so the outer loop can update its early-stop counter.
-    """
     out.epochs_run = epoch + 1
     lam_val = lambda_schedule(epoch, args.n_epochs, args.lambda_max, args.lambda_warmup_frac)
     lam = jnp.asarray(lam_val)
@@ -587,8 +586,6 @@ def _epoch_iteration(
         beta_val = beta_schedule(epoch, args.n_epochs)
         beta = jnp.asarray(beta_val)
     else:
-        # Pass a tracer-compatible scalar even when unused; the closed-
-        # over ``use_beta`` flag in the step fns guards.
         beta_val = None
         beta = jnp.asarray(0.0)
 
@@ -606,9 +603,12 @@ def _epoch_iteration(
     out.train_width_losses.append(agg.width_loss / denom)
     out.train_penalty_losses.append(agg.penalty_loss / denom)
     mean_aux_rate = agg.aux_valid_rate_sum / denom
-    _maybe_warn_class_degenerate(
-        epoch, mean_aux_rate, model_kind=args.config.model.fingerprint()[0]
+    model_kind = (
+        "normal_normal"
+        if args.config.model_cls.__name__ == "NormalNormalModel"
+        else "generic"
     )
+    _maybe_warn_class_degenerate(epoch, mean_aux_rate, model_kind=model_kind)
 
     v_loss, head_b_acc = _evaluate_epoch(args, eval_fn, beta)
     out.val_losses.append(v_loss)
@@ -618,9 +618,6 @@ def _epoch_iteration(
     if improved:
         out.best_val = v_loss
         out.best_epoch = epoch
-        # Equinox modules are immutable PyTrees; deep-copy array leaves
-        # so a later in-place update of args.eta_net cannot mutate the
-        # snapshot.
         out.best_eta_net = jax.tree.map(
             lambda x: jnp.copy(x) if isinstance(x, jax.Array) else x, args.eta_net
         )
@@ -638,27 +635,15 @@ def _epoch_iteration(
 
 def run_epoch_loop(args: LoopArgs) -> EpochLoopOutputs:
     """Run all epochs; track best val state; early-stop on patience."""
-    # Phase 4 skeptic #4 (closure-stale-config defense): when
-    # ``args.config`` is non-NN the orchestrator (``fit_eta_artifact``)
-    # populates ``args.support_theta_grid_np`` from the same config; an
-    # external caller building ``LoopArgs`` manually could pass a
-    # mismatched precomputed grid. Assert presence consistency at
-    # entry — mismatched fingerprints would surface as either a NaN
-    # log-prior grid or a dimension mismatch in the per-step
-    # ``compute_log_p_lik_grid_np``. The cheap None / shape consistency
-    # check below catches the most likely misuse pattern.
-    is_generic = args.config.model.fingerprint()[0] != "normal_normal"
+    is_generic = args.config.model_cls.__name__ != "NormalNormalModel"
     if is_generic and args.support_theta_grid_np is None:
         raise ValueError(
-            "run_epoch_loop: non-Normal-Normal config requires "
-            "args.support_theta_grid_np precomputed (via "
-            "_losses_compose.precompute_generic_grids); got None."
+            "run_epoch_loop: non-NN config requires "
+            "args.support_theta_grid_np precomputed."
         )
     if not is_generic and args.support_theta_grid_np is not None:
         raise ValueError(
-            "run_epoch_loop: Normal-Normal config does not use "
-            "args.support_theta_grid_np; got a non-None grid which "
-            "suggests the LoopArgs was built from a different config."
+            "run_epoch_loop: NN config does not use args.support_theta_grid_np."
         )
 
     n_train = len(args.theta_train)

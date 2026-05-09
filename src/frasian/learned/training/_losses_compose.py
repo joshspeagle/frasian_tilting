@@ -1,28 +1,19 @@
-"""Loss composition for the Phase E dual-head training loop.
+"""Loss composition for the Phase G conditional dual-head training loop.
 
-Extracted from ``train.py`` (Tier 1.2 §7 split). Three concerns:
+Three concerns:
 
-1. Width-loss adapter (``compose_width_loss``): wraps the
-   JAX tilted-pvalue port + the chosen functional in
-   ``losses.py`` (``integrated_pvalue_loss`` / ``cd_variance_loss`` /
-   ``static_width_loss``). Currently Normal-Normal only because
-   the JAX ports are; the wrapper is the single place that
-   adapts ``(model, prior)`` → ``(w, mu0, sigma)``.
+1. Width-loss adapter (``compose_width_loss``): wraps the JAX
+   tilted-pvalue port + the chosen functional in ``losses.py``. Phase G:
+   per-batch (prior_hp, lik_hp) extracted from the input tensors and
+   broadcast across the θ-grid axis.
 
 2. Boundary penalty (``compose_boundary_penalty``): forwards
-   ``(θ, η)`` through a parameter-detached ``ValidityNet`` so
-   gradient flows back into Head A but not Head B's weights.
-   Implemented via ``eqx.partition`` + ``jax.lax.stop_gradient`` +
-   ``eqx.combine`` (the Equinox idiom that replaces the legacy
-   ``torch.func.functional_call(detached_params)``).
+   ``(θ, prior_hp, lik_hp, η)`` through a parameter-detached
+   ``ValidityNet`` so gradient flows back into Head A but not Head B's
+   weights.
 
-3. λ schedule (``lambda_schedule``) and β schedule
-   (``beta_schedule``) for the Head A loss components.
-
-The β schedule is the Phase E annealing (1.4-S2 / 1.2-NN2):
-``β(epoch) = 50 + 450 · min(1, epoch / (0.5·n_epochs))`` —
-smooth gradient early, low bias late. Default endpoints
-``50 → 500`` (the audit's recommended range).
+3. λ schedule (``lambda_schedule``) and β schedule (``beta_schedule``)
+   for the Head A loss components.
 """
 
 from __future__ import annotations
@@ -36,9 +27,6 @@ import jax.numpy as jnp
 import numpy as np
 
 from ... import _jax_setup as _x64  # noqa: F401  — ensure float64 active
-from ...models._dispatch import is_normal_normal
-from ...models.distributions import NormalDistribution
-from ...models.normal_normal import NormalNormalModel  # noqa: F401  (legacy field-access typing)
 from .architecture import EtaNet, ValidityNet
 from .losses import (
     boundary_penalty_from_validity,
@@ -49,73 +37,13 @@ from .losses import (
 from .pvalue_jax import get_jax_tilted_pvalue
 from .sampling import ExperimentConfig
 
-_FORCE_X64 = _x64  # keep static-analysis from stripping the import
+_FORCE_X64 = _x64
 
-# Default β-anneal endpoints. Per `audit/tier1/skeptic_learned_eta.md` S2
-# and `audit/tier1/nn_training.md` §1, β=200 → +0.4% bias at α=0.05;
-# β=500 reduces this to ~0.1%. Starting at β=50 gives smooth gradient
-# early; the schedule ramps over the first half of training.
 BETA_MIN: float = 50.0
 BETA_MAX: float = 500.0
 BETA_WARMUP_FRAC: float = 0.5
 
 
-def extract_normal_normal_params(
-    model: Any,
-    prior: Any,
-) -> tuple[float, float, float]:
-    """Extract (w, mu0, sigma) for the JAX tilted-pvalue ports.
-
-    The JAX ports in ``pvalue_jax.py`` are direct equivalents of the
-    legacy torch ports and take Normal-Normal coordinates
-    ``(w, mu0, sigma)`` directly. We adapt by deriving them from
-    ``(model, prior)`` exactly here — the rest of the training loop
-    stays model-agnostic.
-
-    Raises ``NotImplementedError`` for non-Normal-Normal experiments,
-    consistent with the documented "model-agnostic in principle,
-    Normal-Normal in practice" caveat.
-    """
-    if not is_normal_normal(model):
-        raise NotImplementedError(
-            "Phase E training currently requires a NormalNormalModel; "
-            f"got {type(model).__name__}. Extending to non-Normal-Normal "
-            f"requires registering a generic JAX tilted_pvalue."
-        )
-    if not isinstance(prior, NormalDistribution):
-        raise NotImplementedError(
-            "Phase E training currently requires a NormalDistribution prior; "
-            f"got {type(prior).__name__}."
-        )
-    sigma = float(model.sigma)
-    sigma0 = float(prior.scale)
-    mu0 = float(prior.loc)
-    w = sigma0**2 / (sigma**2 + sigma0**2)
-    # Skeptic block #4: w → 0 (delta prior) and w → 1 (improper) put
-    # the WALDO admissible range into degenerate territory and the
-    # JAX-side `jnp.maximum(denom, 1e-6)` silently distorts. Refuse.
-    _W_EPS = 1e-3
-    if not (_W_EPS < w < 1.0 - _W_EPS):
-        raise ValueError(
-            f"data weight w={w:.6f} is outside ({_W_EPS}, "
-            f"{1.0 - _W_EPS}); prior.scale={sigma0} and model.sigma="
-            f"{sigma} are too far apart for a stable learned-η "
-            f"selector. Choose a less degenerate prior."
-        )
-    return w, mu0, sigma
-
-
-# Phase 4b: model-kind dispatch for the width-loss adapter.
-
-# Number of grid points used by the generic (grid-based) tilted pvalue
-# during TRAINING. Lower than inference (1024) since MC noise dominates
-# over grid-discretisation noise at training-time, and per-step cost is
-# the dominant wall-time of training. Bernoulli v0_smoke target is ~30 min
-# at this setting.
-#
-# Audit P2 (Cluster G): exposed via the env var
-# ``FRASIAN_N_GRID_GENERIC_TRAINING`` for sweeps. Read once at
-# module import. Defaults to 512.
 def _resolve_n_grid_generic_training() -> int:
     import os
 
@@ -128,8 +56,7 @@ def _resolve_n_grid_generic_training() -> int:
         ) from exc
     if v < 16:
         raise ValueError(
-            f"FRASIAN_N_GRID_GENERIC_TRAINING must be >= 16 "
-            f"(grid integration breaks below that); got {v}."
+            f"FRASIAN_N_GRID_GENERIC_TRAINING must be >= 16; got {v}."
         )
     return v
 
@@ -142,44 +69,58 @@ def _call_normal_normal_pvalue(
     eta_net: EtaNet,
     theta_grid_t: jax.Array,
     D_batch_t: jax.Array,
-    model: Any,
-    prior: Any,
+    prior_hp_batch_t: jax.Array,    # (B, 2) — [loc, scale]
+    lik_hp_batch_t: jax.Array,      # (B, 1) — [sigma]
     statistic_name: str,
     scheme_name: str,
 ) -> jax.Array:
-    """Adapter: extract Normal-Normal (w, mu0, sigma) and call the
-    per-scheme JAX kernel (closed-form fast path).
+    """Adapter (Phase G): per-batch (w, mu0, sigma) from hyperparams.
 
-    Output is byte-identical to the pre-Phase-4b path on Normal-Normal —
-    same callable, same broadcasting, same JIT cache key. Pinned by
-    `test_fit_eta_artifact_byte_equality.py`.
+    Returns the (B, G) p-value grid. The eta_net is called per (b, g)
+    via flatten/reshape since it takes a 1D batch axis.
     """
-    w, mu0, sigma = extract_normal_normal_params(model, prior)
-    w_t = jnp.asarray(w)
-    mu0_t = jnp.asarray(mu0)
-    sigma_t = jnp.asarray(sigma)
+    mu0_b = prior_hp_batch_t[:, 0]
+    sigma0_b = prior_hp_batch_t[:, 1]
+    sigma_b = lik_hp_batch_t[:, 0]
+    w_b = sigma0_b**2 / (sigma_b**2 + sigma0_b**2)
 
-    if D_batch_t.ndim != 1:
-        raise NotImplementedError(
-            "Normal-Normal closed-form width-loss adapter expects scalar "
-            f"D per batch element (D.ndim == 1); got shape "
-            f"{tuple(D_batch_t.shape)}. n_data > 1 with a NormalNormalModel "
-            "must route through the generic grid path; route via "
-            "WIDTH_LOSS_DISPATCH[('<scheme>', 'generic')] instead."
-        )
-
-    eta_grid = eta_net(theta_grid_t)  # (G,)
-    tilted_pvalue = get_jax_tilted_pvalue(scheme_name, "normal_normal")
     G = theta_grid_t.shape[0]
-    B = D_batch_t.shape[0]
+    B = prior_hp_batch_t.shape[0]
+    theta_bg_2d = jnp.broadcast_to(theta_grid_t[None, :], (B, G))
+    theta_bg_flat = theta_bg_2d.reshape(B * G)
+    prior_hp_bg = jnp.broadcast_to(
+        prior_hp_batch_t[:, None, :], (B, G, prior_hp_batch_t.shape[1]),
+    ).reshape(B * G, prior_hp_batch_t.shape[1])
+    lik_hp_bg = jnp.broadcast_to(
+        lik_hp_batch_t[:, None, :], (B, G, lik_hp_batch_t.shape[1]),
+    ).reshape(B * G, lik_hp_batch_t.shape[1])
+    eta_flat = eta_net(theta_bg_flat, prior_hp_bg, lik_hp_bg)
+    eta_bg = eta_flat.reshape(B, G)
+
+    tilted_pvalue = get_jax_tilted_pvalue(scheme_name, "normal_normal")
     return tilted_pvalue(
-        jnp.broadcast_to(theta_grid_t[None, :], (B, G)),
+        theta_bg_2d,
         jnp.broadcast_to(D_batch_t[:, None], (B, G)),
-        w_t,
-        mu0_t,
-        sigma_t,
-        jnp.broadcast_to(eta_grid[None, :], (B, G)),
+        w_b[:, None],
+        mu0_b[:, None],
+        sigma_b[:, None],
+        eta_bg,
         statistic_name,
+    )
+
+
+def compute_log_p_lik_grid_np(
+    model: Any, D_batch_np: np.ndarray, support_theta_grid_np: np.ndarray
+) -> np.ndarray:
+    """Build ``(B, N_grid)`` log-likelihood grid per batch element."""
+    from ...models.base import batch_loglik_grid as _batch_loglik_grid
+
+    arr = np.asarray(D_batch_np, dtype=np.float64)
+    if arr.ndim == 1:
+        arr = arr[:, None]
+    return np.asarray(
+        _batch_loglik_grid(model, arr, np.asarray(support_theta_grid_np, dtype=np.float64)),
+        dtype=np.float64,
     )
 
 
@@ -187,11 +128,13 @@ def precompute_generic_grids(
     model: Any, prior: Any, n_grid: int = _N_GRID_GENERIC_TRAINING
 ) -> tuple[jax.Array, jax.Array]:
     """Precompute ``(support_theta_grid, log_p_prior_grid)`` once per
-    experiment (model + prior fixed across training).
+    representative (model, prior).
 
-    Returns a pair of jnp arrays. Numpy-side computation; called
-    from outside the jit boundary (typically once at training start)
-    and the result is closed over by the per-step jit'd kernel.
+    Phase G note: both model and prior now vary per batch element; this
+    helper is kept for the case where a representative (rep_model,
+    rep_prior) is used (e.g. Bernoulli where support is constant).
+    Caller is responsible for warming this up per-step if hyperparams
+    differ across the batch.
     """
     if not hasattr(model, "support"):
         raise NotImplementedError(
@@ -203,15 +146,8 @@ def precompute_generic_grids(
     support_hi_f = float(support_hi)
     if not (np.isfinite(support_lo_f) and np.isfinite(support_hi_f)):
         raise NotImplementedError(
-            "precompute_generic_grids: unbounded support fallback not yet "
-            "wired (no current Phase 4 consumer needs it)."
+            "precompute_generic_grids: unbounded support fallback not yet wired."
         )
-    # Pad inward to keep ``prior.logpdf`` finite on the grid (Bernoulli
-    # at θ ∈ {0, 1} with Beta(α<1, β<1) gives -inf). Phase 4 skeptic
-    # #10: previous fixed 1% pad silently truncated tails on priors
-    # with significant boundary mass (e.g. Beta(0.5, 0.5)); now we
-    # adapt — start at 1e-6, double the pad while the boundary
-    # log-prior is non-finite, cap at 5% of support.
     width = support_hi_f - support_lo_f
     pad = 1e-6 * width
     pad_cap = 0.05 * width
@@ -227,10 +163,7 @@ def precompute_generic_grids(
     if not (np.isfinite(lp_lo) and np.isfinite(lp_hi)):
         raise ValueError(
             f"precompute_generic_grids: prior log-pdf non-finite at both "
-            f"grid endpoints even after padding to {pad_cap:.4f} "
-            f"({pad_cap / width * 100:.1f}% of support). The prior "
-            f"concentrates essentially all mass on the boundary; the "
-            f"learned-η training distribution is degenerate."
+            f"grid endpoints even after padding to {pad_cap:.4f}."
         )
     support_theta_grid = jnp.linspace(
         support_lo_f + pad, support_hi_f - pad, n_grid
@@ -239,38 +172,9 @@ def precompute_generic_grids(
     if not bool(jnp.all(jnp.isfinite(log_p_prior_grid))):
         raise ValueError(
             f"precompute_generic_grids: prior log-pdf is non-finite at "
-            f"interior grid points (pad={pad:.4g}). The prior may have "
-            f"discontinuities or zero-density regions inside the support."
+            f"interior grid points (pad={pad:.4g})."
         )
     return support_theta_grid, log_p_prior_grid
-
-
-def compute_log_p_lik_grid_np(
-    model: Any, D_batch_np: np.ndarray, support_theta_grid_np: np.ndarray
-) -> np.ndarray:
-    """Build ``(B, N_grid)`` log-likelihood grid per batch element.
-
-    Numpy-side helper called from outside the jit boundary. ``D_batch_np``
-    can be ``(B,)`` (n_data == 1) or ``(B, n_data)`` (n_data > 1); each
-    row is an independent dataset for ``model.likelihood``.
-
-    Phase B audit: now uses the model-level
-    ``Model.batch_loglik_grid(data_batch, theta_grid)`` if exposed
-    (NN/Bernoulli ship vectorised closed-form overrides for ~50-200×
-    speedup vs the per-row Python loop). Falls back to the loop for
-    models without an override (preserves the original 7.2 ms / step
-    behaviour as a safety net).
-    """
-    from ...models.base import batch_loglik_grid as _batch_loglik_grid
-
-    arr = np.asarray(D_batch_np, dtype=np.float64)
-    # Reshape to 2D (B, n_data) — batch_loglik_grid expects this layout.
-    if arr.ndim == 1:
-        arr = arr[:, None]
-    return np.asarray(
-        _batch_loglik_grid(model, arr, np.asarray(support_theta_grid_np, dtype=np.float64)),
-        dtype=np.float64,
-    )
 
 
 def _call_generic_grid_pvalue(
@@ -278,8 +182,8 @@ def _call_generic_grid_pvalue(
     eta_net: EtaNet,
     theta_grid_t: jax.Array,
     D_batch_t: jax.Array,
-    model: Any,
-    prior: Any,
+    prior_hp_batch_t: jax.Array,
+    lik_hp_batch_t: jax.Array,
     statistic_name: str,
     scheme_name: str,
     log_p_lik_grid_t: jax.Array | None = None,
@@ -288,57 +192,54 @@ def _call_generic_grid_pvalue(
 ) -> jax.Array:
     """Adapter: call ``generic_grid_tilted_pvalue`` (Phase 4 generic path).
 
-    Requires pre-computed grids (`log_p_lik_grid_t`,
-    `support_theta_grid_t`, `log_p_prior_grid_t`) — these depend on
-    Python state (``model.likelihood``, ``prior.logpdf``,
-    ``model.support()``) that JAX cannot trace through. The caller
-    (``_training_step``) precomputes them numpy-side and passes them
-    in as jax arrays; the per-step jit kernel then closes over the
-    fixed prior+support grids and receives a fresh ``log_p_lik_grid``
-    each step.
+    Phase G: representative (rep_model, rep_prior) prior_grid + support
+    are supplied by the caller. This is a known approximation when
+    hyperparams vary per-batch — see plan Step 6.4 caveat.
     """
     from .pvalue_jax import generic_grid_tilted_pvalue
 
-    del D_batch_t, model, prior, scheme_name  # unused in the kernel call
-    if log_p_lik_grid_t is None or support_theta_grid_t is None or log_p_prior_grid_t is None:
+    del D_batch_t, scheme_name  # unused in the kernel call
+    if (
+        log_p_lik_grid_t is None
+        or support_theta_grid_t is None
+        or log_p_prior_grid_t is None
+    ):
         raise ValueError(
-            "_call_generic_grid_pvalue requires pre-computed "
-            "log_p_lik_grid_t, support_theta_grid_t, and "
-            "log_p_prior_grid_t (compute via "
-            "`precompute_generic_grids` + `compute_log_p_lik_grid_np` "
-            "outside the jit boundary)."
+            "_call_generic_grid_pvalue requires pre-computed grids."
         )
 
-    eta_grid = eta_net(theta_grid_t)  # (G_test,)
     G = theta_grid_t.shape[0]
     B = log_p_lik_grid_t.shape[0]
+    theta_bg_2d = jnp.broadcast_to(theta_grid_t[None, :], (B, G))
+    theta_bg_flat = theta_bg_2d.reshape(B * G)
+    prior_hp_bg = jnp.broadcast_to(
+        prior_hp_batch_t[:, None, :], (B, G, prior_hp_batch_t.shape[1]),
+    ).reshape(B * G, prior_hp_batch_t.shape[1])
+    lik_hp_bg = jnp.broadcast_to(
+        lik_hp_batch_t[:, None, :], (B, G, lik_hp_batch_t.shape[1]),
+    ).reshape(B * G, lik_hp_batch_t.shape[1])
+    eta_flat = eta_net(theta_bg_flat, prior_hp_bg, lik_hp_bg)
+    eta_bg = eta_flat.reshape(B, G)
     return generic_grid_tilted_pvalue(
-        jnp.broadcast_to(theta_grid_t[None, :], (B, G)),  # (B, G_test)
-        jnp.broadcast_to(eta_grid[None, :], (B, G)),  # (B, G_test)
-        log_p_lik_grid_t,        # (B, N_grid)
-        log_p_prior_grid_t,      # (N_grid,)
-        support_theta_grid_t,    # (N_grid,)
+        theta_bg_2d,
+        eta_bg,
+        log_p_lik_grid_t,
+        log_p_prior_grid_t,
+        support_theta_grid_t,
         statistic_name,
     )
 
 
-# Width-loss dispatch keyed on (scheme_name, model_kind). Mirrors
-# JAX_TILTED_PVALUE but at the adapter level (extractor + kernel call).
-# Falls back to ("scheme", "generic") if specific (scheme, model_kind)
-# isn't registered — matches `get_jax_tilted_pvalue`'s pattern.
 WIDTH_LOSS_DISPATCH: dict[tuple[str, str], Any] = {
     ("power_law", "normal_normal"): _call_normal_normal_pvalue,
     ("ot", "normal_normal"): _call_normal_normal_pvalue,
     ("power_law", "generic"): _call_generic_grid_pvalue,
-    # ("ot", "generic") deferred — see JAX_TILTED_PVALUE comment.
 }
 
 
 def _resolve_width_loss_adapter(
     scheme_name: str, model_kind: str
 ) -> Any:
-    """Look up the (scheme, model_kind) adapter, with `(scheme, "generic")`
-    fallback. Mirrors `get_jax_tilted_pvalue`."""
     key = (scheme_name, model_kind)
     if key in WIDTH_LOSS_DISPATCH:
         return WIDTH_LOSS_DISPATCH[key]
@@ -346,7 +247,7 @@ def _resolve_width_loss_adapter(
     if generic_key in WIDTH_LOSS_DISPATCH:
         return WIDTH_LOSS_DISPATCH[generic_key]
     raise NotImplementedError(
-        f"Phase E training doesn't support cell (scheme={scheme_name!r}, "
+        f"Phase G training doesn't support cell (scheme={scheme_name!r}, "
         f"model={model_kind!r}). Available cells: {sorted(WIDTH_LOSS_DISPATCH)}."
     )
 
@@ -357,6 +258,8 @@ def compose_width_loss(
     theta_grid_t: jax.Array,
     D_batch_t: jax.Array,
     config: ExperimentConfig,
+    prior_hp_batch_t: jax.Array,
+    lik_hp_batch_t: jax.Array,
     loss_kind: str,
     alpha: float | None,
     beta: float | None = None,
@@ -364,22 +267,7 @@ def compose_width_loss(
     support_theta_grid_t: jax.Array | None = None,
     log_p_prior_grid_t: jax.Array | None = None,
 ) -> jax.Array:
-    """Integrated-p (or variant) width loss averaged over a D batch.
-
-    Phase 4b: dispatches to a per-(scheme, model_kind) adapter that
-    extracts model-specific kwargs and calls the matching JAX kernel.
-    On Normal-Normal this routes through the closed-form fast path
-    (byte-identical to pre-Phase-4b output); on Bernoulli + power_law
-    it routes through the grid-based generic path.
-
-    Generic-path inputs (``log_p_lik_grid_t``, ``support_theta_grid_t``,
-    ``log_p_prior_grid_t``) are pre-computed numpy-side outside the
-    jit boundary (see ``precompute_generic_grids`` and
-    ``compute_log_p_lik_grid_np``); they are unused by the NN
-    closed-form path.
-
-    The ``beta`` argument is forwarded to ``static_width_loss`` only.
-    """
+    """Conditional width loss (Phase G). Per-batch (prior_hp, lik_hp)."""
     if D_batch_t.ndim == 0:
         D_batch_t = D_batch_t[None]
     if D_batch_t.ndim not in (1, 2):
@@ -387,14 +275,19 @@ def compose_width_loss(
             f"D_batch_t must be 0D, 1D, or 2D; got shape {tuple(D_batch_t.shape)}."
         )
 
-    model_kind = config.model.fingerprint()[0]
-    adapter = _resolve_width_loss_adapter(config.scheme_name, model_kind)
+    model_kind_key = (
+        "normal_normal"
+        if config.model_cls.__name__ == "NormalNormalModel"
+        else "generic"
+    )
+    adapter = _resolve_width_loss_adapter(config.scheme_name, model_kind_key)
+
     adapter_kwargs: dict[str, Any] = dict(
         eta_net=eta_net,
         theta_grid_t=theta_grid_t,
         D_batch_t=D_batch_t,
-        model=config.model,
-        prior=config.prior,
+        prior_hp_batch_t=prior_hp_batch_t,
+        lik_hp_batch_t=lik_hp_batch_t,
         statistic_name=config.statistic_name,
         scheme_name=config.scheme_name,
     )
@@ -407,24 +300,16 @@ def compose_width_loss(
     p_grid = adapter(**adapter_kwargs)
     G = theta_grid_t.shape[0]
     B = D_batch_t.shape[0]
-    # Skeptic caveat #12: float64 round-off in `_phi(b-a) + _phi(-a-b)`
-    # can drift slightly outside [0, 1]. Warn (without breaking the
-    # gradient) when drift exceeds tolerance — clamp would zero the
-    # gradient at the boundary. The legacy guard keyed on
-    # ``torch.is_grad_enabled``; in JAX we issue the check
-    # eagerly if the input is concrete (i.e., not tracer-backed),
-    # and skip the diagnostic during tracing.
     if not isinstance(p_grid, jax.core.Tracer):
         out_of_range = bool(((p_grid < -1e-5) | (p_grid > 1.0 + 1e-5)).any())
         if out_of_range:
             warnings.warn(
                 f"width-loss p-values drifted outside [0, 1] in "
-                f"{config.scheme_name}/{config.statistic_name}; "
-                f"consider tighter η bounds.",
+                f"{config.scheme_name}/{config.statistic_name}.",
                 RuntimeWarning,
                 stacklevel=2,
             )
-    theta_grid_b = jnp.broadcast_to(theta_grid_t[None, :], (B, G))  # (B, G)
+    theta_grid_b = jnp.broadcast_to(theta_grid_t[None, :], (B, G))
 
     if loss_kind == "integrated_p":
         return integrated_pvalue_loss(p_grid, theta_grid_b)
@@ -436,9 +321,7 @@ def compose_width_loss(
         if beta is None:
             raise ValueError(
                 "compose_width_loss(loss_kind='static_width') requires "
-                "beta to be passed explicitly (the sigmoid-relaxed "
-                "indicator's sharpness). Use beta_schedule(epoch, n_epochs) "
-                "or a fixed value."
+                "beta to be passed explicitly."
             )
         return static_width_loss(p_grid, theta_grid_b, alpha=alpha, sharpness=beta)
     raise ValueError(f"Unknown loss_kind={loss_kind!r}")
@@ -448,28 +331,19 @@ def compose_boundary_penalty(
     *,
     val_net: ValidityNet,
     theta_batch_t: jax.Array,
+    prior_hp_batch_t: jax.Array,
+    lik_hp_batch_t: jax.Array,
     eta_pred: jax.Array,
 ) -> jax.Array:
-    """``-log P(valid | θ_batch, η_pred)`` with ValidityNet detached.
-
-    The legacy torch idiom ``torch.func.functional_call(val_net,
-    detached_params, inputs)`` is replaced by Equinox's
-    ``eqx.partition`` + ``jax.lax.stop_gradient`` + ``eqx.combine``
-    pattern. The detached module forwards the same logits but blocks
-    gradient flow into ValidityNet's parameters; gradient still flows
-    back through the (θ, η) input into EtaNet via ``eta_pred``.
+    """``-log P(valid | θ_batch, prior_hp, lik_hp, η_pred)`` with
+    ValidityNet detached.
     """
-    from ._validity_data import validity_net_inputs
-
-    inputs = validity_net_inputs(theta_batch_t, eta_pred)
-    # Split the module into its array leaves vs static metadata, stop
-    # gradients on the array leaves, and recombine. The recombined
-    # module is a forward-equivalent ValidityNet whose parameters do
-    # not contribute to the autodiff graph.
     params, static = eqx.partition(val_net, eqx.is_array)
     params_detached = jax.tree.map(jax.lax.stop_gradient, params)
     val_net_detached = eqx.combine(params_detached, static)
-    logits = val_net_detached(inputs)
+    logits = val_net_detached(
+        theta_batch_t, prior_hp_batch_t, lik_hp_batch_t, eta_pred,
+    )
     return boundary_penalty_from_validity(logits)
 
 
@@ -479,16 +353,6 @@ def lambda_schedule(
     lambda_max: float,
     warmup_frac: float,
 ) -> float:
-    """Linear ramp from 0 to ``lambda_max`` over the first
-    ``warmup_frac`` of epochs, then constant.
-
-    Special case: ``warmup_frac == 0`` returns ``lambda_max``
-    immediately (no warmup); the user explicitly opted out.
-
-    Otherwise: λ(0) = 0 (Head B trains in isolation for epoch 0;
-    Head A's width loss has no boundary signal yet);
-    λ(warmup_epochs) = λ_max; λ(epoch ≥ warmup_epochs) = λ_max.
-    """
     if warmup_frac <= 0.0:
         return float(lambda_max)
     warmup_epochs = max(1, int(round(warmup_frac * n_epochs)))
@@ -505,17 +369,6 @@ def beta_schedule(
     beta_max: float = BETA_MAX,
     warmup_frac: float = BETA_WARMUP_FRAC,
 ) -> float:
-    """Linear anneal of the ``static_width_loss`` sharpness β.
-
-    β(epoch) = beta_min + (beta_max − beta_min) · min(1, epoch / (warmup_frac · n_epochs))
-
-    Defaults: ``50 → 500`` over the first 50 % of epochs, then
-    constant. Used only when ``loss_kind == "static_width"``; the
-    α-marginalised losses ignore β. Per `audit/tier1/skeptic_learned_eta.md`
-    S2: β=200 → +0.4 % bias at α=0.05; β=500 → +0.1 %.
-
-    Special case: ``warmup_frac <= 0`` returns ``beta_max`` (no anneal).
-    """
     if warmup_frac <= 0.0:
         return float(beta_max)
     if n_epochs <= 0:

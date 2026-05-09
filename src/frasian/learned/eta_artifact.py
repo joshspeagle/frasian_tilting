@@ -27,7 +27,7 @@ from numpy.typing import NDArray
 
 from .._errors import MissingArtifactError
 
-CHECKPOINT_FORMAT_VERSION = 3
+CHECKPOINT_FORMAT_VERSION = 4
 _REQUIRED_KEYS = (
     "checkpoint_format_version",
     "architecture",
@@ -107,6 +107,16 @@ class EtaArtifact:
                 f"keys {missing}; got keys {sorted(metadata)}."
             )
         v = metadata["checkpoint_format_version"]
+        if v == 3:
+            raise MissingArtifactError(
+                f"EtaArtifact: checkpoint at {path} is format version 3 "
+                f"(fixed-prior architecture, Phase B/C). v4 introduces the "
+                f"conditional architecture (prior_hp + lik_hp inputs). "
+                f"Re-train via `python -m scripts.train_learned_eta "
+                f"--config <updated_v4.yaml>`. See "
+                f"`docs/methods/learned_eta.md` migration section for the "
+                f"YAML schema change."
+            )
         if v != CHECKPOINT_FORMAT_VERSION:
             raise MissingArtifactError(
                 f"EtaArtifact: checkpoint format version {v} != "
@@ -140,73 +150,100 @@ class EtaArtifact:
         self._metadata = metadata
         self._loaded = True
 
-    def predict_eta(self, theta: NDArray[np.float64]) -> NDArray[np.float64]:
-        """Predict η on a (N,) θ array. Returns a (N,) array.
+    def predict_eta(
+        self,
+        theta: NDArray[np.float64],
+        prior_hp: NDArray[np.float64],
+        lik_hp: NDArray[np.float64],
+    ) -> NDArray[np.float64]:
+        """Predict η at (θ, prior_hp, lik_hp) (Phase G conditional).
 
-        Numpy in / numpy out; the JAX forward is hidden behind a
-        cached, jit-compiled wrapper for speed.
+        theta:    `(N,)` array of θ values to predict η at.
+        prior_hp: `(prior_dim,)` 1-D vector of the prior's hyperparams,
+                  broadcast across all N θ values.
+        lik_hp:   `(lik_dim,)` 1-D vector of the model's hyperparams,
+                  broadcast across all N θ values.
         """
         if not self._loaded:
             raise MissingArtifactError(f"{self.name} not loaded; call .load()")
         try:
-            import jax
+            import jax  # noqa: F401
             import jax.numpy as jnp
         except ImportError as exc:  # pragma: no cover
             raise ImportError("predict_eta requires jax") from exc
 
         theta_arr = np.asarray(theta, dtype=np.float64)
         if theta_arr.ndim != 1:
-            raise ValueError(f"predict_eta expects 1D θ; got shape {theta_arr.shape!r}")
+            raise ValueError(f"predict_eta expects 1D theta; got shape {theta_arr.shape!r}")
+        prior_arr = np.asarray(prior_hp, dtype=np.float64).reshape(-1)
+        lik_arr = np.asarray(lik_hp, dtype=np.float64).reshape(-1)
+        N = theta_arr.shape[0]
+        prior_b = np.broadcast_to(prior_arr[None, :], (N, prior_arr.size)).copy()
+        lik_b = np.broadcast_to(lik_arr[None, :], (N, lik_arr.size)).copy()
+
         if self._eta_predict_jit is None:
             import equinox as eqx
-
             net = self._eta_net
-            self._eta_predict_jit = eqx.filter_jit(lambda x: net(x))
-        eta_out = self._eta_predict_jit(jnp.asarray(theta_arr))
+            self._eta_predict_jit = eqx.filter_jit(
+                lambda t, p, l: net(t, p, l)
+            )
+        eta_out = self._eta_predict_jit(
+            jnp.asarray(theta_arr),
+            jnp.asarray(prior_b),
+            jnp.asarray(lik_b),
+        )
         return np.asarray(eta_out, dtype=np.float64).reshape(-1)
 
     def predict_validity(
         self,
         theta: NDArray[np.float64],
+        prior_hp: NDArray[np.float64],
+        lik_hp: NDArray[np.float64],
         eta: NDArray[np.float64],
     ) -> NDArray[np.float64]:
-        """Predict P(valid | θ, η) on broadcast-compatible (θ, η) arrays.
+        """Predict P(valid | θ, prior_hp, lik_hp, η) (Phase G conditional).
 
-        Used by the illustration to plot the learned boundary; not
-        used at inference time (the trained η is already inside the
-        valid region by construction).
+        ``theta`` and ``eta`` are broadcast-compatible arrays; ``prior_hp``
+        and ``lik_hp`` are 1-D vectors broadcast across the broadcast
+        shape.
         """
         if not self._loaded:
             raise MissingArtifactError(f"{self.name} not loaded; call .load()")
         try:
-            import jax
+            import jax  # noqa: F401
             import jax.numpy as jnp
             import jax.nn as jnn
         except ImportError as exc:  # pragma: no cover
             raise ImportError("predict_validity requires jax") from exc
 
+        out_shape = np.broadcast(theta, eta).shape
         theta_arr = np.broadcast_to(
-            np.asarray(theta, dtype=np.float64),
-            np.broadcast(theta, eta).shape,
+            np.asarray(theta, dtype=np.float64), out_shape,
         ).ravel()
         eta_arr = np.broadcast_to(
-            np.asarray(eta, dtype=np.float64),
-            np.broadcast(theta, eta).shape,
+            np.asarray(eta, dtype=np.float64), out_shape,
         ).ravel()
-        out_shape = np.broadcast(theta, eta).shape
+        prior_arr = np.asarray(prior_hp, dtype=np.float64).reshape(-1)
+        lik_arr = np.asarray(lik_hp, dtype=np.float64).reshape(-1)
+        N = theta_arr.shape[0]
+        prior_b = np.broadcast_to(prior_arr[None, :], (N, prior_arr.size)).copy()
+        lik_b = np.broadcast_to(lik_arr[None, :], (N, lik_arr.size)).copy()
 
         if self._validity_predict_jit is None:
             import equinox as eqx
-
             net = self._validity_net
 
-            def _forward(inputs: jax.Array) -> jax.Array:
-                return jnn.sigmoid(net(inputs))
+            def _forward(t, p, l, e):
+                return jnn.sigmoid(net(t, p, l, e))
 
             self._validity_predict_jit = eqx.filter_jit(_forward)
 
-        inputs = jnp.asarray(np.column_stack([theta_arr, eta_arr]))
-        p = self._validity_predict_jit(inputs)
+        p = self._validity_predict_jit(
+            jnp.asarray(theta_arr),
+            jnp.asarray(prior_b),
+            jnp.asarray(lik_b),
+            jnp.asarray(eta_arr),
+        )
         return np.asarray(p, dtype=np.float64).reshape(out_shape)
 
     def fingerprint(self) -> str:

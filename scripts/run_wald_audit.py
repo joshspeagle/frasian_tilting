@@ -28,13 +28,27 @@ from frasian import Config, registry, run_experiment
 from frasian._registry_bootstrap import bootstrap
 from frasian.statistics.wald import WaldStatistic
 from frasian.statistics.waldo import WaldoStatistic
+from frasian.learned.eta_artifact import EtaArtifact
 from frasian.tilting.eta_selectors import (
     DynamicNumericalEtaSelector,
     FixedEtaSelector,
+    LearnedDynamicEtaSelector,
     NumericalEtaSelector,
 )
 from frasian.tilting.identity import IdentityTilting
 from frasian.tilting.power_law import PowerLawTilting
+
+
+def _learned_selector(loss: str) -> LearnedDynamicEtaSelector:
+    """Build a `LearnedDynamicEtaSelector` from a Phase C checkpoint."""
+    art = EtaArtifact(
+        artifact_path=Path(
+            f"artifacts/learned_eta_canonical_normal_normal_powerlaw_phaseC_{loss}.eqx"
+        ),
+        name="learned",
+        version=f"phaseC_{loss}",
+    )
+    return LearnedDynamicEtaSelector(artifact=art)
 
 
 def _build_cell(flavor: str):
@@ -85,6 +99,16 @@ def _build_cell(flavor: str):
     if flavor == "pl_dyn_numerical_generic":
         return (PowerLawTilting(selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)),
                 WaldoStatistic(force_generic=True), pl_bare)
+    # Learned-η selectors (Phase C / D) — one per loss
+    if flavor == "pl_learned_intp":
+        return (PowerLawTilting(selector=_learned_selector("integrated_p")),
+                WaldoStatistic(force_generic=False), pl_bare)
+    if flavor == "pl_learned_cd_var":
+        return (PowerLawTilting(selector=_learned_selector("cd_variance")),
+                WaldoStatistic(force_generic=False), pl_bare)
+    if flavor == "pl_learned_static_w":
+        return (PowerLawTilting(selector=_learned_selector("static_width")),
+                WaldoStatistic(force_generic=False), pl_bare)
     raise ValueError(f"unknown flavor {flavor!r}")
 
 
@@ -94,6 +118,7 @@ _FLAVORS = [
     "pl_fixed0_generic", "pl_fixed05_generic",
     "pl_numerical", "pl_numerical_intp", "pl_numerical_generic",
     "pl_dyn_numerical", "pl_dyn_numerical_generic",
+    "pl_learned_intp", "pl_learned_cd_var", "pl_learned_static_w",
 ]
 
 
@@ -117,10 +142,25 @@ def main() -> None:
         help="Workers for per-replicate parallelism (Config.n_jobs). "
         "Use -1 for all cores. Default 1 = serial (byte-reproducible).",
     )
+    parser.add_argument(
+        "--single-w",
+        type=float,
+        default=None,
+        help="Restrict the experiment's w_grid to a single point (e.g. 0.5). "
+        "Required for learned-η cells trained at one specific prior — "
+        "the LearnedDynamicEtaSelector refuses cross-experiment use, so "
+        "the default w_grid sweep would error on every w!=trained_w.",
+    )
     args = parser.parse_args()
 
     bootstrap()
     config = Config.fast().from_overrides(n_jobs=args.n_jobs)
+    if args.single_w is not None:
+        from frasian.config import GridSpec
+
+        config = config.from_overrides(
+            w_grid=GridSpec("w", float(args.single_w), float(args.single_w), 1)
+        )
     tilting, statistic, smoothness_override = _build_cell(args.flavor)
 
     print(f"--- {args.flavor} ---")

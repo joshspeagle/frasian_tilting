@@ -106,6 +106,10 @@ output/
 # Experiment results (regenerable via scripts/run.py + figures.py)
 results/
 
+# Superpowers brainstorming artefacts (design specs, drafts) — kept
+# local so the git tree stays scoped to source/tests/docs/methods only.
+docs/superpowers/
+
 # Temporary files
 *.tmp
 *.temp

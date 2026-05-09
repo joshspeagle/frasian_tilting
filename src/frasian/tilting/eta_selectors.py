@@ -282,6 +282,8 @@ class NumericalEtaSelector:
         return float(result.x)
 
     def _make_static_width_objective(self, *, scheme, statistic, D, model, prior, alpha):
+        from .._errors import BracketingFailed
+
         def width(eta: float) -> float:
             try:
                 if hasattr(scheme, "tilted_confidence_interval"):
@@ -298,7 +300,18 @@ class NumericalEtaSelector:
                         f"{type(scheme).__name__} does not implement "
                         f"`tilted_confidence_interval`."
                     )
-            except (NotImplementedError, TiltingDomainError, ValueError, RuntimeError):
+            except (NotImplementedError, TiltingDomainError, ValueError,
+                    RuntimeError, BracketingFailed):
+                # `BracketingFailed` is the brentq sentinel raised by
+                # `tilted_confidence_interval` when the CI extends past
+                # the search box (boundary-hit case). Treating it the
+                # same as the other "this η is unworkable" exceptions
+                # — return +inf so `minimize_scalar` skips it. Without
+                # this catch the entire (D, prior) cell errored out
+                # whenever a single eta probe in scipy's search hit a
+                # boundary, observed in `pl_dyn_numerical` at extreme
+                # |Δ| (Phase D audit, midpoint=-12.1 / half=4 → 16
+                # bracket doublings exhausted).
                 return float("inf")
             w_ci = float(hi - lo)
             return w_ci if (w_ci > 0 and np.isfinite(w_ci)) else float("inf")
@@ -516,6 +529,17 @@ class DynamicNumericalEtaSelector:
 # catches the documented failure modes.
 _CLAMP_FAIL_THRESHOLD = 0.20
 
+# Phase G: map YAML class names → Python class __name__ for the
+# cross-experiment guard's class-match check.
+_CANONICAL_PRIOR_CLASS_NAMES: dict[str, str] = {
+    "normal": "NormalDistribution",
+    "beta":   "BetaDistribution",
+}
+_CANONICAL_MODEL_CLASS_NAMES: dict[str, str] = {
+    "normal_normal": "NormalNormalModel",
+    "bernoulli":     "BernoulliModel",
+}
+
 
 @dataclass
 class LearnedDynamicEtaSelector:
@@ -670,6 +694,48 @@ class LearnedDynamicEtaSelector:
             f"{self.artifact.name}: unknown alpha_mode={alpha_mode!r}; "
             f"expected 'marginalised' or 'fixed'."
         )
+
+    def _check_classes_and_range(
+        self, prior: Prior, model: Model,
+    ) -> None:
+        """Phase G cross-experiment guard: class match + in-range hp.
+
+        Refuses (with MissingArtifactError) if:
+          - prior class != trained prior_class
+          - model class != trained model_class
+          - prior.hyperparams() or model.hyperparams() outside the
+            HyperparamDistribution.support() the checkpoint was trained on
+        """
+        from .._errors import MissingArtifactError
+        from ..learned.training.hyperparam_distribution import HyperparamDistribution
+
+        meta = self.artifact.metadata["experiment_config"]
+        if type(prior).__name__ != _CANONICAL_PRIOR_CLASS_NAMES.get(meta["prior_class"]):
+            raise MissingArtifactError(
+                f"{self.artifact.name} trained for prior_class="
+                f"{meta['prior_class']!r} (expects "
+                f"{_CANONICAL_PRIOR_CLASS_NAMES.get(meta['prior_class'])!r}); "
+                f"got {type(prior).__name__!r}."
+            )
+        if type(model).__name__ != _CANONICAL_MODEL_CLASS_NAMES.get(meta["model_class"]):
+            raise MissingArtifactError(
+                f"{self.artifact.name} trained for model_class="
+                f"{meta['model_class']!r} (expects "
+                f"{_CANONICAL_MODEL_CLASS_NAMES.get(meta['model_class'])!r}); "
+                f"got {type(model).__name__!r}."
+            )
+        distr = HyperparamDistribution.from_dict(meta["hyperparam_distribution"])
+        prior_hp = prior.hyperparams()
+        lik_hp = model.hyperparams()
+        prior_names = type(prior).hyperparam_names()
+        lik_names = type(model).hyperparam_names()
+        bad = distr.first_out_of_range(prior_hp, lik_hp, prior_names, lik_names)
+        if bad is not None:
+            raise MissingArtifactError(
+                f"{self.artifact.name}: inference {bad.name}={bad.value} is "
+                f"outside trained range [{bad.low}, {bad.high}]; "
+                f"train a wider checkpoint via scripts.train_learned_eta."
+            )
 
     def _check_experiment(
         self,
@@ -884,50 +950,22 @@ class LearnedDynamicEtaSelector:
         self._ensure_loaded()
         self._check_scheme(scheme)
         self._check_alpha(alpha)
+        self._check_classes_and_range(prior, model)
 
         theta_arr = np.asarray(grid, dtype=np.float64)
-        # Audit P1 H.2: fingerprint() is part of the Model / Prior
-        # protocol; if the supplied object lacks it (or returns None),
-        # surface that loudly here rather than silently skipping the
-        # cross-experiment check downstream.
-        from .._errors import MissingArtifactError
-        model_fp_fn = getattr(model, "fingerprint", None)
-        prior_fp_fn = getattr(prior, "fingerprint", None)
-        if model_fp_fn is None or model_fp_fn() is None:
-            raise MissingArtifactError(
-                f"{self.artifact.name}.select_grid: "
-                f"model.fingerprint() must return a tuple, got "
-                f"model={type(model).__name__!r} (no/None fingerprint)."
-            )
-        if prior_fp_fn is None or prior_fp_fn() is None:
-            raise MissingArtifactError(
-                f"{self.artifact.name}.select_grid: "
-                f"prior.fingerprint() must return a tuple, got "
-                f"prior={type(prior).__name__!r} (no/None fingerprint)."
-            )
-        model_fp = tuple(model_fp_fn())
-        prior_fp = tuple(prior_fp_fn())
-        # w_eff is the data-weight ratio σ₀² / (σ² + σ₀²) — defined
-        # only for the (NormalNormal, NormalDistribution) pair. For
-        # non-NN experiments (Bernoulli + Beta) it is meaningless;
-        # pass None so `_check_experiment` skips the NN-derived
-        # sanity check and `_maybe_clamp_eta` skips the NN-specific
-        # admissibility window.
-        w_eff: float | None
-        if model_fp[0] == "normal_normal" and prior_fp[0] == "normal":
+        prior_hp = prior.hyperparams()
+        lik_hp = model.hyperparams()
+        eta = self.artifact.predict_eta(theta_arr, prior_hp, lik_hp)
+
+        # NN-specific admissibility window for clamping.
+        from ..models._dispatch import is_normal_normal
+        from ..models.distributions import NormalDistribution
+        if is_normal_normal(model) and isinstance(prior, NormalDistribution):
             w_eff = float(prior.scale) ** 2 / (
                 float(model.sigma) ** 2 + float(prior.scale) ** 2
             )
         else:
             w_eff = None
-        self._check_experiment(
-            w_eff,
-            model_fingerprint=model_fp,
-            prior_fingerprint=prior_fp,
-            model=model,
-            prior=prior,
-        )
-        eta = self.artifact.predict_eta(theta_arr)
         return self._maybe_clamp_eta(eta, scheme=scheme, w=w_eff, alpha=alpha)
 
     def _maybe_clamp_eta(self, eta, *, scheme, w, alpha):
@@ -947,37 +985,12 @@ class LearnedDynamicEtaSelector:
         """
         del alpha  # bounds are α-independent
         if w is None:
-            # Non-NN: rely on the checkpoint's eta_explore_box. This
-            # matches the training-time domain of ValidityNet, beyond
-            # which the artefact has no signal.
-            #
-            # Phase 4 skeptic #7: refuse when ``eta_explore_box`` is
-            # missing from the checkpoint metadata. The previous
-            # silent fallback (lo, hi) = (-inf, +inf) disabled
-            # clamping entirely — a checkpoint that drifted way
-            # outside training η ranges would pass through with no
-            # warning. Pre-Phase-4 (v2-torch / NN) checkpoints used a
-            # closed-form admissible window; only non-NN checkpoints
-            # need this metadata, and any non-NN checkpoint is post-
-            # Phase-4 by construction (the v0_smoke is the first one).
-            from .._errors import MissingArtifactError
-
-            box = self.artifact.metadata.get("experiment_config", {}).get(
-                "eta_explore_box"
-            )
-            if box is None:
-                raise MissingArtifactError(
-                    f"{self.artifact.name}: checkpoint metadata is missing "
-                    f"``eta_explore_box`` and the trained model is non-"
-                    f"Normal-Normal (no closed-form admissibility window). "
-                    f"Re-train via "
-                    f"`python -m scripts.train_learned_eta --config "
-                    f"<experiment.yaml>` (post-Phase-4 ExperimentConfig "
-                    f"persists eta_explore_box automatically)."
-                )
+            # Phase G non-NN: no closed-form admissibility window;
+            # ValidityNet learned the boundary. The wide aux-explore
+            # range used during training is the safe outer envelope.
             buffer = 1e-3
-            lo = float(box[0]) + buffer
-            hi = float(box[1]) - buffer
+            lo = -5.0 + buffer
+            hi = 5.0 - buffer
         else:
             try:
                 if not (0.0 < w < 1.0):

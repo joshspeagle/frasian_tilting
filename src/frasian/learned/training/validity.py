@@ -442,8 +442,54 @@ def _compute_pvalues_per_sample_loop(
     return out
 
 
+def compute_pvalues_per_sample_with_hp(
+    scheme: Any,
+    theta_arr: NDArray[np.float64],
+    D_arr: NDArray[np.float64],
+    prior_cls: type,
+    model_cls: type,
+    prior_hp_batch: NDArray[np.float64],
+    lik_hp_batch: NDArray[np.float64],
+    eta_arr: NDArray[np.float64],
+    statistic_name: str,
+) -> NDArray[np.float64]:
+    """Per-element scheme.tilted_pvalue with per-sample (prior, model).
+
+    Phase G: each batch element has its own (prior_hp, lik_hp).
+    Constructs ``prior_i`` and ``model_i`` per element via
+    ``from_hyperparams``, then calls the scheme's ``tilted_pvalue``.
+    Returns NaN on failure (matching ``_compute_pvalues_per_sample_loop``).
+    """
+    n = theta_arr.shape[0]
+    out = np.full(n, np.nan, dtype=np.float64)
+    is_2d = D_arr.ndim == 2
+    for i in range(n):
+        try:
+            prior_i = prior_cls.from_hyperparams(prior_hp_batch[i])
+            model_i = model_cls.from_hyperparams(lik_hp_batch[i])
+            d_i = (
+                np.asarray(D_arr[i], dtype=np.float64)
+                if is_2d
+                else float(D_arr[i])
+            )
+            p = scheme.tilted_pvalue(
+                np.array([theta_arr[i]]),
+                d_i,
+                model_i,
+                prior_i,
+                float(eta_arr[i]),
+                statistic_name,
+            )
+            out[i] = float(np.asarray(p).reshape(-1)[0])
+        except (TiltingDomainError, ValueError, RuntimeError,
+                NotImplementedError, ArithmeticError):
+            out[i] = np.nan
+    return out
+
+
 __all__ = [
     "is_pair_valid",
     "validity_mask",
     "compute_pvalues_per_sample",
+    "compute_pvalues_per_sample_with_hp",
 ]
