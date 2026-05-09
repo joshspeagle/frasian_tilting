@@ -163,40 +163,32 @@ to make the trade-off measurable; never use it for production CI
 estimation.
 
 **Calibrated AND narrow: `LearnedDynamicEtaSelector`.** The
-`numerical` dynamic selector is calibrated but inflates width by
-~30 % at the conflict band (|Δ|≥2) because the inner
-`NumericalEtaSelector` slams η to the lower clamp at small |Δ|.
-The Phase G **conditional dual-head** learned selector (`EtaNet`
-+ `ValidityNet`, in `src/frasian/learned/eta_artifact.py` +
-`learned/training/`) trains a smooth GELU-MLP on
-`(θ, prior_hp, lik_hp)` directly — no monotonicity prior, no
-bounded sigmoid, no `(w, |Δ|)` features. Validity is enforced via
-a `-log P(valid | θ, prior_hp, lik_hp, η)` boundary penalty driven
-by Head B (`ValidityNet`), which learns the admissible region
-from observed `(θ, prior_hp, lik_hp, η, valid)` triples during
-training. **Conditional**: each checkpoint is trained over a
-*range* of `(prior_hp, lik_hp)` (the `hyperparam_distribution` block
-in the v4 YAML); the selector refuses inference when the observed
-class doesn't match the trained `prior_class` / `model_class`, or
-when the observed hyperparams fall outside the trained range.
+Phase G **conditional dual-head** learned selector (`EtaNet` +
+`ValidityNet`, in `src/frasian/learned/eta_artifact.py` +
+`learned/training/`) is the production calibrated-and-narrower
+alternative to `numerical` (which inflates width ~30% at the
+conflict band). EtaNet maps `(θ, prior_hp, lik_hp) → η`;
+ValidityNet maps `(θ, prior_hp, lik_hp, η) → logit` and provides
+the boundary penalty for Head A. **Conditional**: each checkpoint
+is trained over a *range* of `(prior_hp, lik_hp)` (the
+`hyperparam_distribution` block in the v4 YAML); the selector
+refuses inference when the observed class doesn't match the
+trained `prior_class` / `model_class`, or when the observed
+hyperparams fall outside the trained range.
 
-**Two architectural ingredients** unlocked the v4 conditional
-selector to actually beat Wald (an interim Phase G fix that
-required diagnosing a regression vs v3):
+Two architectural ingredients are essential and ON by default:
+**σ-anchored θ training** (`SigmaAnchoredUniformThetaDistribution`
+in `sampling.py`) and **per-channel input z-score normalization**
+on EtaNet/ValidityNet. Without σ-anchored training the model
+collapses to η ≈ 1 (= Wald); see
+[`docs/notes/2026-05-09-phase-g-v4-fix.md`](docs/notes/2026-05-09-phase-g-v4-fix.md)
+for the diagnosis and the per-loss audit results.
 
-1. **σ-anchored θ training distribution**
-   (`SigmaAnchoredUniformThetaDistribution(K=5)` in `sampling.py`):
-   per-batch-element θ_train ~ U(μ₀ − Kσ₀, μ₀ + Kσ₀). Concentrates
-   training mass where the prior is informative. The previous
-   Uniform[-10, 10] θ_train made high-conflict (D far from any μ₀)
-   samples dominate the gradient, collapsing the model to η ≈ 1
-   (= Wald, prior dropped) as the loss-minimizing solution.
-2. **Per-channel input z-score normalization**
-   (`feature_loc`/`feature_scale`/`feature_log` on EtaNet/
-   ValidityNet, computed from the training distribution: uniform →
-   linear-space mean+std, loguniform → log-space mean+std).
-   Toggleable via `normalize_inputs` (default ON; opt-out via
-   `--no-normalize-inputs`).
+`LearnedDynamicEtaSelector` runtime now **clamps** η to admissible
+range when EtaNet extrapolates out of bounds (the dynamic-CI
+calibration guarantee holds for any η, so clamping preserves
+coverage; only widths inflate at the boundary). A warning still
+fires for inspection.
 
 v4 fixtures are gitignored (`artifacts/learned_eta_*_v4.eqx`) — train
 via `scripts.train_learned_eta --config
@@ -206,40 +198,11 @@ experiments/<config>_v4.yaml`. Activate via env var:
 export FRASIAN_DEFAULT_DYNAMIC_ETA=learned   # vs default "numerical"
 ```
 
-Headline empirical result on the canonical sandbox (w=0.5 — i.e.
-σ=σ₀=1, μ₀=0, in the trained range; n_reps=200, α=0.05; Phase G
-v4 fixture with σ-anchored training):
-
-```
-                            θ=0    θ=1    θ=2    θ=3    θ=4
-Wald                        3.92   3.92   3.92   3.92   3.92
-bare WALDO                  3.33   3.43   3.75   4.23   4.78
-power_law[numerical]        3.37   3.49   3.91   4.54   5.24   ← legacy: inflates
-power_law[learned]          3.61   3.62   3.67   3.76   3.86   ← calibrated AND ≤ Wald
-```
-
-Numbers essentially match the v3 fixed-prior fixture's headline
-(3.63, 3.64, 3.68, 3.75, 3.82) — the Phase G v4 conditional
-architecture now matches v3 at the demo slice while also
-generalizing across the full (μ₀, σ₀, σ) hyperparam range. On a
-24-triple random hp sweep at θ_true=μ₀, mean learned width is
-−0.32 narrower than Wald (8% margin) and 24/24 of triples beat
-Wald.
-
-Coverage at the demo slice: 0.94-0.97 across all three audit
-losses (intp / cd_var / static_w), indistinguishable from Wald's
-0.94-0.97 within MC noise.
-
-To regenerate, run
-`PYTHONHASHSEED=0 python -m scripts.regen_headline` (requires jax
-+ equinox + the local `.eqx` fixtures). For η(θ) curve plots see
-`scripts/plot_v4_eta_curves.py`
-(writes `output/illustrations/v4_eta_curves.png`).
-
-The headline table is for `power_law` only. `ot[learned]` is wired
-into `default_tiltings()` and runs through the coverage/width
-experiments. See `docs/methods/learned_eta.md` for the full method
-brief.
+For per-method theory + derivation see `docs/methods/learned_eta.md`.
+For headline numbers + audit results + per-loss tradeoffs see
+`docs/notes/2026-05-09-phase-g-v4-fix.md`. Regenerate the headline
+with `PYTHONHASHSEED=0 python -m scripts.regen_headline`; plot
+η(θ) curves with `python -m scripts.plot_v4_eta_curves`.
 
 ## Test Statistics (status)
 
@@ -382,12 +345,21 @@ docs/
   methods/                   # one .md brief per registered method
     _template.md             # the skeleton /propose-method writes against
     {normal_normal,bernoulli,wald,waldo,power_law,...}.md
+  notes/                     # dated empirical findings (results, diagnoses)
+    README.md                # convention: when to add a note, naming, format
+    YYYY-MM-DD-<slug>.md     # one per finding
+  audit/                     # multi-agent audit outputs
+  superpowers/               # implementation plans (gitignored except plans/)
   workflows.md               # /propose-method lifecycle + cookbook
+  jax_style.md               # coding convention for the JAX/Equinox layer
 
 scripts/
   run.py                     # python -m scripts.run [--list] [--fast] experiment=<name>
   figures.py                 # python -m scripts.figures <results_dir>
   train_learned_eta.py       # train Phase G EtaNet+ValidityNet from a v4 experiment YAML
+  regen_headline.py          # PYTHONHASHSEED=0 python -m scripts.regen_headline
+  run_wald_audit.py          # (NN × tilting × statistic) audit; --flavor pl_learned_intp etc.
+  plot_v4_eta_curves.py      # η(θ) diagnostic plot for trained v4 fixtures
 
 experiments/
   canonical_normal_normal_powerlaw_v4.yaml  # Phase G v4 conditional fixture (NN + power_law)
@@ -463,7 +435,7 @@ python -m scripts.run --fast experiment=smoothness
 python -m scripts.figures results/coverage
 
 # Run the test suite
-python -m pytest                    # ~1530 collected (~25 stub-skips), ~3 min
+python -m pytest                    # ~1480 collected (~25 stub-skips), ~7 min
 python -m pytest -m L0              # math primitives only
 python -m pytest -m "L0 or L1"      # core + properties
 python -m pytest -m L4              # end-to-end
@@ -474,7 +446,33 @@ python tools/check_method_completeness.py
 
 # Run an illustration
 python -m frasian.experiments.illustrations.power_law_demo --smoke
+
+# Learned-η workflow (Phase G v4)
+# 1. Train a v4 conditional fixture (~5 min on CPU)
+python -m scripts.train_learned_eta \
+    --config experiments/canonical_normal_normal_powerlaw_v4.yaml \
+    --out artifacts/learned_eta_canonical_normal_normal_powerlaw_v4.eqx
+# 2. Regenerate the headline table (matches v3 beats-Wald margin)
+PYTHONHASHSEED=0 python -m scripts.regen_headline
+# 3. Audit a learned cell at full Config.fast() w_grid (~5 min)
+python -m scripts.run_wald_audit --flavor pl_learned_intp
+# 4. Plot η(θ) curves for the trained fixtures
+python -m scripts.plot_v4_eta_curves
 ```
+
+## Notes & Findings
+
+Empirical results, diagnoses, and non-obvious framework decisions
+live in `docs/notes/<YYYY-MM-DD>-<slug>.md`. The
+[`docs/notes/README.md`](docs/notes/README.md) describes when to add
+a note (regression diagnosed, audit run, calibration property
+discovered) and when not to (commit-message material, per-method
+theory). Index of available notes is maintained in that README.
+
+CLAUDE.md is the orientation document — it documents what exists
+and where to look. Findings (numbers, narratives, dated context)
+go in `docs/notes/`. Per-method theory + derivations go in
+`docs/methods/<name>.md`.
 
 ## Cache Discipline
 
@@ -514,7 +512,7 @@ edit a checkpoint file in place — replace atomically. Pinned by
 | 9    | done   | Geodesic taxonomy refactor: `ot_normal`→`ot` (general 1D W2 + Gaussian fast path implemented); `geodesic_normal`→`fisher_rao` (renamed stub); `exp_family` dropped (redundant with `power_law` on conjugate exp-families); `mixture` reframed as m-geodesic / dual partner of `power_law`'s e-geodesic |
 | 10   | done   | Phase E learned-η rewrite: model-agnostic dual-head selector (`EtaNet` + `ValidityNet`) trained per-experiment; replaces Phase D `MonotonicEtaNet` (deleted). `EtaNet`: smooth GELU-MLP from raw θ → η, no monotonicity prior, no bounded sigmoid. `ValidityNet`: learns `P(valid \| θ, η)` from observed `(θ, η, valid)` triples; provides `-log P(valid)` boundary penalty for Head A. Per-experiment fingerprints (`Prior.fingerprint()`/`Model.fingerprint()`) + strict cross-experiment refusal. New `ExperimentConfig` YAML schema. Smoke fixtures `learned_eta_canonical_normal_normal_<scheme>_v0_smoke.eqx` committed for `power_law` and `ot` (Equinox `.eqx` format after the Phase F JAX port; `.pt` torch checkpoints are gone). |
 | 11   | done   | Phase G conditional learned-η: `EtaNet` and `ValidityNet` now take `(θ, prior_hp, lik_hp)` / `(θ, prior_hp, lik_hp, η)` instead of θ / (θ, η). Each checkpoint is trained over a *range* of `(prior_hp, lik_hp)` (the `hyperparam_distribution` block in the v4 YAML); the selector dispatches per-inference and refuses out-of-range hyperparams. Checkpoint format bumped 3 → 4. v3 YAMLs / fixtures / 14 v3-bound tests deleted; v4 YAMLs added; v4 fixtures gitignored (re-train via `scripts.train_learned_eta`). `eta_explore_box` restored to ExperimentConfig (per-config; defaults to `[-5, 5]`). Headline numbers in this file updated to the v4 fixture. |
-| 12   | done   | Phase G v4 fix (σ-anchored θ + input normalization): the initial v4 fixtures (Uniform[-10, 10] θ_train + raw input concat) collapsed to η ≈ 1 (= Wald, prior dropped) — the integrated-p / static-width / cd-variance loss surfaces all preferred Wald under that training distribution because >80% of batch samples were high-conflict (D far from any μ₀). Two architectural changes resolved: (1) `SigmaAnchoredUniformThetaDistribution(K=5)` per-batch-element θ_train ~ U(μ₀ ± Kσ₀) concentrating mass where the prior is informative; (2) per-channel input z-score normalization on EtaNet/ValidityNet (loguniform features in log-space). The headline now matches v3's beats-Wald margin; 24/24 of random hp triples beat Wald on the narrowness sweep. New ExperimentConfig fields: `theta_grid_lo`/`theta_grid_hi` (absolute integration grid for anchored). New diagnostic regularizers `anti_wald_penalty` + `eta_collapse_penalty` + `decay_schedule` plumbed but disabled by default — they didn't escape the pre-fix collapse but are kept for future use. |
+| 12   | done   | Phase G v4 fix: σ-anchored θ training + input normalization (default ON) + clamp-instead-of-refuse on out-of-admissible η. See [`docs/notes/2026-05-09-phase-g-v4-fix.md`](docs/notes/2026-05-09-phase-g-v4-fix.md). |
 
 ## Key Anti-Patterns to Avoid
 
