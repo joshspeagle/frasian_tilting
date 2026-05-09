@@ -17,11 +17,32 @@ test belt-and-braces verifies the no-NaN contract on the happy path.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
+# Phase G v4 fixtures are gitignored — train locally per developer.
+# `_compute_table` constructs the `power_law[learned]` row via
+# `default_tiltings()` with `FRASIAN_DEFAULT_DYNAMIC_ETA=learned`,
+# which loads this fixture. CI workers don't have it; the
+# `test_identity_rows_are_finite_no_torch` companion test below
+# covers the no-NaN contract on the bare-statistic path that the
+# skeptic vector originally flagged, without requiring the fixture.
+_V4_FIXTURE = Path(
+    "artifacts/learned_eta_canonical_normal_normal_powerlaw_v4.eqx"
+)
+
 
 @pytest.mark.L4
+@pytest.mark.skipif(
+    not _V4_FIXTURE.exists(),
+    reason=(
+        f"Phase G v4 learned-η fixture missing at {_V4_FIXTURE}; "
+        "re-train via `python -m scripts.train_learned_eta --config "
+        "experiments/canonical_normal_normal_powerlaw_v4.yaml`."
+    ),
+)
 def test_compute_table_smoke_no_nan() -> None:
     """End-to-end: run the script's inner table builder at n_reps=2 and
     assert no row has NaN. Catches signature regressions in the

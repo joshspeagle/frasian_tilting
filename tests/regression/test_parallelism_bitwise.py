@@ -49,7 +49,27 @@ def _run_one(experiment_name: str, n_jobs: int, out_dir: Path) -> dict[str, np.n
     )
     # Identify the (only) cell in this run and load its on-disk arrays
     # back; comparison is array-vs-array, not summary-vs-summary.
-    [cell] = [c for c in summary.cells if c.status == "ok"]
+    ok_cells = [c for c in summary.cells if c.status == "ok"]
+    if len(ok_cells) != 1:
+        # Surface WHY the run produced no successful cells (otherwise
+        # the tuple-unpack `[cell] = ...` would just say "expected 1,
+        # got 0" and hide the underlying joblib / loky / parallel-
+        # dispatch error). Cluster observed in CI: pytest-xdist's
+        # nested process-pool can collide with joblib's default loky
+        # backend on small runners (e.g. GHA ubuntu-latest 2 vCPU).
+        statuses = [(c.tilting, c.statistic, c.status) for c in summary.cells]
+        reasons = [
+            f"    {c.tilting}/{c.statistic}: {(c.reason or 'no reason')[:400]}"
+            for c in summary.cells
+            if c.status != "ok"
+        ]
+        raise AssertionError(
+            f"_run_one expected 1 ok cell at experiment={experiment_name!r}, "
+            f"n_jobs={n_jobs}; got {len(ok_cells)} ok of "
+            f"{len(summary.cells)} total.\n  statuses={statuses}\n"
+            + "\n".join(reasons)
+        )
+    [cell] = ok_cells
     res = load_result(out_dir / cell.cache_path)
     return dict(res.arrays)
 
