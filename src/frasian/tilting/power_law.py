@@ -1901,12 +1901,25 @@ class PowerLawTilting:
                 data_arr, model, prior, eta, alpha,
                 _GENERIC_TILTED_PVALUE_BASE_SEED,
             )
-            out = np.empty(theta_arr.shape, dtype=np.float64)
-            for i, th in enumerate(theta_arr):
-                out[i] = _generic_tilted_pvalue(
-                    float(th), data_arr, model, prior, eta, statistic.name,
-                    derived_seed=derived_seed, alpha=alpha,
-                )
+            # Use the triple-batched vec helper (added in Phase F) — for
+            # array-θ inputs (CD experiment passes a 401-pt grid here),
+            # this is a single batched call instead of 401 scalar calls.
+            # Scalar input still works (degenerate n_theta=1 batch).
+            # Default n_mc here is `_GENERIC_TILTED_PVALUE_N_MC=200` to
+            # match the legacy scalar-loop path: the CD experiment is
+            # the dominant consumer and integrates per-θ p-values into a
+            # density, which smooths MC noise — n_mc=2000 (the
+            # WaldoStatistic default for clean CI endpoints) is overkill
+            # here and 10x more expensive. Callers who need it can pass
+            # a statistic with explicit n_mc and the dynamic-η CI path
+            # propagates it correctly.
+            eta_arr = np.full(theta_arr.shape, float(eta), dtype=np.float64)
+            out = _generic_tilted_pvalue_vec(
+                theta_arr, data_arr, model, prior, eta_arr, statistic.name,
+                n_mc=_GENERIC_TILTED_PVALUE_N_MC,
+                derived_seed=derived_seed,
+                alpha=alpha,
+            )
             return out
 
         self._require_normal_sandbox(model, prior)

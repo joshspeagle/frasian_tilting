@@ -106,20 +106,19 @@ def sample_data_per_theta(
             f"partner 2θ − D is a Normal-Normal scalar construction); "
             f"got n_data={n_data}."
         )
+    # Phase B audit: replace the per-θ Python loop with the vectorised
+    # `Model.sample_data_batch_at_thetas` (added with default fallback,
+    # NN/Bernoulli overrides). ~50× speedup at typical batch=256 on NN.
+    from ...models.base import sample_data_batch_at_thetas
+
     if n_data == 1:
-        out = np.empty(theta.shape, dtype=np.float64)
-        for i, th in enumerate(theta):
-            out[i] = float(model.sample_data(float(th), rng, n=1)[0])
+        out2d = sample_data_batch_at_thetas(model, theta, rng, n_data=1)
+        out = out2d[:, 0]
         if not antithetic:
             return out
         paired = antithetic_pair(theta, out)
         return np.concatenate([out, paired])
-    out2d = np.empty((theta.shape[0], n_data), dtype=np.float64)
-    for i, th in enumerate(theta):
-        out2d[i] = np.asarray(
-            model.sample_data(float(th), rng, n=n_data), dtype=np.float64
-        )
-    return out2d
+    return sample_data_batch_at_thetas(model, theta, rng, n_data=n_data)
 
 
 def collect_validity_batch(

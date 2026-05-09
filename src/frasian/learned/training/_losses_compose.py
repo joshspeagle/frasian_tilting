@@ -254,22 +254,23 @@ def compute_log_p_lik_grid_np(
     can be ``(B,)`` (n_data == 1) or ``(B, n_data)`` (n_data > 1); each
     row is an independent dataset for ``model.likelihood``.
 
-    Phase 4 skeptic #3 (per-step numpy loop overhead): benchmarked at
-    7.2 ms / step (B=8, n_data=16, n_grid=512) on dev hardware — ~213x
-    slower than a Bernoulli-specific vectorised form, but small in
-    absolute terms relative to the rest of the per-step cost
-    (validity fast path + jit kernel). Vectorising would require a
-    `model.loglik_grid_batched` protocol method — Phase 5+ work.
+    Phase B audit: now uses the model-level
+    ``Model.batch_loglik_grid(data_batch, theta_grid)`` if exposed
+    (NN/Bernoulli ship vectorised closed-form overrides for ~50-200×
+    speedup vs the per-row Python loop). Falls back to the loop for
+    models without an override (preserves the original 7.2 ms / step
+    behaviour as a safety net).
     """
-    B = D_batch_np.shape[0]
-    N_grid = support_theta_grid_np.shape[0]
-    out = np.empty((B, N_grid), dtype=np.float64)
-    is_2d = D_batch_np.ndim == 2
-    for i in range(B):
-        d_i = D_batch_np[i] if is_2d else np.atleast_1d(D_batch_np[i])
-        likelihood_i = model.likelihood(np.asarray(d_i, dtype=np.float64))
-        out[i] = np.asarray(likelihood_i.loglik(support_theta_grid_np))
-    return out
+    from ...models.base import batch_loglik_grid as _batch_loglik_grid
+
+    arr = np.asarray(D_batch_np, dtype=np.float64)
+    # Reshape to 2D (B, n_data) — batch_loglik_grid expects this layout.
+    if arr.ndim == 1:
+        arr = arr[:, None]
+    return np.asarray(
+        _batch_loglik_grid(model, arr, np.asarray(support_theta_grid_np, dtype=np.float64)),
+        dtype=np.float64,
+    )
 
 
 def _call_generic_grid_pvalue(

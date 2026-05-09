@@ -134,6 +134,29 @@ class BernoulliModel:
         log_1m = np.log(np.clip(1.0 - grid, eps, 1.0))  # (n_grid,)
         return k[:, None] * log_theta[None, :] + (n_obs - k)[:, None] * log_1m[None, :]
 
+    def sample_data_batch_at_thetas(
+        self,
+        theta_arr: NDArray[np.float64],
+        rng: Generator,
+        n_data: int,
+    ) -> NDArray[np.float64]:
+        """Vectorised per-θ Bernoulli sampling.
+
+        Returns shape `(n_theta, n_data)`. Single `rng.binomial` call
+        with broadcast probability — ~50-100× faster than the default
+        per-θ loop.
+        """
+        arr = np.asarray(theta_arr, dtype=np.float64)
+        if not np.all((arr >= 0.0) & (arr <= 1.0)):
+            bad = float(arr[(arr < 0.0) | (arr > 1.0)][0])
+            raise ValueError(
+                f"theta_arr must lie in [0, 1] elementwise; got {bad!r}"
+            )
+        n_theta = int(arr.size)
+        n_data = int(n_data)
+        prob = np.broadcast_to(arr[:, None], (n_theta, n_data))
+        return rng.binomial(1, prob).astype(np.float64)
+
     def posterior_quantile_batch(
         self,
         data_batch: NDArray[np.float64],

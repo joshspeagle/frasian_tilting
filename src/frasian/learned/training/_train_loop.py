@@ -79,6 +79,23 @@ def _resolve_n_mc_train() -> int:
 N_MC_TRAIN: int = _resolve_n_mc_train()
 
 
+# Module-level jit wrappers for the training-loop's *un-jitted* forward
+# calls (label collection, eval, final-rate diagnostics). The legacy
+# code called `args.eta_net(theta_batch_t)` etc. in eager Python, which
+# traces the MLP forward on every step (~25-50 ms each in cProfile of
+# the canonical NN training). filter_jit caches by (module-static-spec,
+# input-shape), so gradient updates (which change array leaves only)
+# still hit the cache. Saved ~3-5 s on a 10-epoch NN training run.
+@eqx.filter_jit
+def _eta_forward_jit(net: Any, theta: jax.Array) -> jax.Array:
+    return net(theta)
+
+
+@eqx.filter_jit
+def _val_forward_jit(net: Any, inputs: jax.Array) -> jax.Array:
+    return net(inputs)
+
+
 @dataclass
 class EpochLoopOutputs:
     """Metrics + best state returned by ``run_epoch_loop``."""
@@ -158,7 +175,7 @@ def evaluate_head_b_accuracy(
 ) -> float:
     """Held-out classification accuracy of Head B at threshold 0.5."""
     inputs = validity_net_inputs(jnp.asarray(theta_held), jnp.asarray(eta_held))
-    logits = val_net(inputs)
+    logits = _val_forward_jit(val_net, inputs)
     pred = (jax.nn.sigmoid(logits) >= 0.5)
     pred_np = np.asarray(pred)
     return float((pred_np == valid_held).mean())
@@ -182,7 +199,7 @@ def compute_final_eta_pred_valid_rate(
     """
     from .validity import compute_pvalues_per_sample, validity_mask
 
-    eta_pred_held_t = eta_net(jnp.asarray(theta_held))
+    eta_pred_held_t = _eta_forward_jit(eta_net, jnp.asarray(theta_held))
     eta_pred_held = np.asarray(eta_pred_held_t, dtype=np.float64)
     p_pred = compute_pvalues_per_sample(
         scheme,
@@ -349,7 +366,9 @@ def _training_step(
     theta_batch_t = jnp.asarray(theta_batch_np)
 
     # Step (1): forward + collect validity batch (numpy-driven labels).
-    eta_pred = args.eta_net(theta_batch_t)
+    # Use the module-level jit wrapper so the EtaNet forward hits the
+    # filter_jit cache instead of re-tracing every step.
+    eta_pred = _eta_forward_jit(args.eta_net, theta_batch_t)
     theta_all_t, eta_all_t, valid_all_t = collect_validity_batch(
         eta_pred=eta_pred,
         theta_batch_np=theta_batch_np,

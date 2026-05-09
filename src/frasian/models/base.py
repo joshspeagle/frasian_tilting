@@ -264,6 +264,52 @@ def default_posterior_quantile_batch(
     return out
 
 
+def default_sample_data_batch_at_thetas(
+    model: Model,
+    theta_arr: NDArray[np.float64],
+    rng: Generator,
+    n_data: int,
+) -> NDArray[np.float64]:
+    """Loop-based fallback for `Model.sample_data_batch_at_thetas`.
+
+    For each `theta_arr[i]`, draws `n_data` observations from
+    `model.sample_data(theta_arr[i], rng, n_data)`. Returns shape
+    `(n_theta, n_data)`. The Python `for` loop here is the slow
+    path — vectorised models (NN: single rng.normal call shifted per
+    theta; Bernoulli: single rng.binomial call with broadcast
+    probability) override this to remove the per-theta dispatch.
+    """
+    n_theta = int(np.asarray(theta_arr).size)
+    n_data = int(n_data)
+    out = np.empty((n_theta, n_data), dtype=np.float64)
+    arr = np.asarray(theta_arr, dtype=np.float64)
+    for i in range(n_theta):
+        out[i, :] = np.asarray(
+            model.sample_data(float(arr[i]), rng, n_data), dtype=np.float64
+        )
+    return out
+
+
+def sample_data_batch_at_thetas(
+    model: Model,
+    theta_arr: NDArray[np.float64],
+    rng: Generator,
+    n_data: int,
+) -> NDArray[np.float64]:
+    """Dispatch helper for `sample_data_batch_at_thetas`.
+
+    Returns shape `(n_theta, n_data)` of MC draws under H_0:theta_arr[i]
+    per row. Used by the learned-η training loop (one draw per batch
+    element) and the dynamic-η + force_generic CI path. Models with a
+    natively vectorised override (NN, Bernoulli) skip the per-theta
+    Python loop in `default_sample_data_batch_at_thetas`.
+    """
+    fn = getattr(model, "sample_data_batch_at_thetas", None)
+    if callable(fn):
+        return np.asarray(fn(theta_arr, rng, n_data), dtype=np.float64)
+    return default_sample_data_batch_at_thetas(model, theta_arr, rng, n_data)
+
+
 def posterior_quantile_batch(
     model: Model,
     data_batch: NDArray[np.float64],
