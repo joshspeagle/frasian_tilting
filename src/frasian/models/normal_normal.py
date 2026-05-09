@@ -96,6 +96,52 @@ class NormalNormalModel:
     def fingerprint(self) -> tuple:
         return ("normal_normal", float(self.sigma))
 
+    # ----- Phase G hyperparam protocol -----
+
+    hyperparam_dim: ClassVar[int] = 1
+
+    @classmethod
+    def hyperparam_names(cls) -> tuple[str, ...]:
+        return ("sigma",)
+
+    def hyperparams(self) -> NDArray[np.float64]:
+        return np.array([self.sigma], dtype=np.float64)
+
+    @classmethod
+    def from_hyperparams(cls, hp: NDArray[np.float64]) -> "NormalNormalModel":
+        arr = np.asarray(hp, dtype=np.float64)
+        if arr.shape != (1,):
+            raise ValueError(
+                f"NormalNormalModel.from_hyperparams expects length 1 "
+                f"vector [sigma]; got shape {arr.shape!r}."
+            )
+        return cls(sigma=float(arr[0]))
+
+    @classmethod
+    def sample_data_batch_with_hp(
+        cls,
+        theta: NDArray[np.float64],
+        hp: NDArray[np.float64],
+        rng: Generator,
+        n_data: int,
+    ) -> NDArray[np.float64]:
+        """Vectorised per-(θ, σ) sampling. ``theta`` shape `(B,)`, ``hp``
+        shape `(B, 1)`; returns shape `(B, n_data)`.
+
+        Used by the conditional learned-η training loop where each batch
+        element has its own σ sampled from the HyperparamDistribution.
+        """
+        theta_arr = np.asarray(theta, dtype=np.float64)
+        hp_arr = np.asarray(hp, dtype=np.float64)
+        if hp_arr.ndim != 2 or hp_arr.shape != (theta_arr.shape[0], 1):
+            raise ValueError(
+                f"NormalNormalModel.sample_data_batch_with_hp expects hp "
+                f"shape ({theta_arr.shape[0]}, 1); got {hp_arr.shape!r}."
+            )
+        sigma_b = hp_arr[:, 0]
+        z = rng.normal(loc=0.0, scale=1.0, size=(theta_arr.shape[0], int(n_data)))
+        return theta_arr[:, None] + sigma_b[:, None] * z
+
     # ----- Model protocol -----
 
     def sample_data(self, theta: ArrayLike, rng: Generator, n: int) -> NDArray[np.float64]:

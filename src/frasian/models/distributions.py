@@ -12,6 +12,7 @@ learned-η training, etc.); random sampling still consumes a numpy
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import ClassVar
 
 import jax
 import jax.numpy as jnp
@@ -63,6 +64,27 @@ class NormalDistribution:
     def fingerprint(self) -> tuple:
         return ("normal", float(self.loc), float(self.scale))
 
+    # ----- Phase G hyperparam protocol -----
+
+    hyperparam_dim: ClassVar[int] = 2
+
+    @classmethod
+    def hyperparam_names(cls) -> tuple[str, ...]:
+        return ("loc", "scale")
+
+    def hyperparams(self) -> NDArray[np.float64]:
+        return np.array([self.loc, self.scale], dtype=np.float64)
+
+    @classmethod
+    def from_hyperparams(cls, hp: NDArray[np.float64]) -> "NormalDistribution":
+        arr = np.asarray(hp, dtype=np.float64)
+        if arr.shape != (2,):
+            raise ValueError(
+                f"NormalDistribution.from_hyperparams expects length 2 "
+                f"vector [loc, scale]; got shape {arr.shape!r}."
+            )
+        return cls(loc=float(arr[0]), scale=float(arr[1]))
+
 
 @dataclass(frozen=True)
 class BetaDistribution:
@@ -110,6 +132,27 @@ class BetaDistribution:
 
     def fingerprint(self) -> tuple:
         return ("beta", float(self.alpha), float(self.beta))
+
+    # ----- Phase G hyperparam protocol -----
+
+    hyperparam_dim: ClassVar[int] = 2
+
+    @classmethod
+    def hyperparam_names(cls) -> tuple[str, ...]:
+        return ("alpha", "beta")
+
+    def hyperparams(self) -> NDArray[np.float64]:
+        return np.array([self.alpha, self.beta], dtype=np.float64)
+
+    @classmethod
+    def from_hyperparams(cls, hp: NDArray[np.float64]) -> "BetaDistribution":
+        arr = np.asarray(hp, dtype=np.float64)
+        if arr.shape != (2,):
+            raise ValueError(
+                f"BetaDistribution.from_hyperparams expects length 2 "
+                f"vector [alpha, beta]; got shape {arr.shape!r}."
+            )
+        return cls(alpha=float(arr[0]), beta=float(arr[1]))
 
 
 @dataclass(frozen=True)

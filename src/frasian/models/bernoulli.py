@@ -50,6 +50,51 @@ class BernoulliModel:
     def fingerprint(self) -> tuple:
         return ("bernoulli",)
 
+    # ----- Phase G hyperparam protocol -----
+
+    hyperparam_dim: ClassVar[int] = 0
+
+    @classmethod
+    def hyperparam_names(cls) -> tuple[str, ...]:
+        return ()
+
+    def hyperparams(self) -> NDArray[np.float64]:
+        return np.empty(0, dtype=np.float64)
+
+    @classmethod
+    def from_hyperparams(cls, hp: NDArray[np.float64]) -> "BernoulliModel":
+        arr = np.asarray(hp, dtype=np.float64)
+        if arr.shape != (0,):
+            raise ValueError(
+                f"BernoulliModel.from_hyperparams expects length 0 "
+                f"vector (no model hyperparams); got shape {arr.shape!r}."
+            )
+        return cls()
+
+    @classmethod
+    def sample_data_batch_with_hp(
+        cls,
+        theta: NDArray[np.float64],
+        hp: NDArray[np.float64],
+        rng: Generator,
+        n_data: int,
+    ) -> NDArray[np.float64]:
+        """Vectorised per-θ Bernoulli sampling. ``hp`` is `(B, 0)` since
+        Bernoulli has no continuous likelihood hyperparams beyond θ."""
+        theta_arr = np.asarray(theta, dtype=np.float64)
+        hp_arr = np.asarray(hp, dtype=np.float64)
+        if hp_arr.ndim != 2 or hp_arr.shape != (theta_arr.shape[0], 0):
+            raise ValueError(
+                f"BernoulliModel.sample_data_batch_with_hp expects hp "
+                f"shape ({theta_arr.shape[0]}, 0); got {hp_arr.shape!r}."
+            )
+        if not np.all((theta_arr >= 0.0) & (theta_arr <= 1.0)):
+            bad = float(theta_arr[(theta_arr < 0.0) | (theta_arr > 1.0)][0])
+            raise ValueError(f"theta must lie in [0, 1]; got {bad!r}")
+        prob = np.broadcast_to(theta_arr[:, None],
+                                (theta_arr.shape[0], int(n_data)))
+        return rng.binomial(1, prob).astype(np.float64)
+
     # ----- Model protocol -----
 
     def sample_data(self, theta: ArrayLike, rng: Generator, n: int) -> NDArray[np.float64]:
