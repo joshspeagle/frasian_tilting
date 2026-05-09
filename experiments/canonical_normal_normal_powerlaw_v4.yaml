@@ -1,0 +1,28 @@
+# Phase G conditional learned-η for the Normal-Normal sandbox + power_law.
+# Trained over a range of (μ₀, σ₀, σ); selector dispatches on the prior
+# + likelihood passed at inference time (within the trained ranges).
+
+prior_class: normal
+model_class: normal_normal
+hyperparam_distribution:
+  prior:
+    loc:   { dist: uniform,    low: -2.0, high: 2.0 }
+    scale: { dist: loguniform, low: 0.2,  high: 5.0 }
+  lik:
+    sigma: { dist: loguniform, low: 0.5,  high: 2.0 }
+theta_distribution:
+  type: uniform
+  low: -5.0
+  high:  5.0
+scheme: power_law
+statistic: waldo
+n_grid: 401
+n_lhs: 10000
+seed: 42
+n_data: 1
+name: canonical_normal_normal_powerlaw_v4
+description: |
+  Phase G conditional learned-η; replaces the v3 fixed-prior fixture.
+  Sampling ranges (μ₀ ∈ [-2, 2], σ₀ ∈ [0.2, 5], σ ∈ [0.5, 2]) span
+  realistic research configurations; selector refuses inference outside
+  these ranges.

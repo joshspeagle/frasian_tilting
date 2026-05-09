@@ -1,0 +1,32 @@
+# Phase G conditional learned-η for the Normal-Normal sandbox + ot.
+# Counterpart to canonical_normal_normal_powerlaw_v4.
+
+prior_class: normal
+model_class: normal_normal
+hyperparam_distribution:
+  prior:
+    loc:   { dist: uniform,    low: -2.0, high: 2.0 }
+    scale: { dist: loguniform, low: 0.2,  high: 5.0 }
+  lik:
+    sigma: { dist: loguniform, low: 0.5,  high: 2.0 }
+theta_distribution:
+  # Wider θ range than power_law: dynamic_ci_scan in tilting/_dynamic.py
+  # queries η at θ ≈ μ₀ ± 2|Δ|, which can reach θ ≈ ±12 at the conflict
+  # band. OT's η profile is roughly constant in θ, so the learner needs
+  # to see the tails to keep selector extrapolation in-distribution
+  # (cf. v3 fixture comment).
+  type: uniform
+  low: -10.0
+  high:  10.0
+scheme: ot
+statistic: waldo
+n_grid: 401
+n_lhs: 10000
+seed: 42
+n_data: 1
+name: canonical_normal_normal_ot_v4
+description: |
+  Phase G conditional learned-η; replaces the v3 fixed-prior fixture.
+  Same hyperparam box as the power_law sibling; θ range widened to
+  ±10 so dynamic-CI extrapolation at the conflict band stays in-
+  distribution.
