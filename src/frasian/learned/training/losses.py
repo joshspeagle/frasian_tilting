@@ -152,6 +152,60 @@ def boundary_penalty_from_validity(
     return -jax.nn.log_sigmoid(validity_logits).mean()
 
 
+def anti_wald_penalty(eta_pred: jax.Array) -> jax.Array:
+    """Mean ``relu(η_pred)²`` — punishes positive η.
+
+    Phase G diagnostic regularizer. The conditional EtaNet has a
+    persistent failure mode: it converges to η ≈ +1 across the
+    trained hyperparam range, which (for power_law on Normal-Normal)
+    corresponds to *removing the prior entirely* — i.e. computing
+    Wald CIs. The Wald solution is a wide stable plateau in the loss
+    surface and SGD with smooth losses never escapes it.
+
+    This penalty asymmetrically pushes η_pred toward the negative
+    half-line where the optimal solutions live (oversharpened toward
+    the prior). Combined with a decay schedule, it perturbs the
+    optimizer out of the Wald basin during early training, then
+    releases its bias so the underlying width loss owns convergence.
+
+    See ``losses.eta_collapse_penalty`` for the value-agnostic
+    variant that rewards η_pred variance across the batch instead.
+    """
+    if eta_pred.ndim != 1:
+        raise ValueError(
+            f"anti_wald_penalty expects (N,) eta_pred; got shape "
+            f"{tuple(eta_pred.shape)}."
+        )
+    return (jax.nn.relu(eta_pred) ** 2).mean()
+
+
+def eta_collapse_penalty(
+    eta_pred: jax.Array,
+    eps: float = 1e-3,
+) -> jax.Array:
+    """``1 / (Var_B[η_pred] + ε)`` — rewards η_pred spread across the batch.
+
+    Phase G diagnostic regularizer. Value-agnostic counterpart to
+    ``anti_wald_penalty``: punishes the model for predicting the
+    same η across all (θ, prior_hp, lik_hp) batch elements regardless
+    of *what* value it picks. Targets the 'collapsed to a constant'
+    failure mode directly (η ≈ +1 *and* η ≈ +0 *and* any other
+    constant land in this penalty's crosshairs).
+
+    The ε floor (default 1e-3) caps the maximum penalty at ``1/ε``
+    so an early all-zero-gradient batch doesn't dominate the loss.
+    Decays alongside ``anti_wald_penalty`` via the same schedule
+    so the optimizer can ultimately settle anywhere it likes.
+    """
+    if eta_pred.ndim != 1:
+        raise ValueError(
+            f"eta_collapse_penalty expects (N,) eta_pred; got shape "
+            f"{tuple(eta_pred.shape)}."
+        )
+    var = jnp.var(eta_pred)
+    return 1.0 / (var + eps)
+
+
 def static_width_loss(
     p_theta: jax.Array,
     theta_grid: jax.Array,

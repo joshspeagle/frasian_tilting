@@ -22,7 +22,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from ... import _jax_setup as _x64  # noqa: F401  — ensure float64 active
-from .sampling import ExperimentConfig
+from .sampling import ExperimentConfig, anchor_theta_to_prior
 from .validity import compute_pvalues_per_sample_with_hp, validity_mask
 
 _FORCE_X64 = _x64
@@ -66,6 +66,9 @@ def collect_validity_batch(
         n_aux, rng, prior_names=prior_names, lik_names=lik_names,
     )
     theta_aux_np = config.theta_distribution.sample(n_aux, rng)
+    theta_aux_np = anchor_theta_to_prior(
+        theta_aux_np, prior_hp_aux, prior_names, config.theta_distribution,
+    )
     eta_lo, eta_hi = config.eta_explore_box
     eta_aux_np = rng.uniform(eta_lo, eta_hi,
                               size=n_aux).astype(np.float64)
@@ -118,6 +121,10 @@ def prepare_held_out_validity(
     lik_names = config.model_cls.hyperparam_names()
     prior_hp_held, lik_hp_held = config.hyperparam_distribution.sample(
         n_held, rng, prior_names=prior_names, lik_names=lik_names,
+    )
+    # Convert relative θ → absolute when theta_distribution is anchored.
+    theta_held = anchor_theta_to_prior(
+        theta_held, prior_hp_held, prior_names, config.theta_distribution,
     )
     eta_lo, eta_hi = config.eta_explore_box
     eta_held_aux = rng.uniform(eta_lo, eta_hi,

@@ -192,6 +192,9 @@ def save_checkpoint(
     final_head_b_accuracy: float,
     final_eta_pred_valid_rate: float,
     antithetic: bool = False,
+    anti_wald_max: float = 0.0,
+    anti_collapse_max: float = 0.0,
+    anti_decay_frac: float = 0.5,
 ) -> dict[str, Any]:
     """Assemble + atomically write the checkpoint. Returns the metadata dict.
 
@@ -226,6 +229,9 @@ def save_checkpoint(
         "alpha_mode": alpha_mode,
         "lambda_max": lambda_max,
         "lambda_warmup_frac": lambda_warmup_frac,
+        "anti_wald_max": anti_wald_max,
+        "anti_collapse_max": anti_collapse_max,
+        "anti_decay_frac": anti_decay_frac,
         "n_aux": n_aux,
         "lr_a": lr_a,
         "lr_b": lr_b,

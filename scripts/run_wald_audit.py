@@ -40,13 +40,23 @@ from frasian.tilting.power_law import PowerLawTilting
 
 
 def _learned_selector(loss: str) -> LearnedDynamicEtaSelector:
-    """Build a `LearnedDynamicEtaSelector` from a Phase C checkpoint."""
+    """Build a `LearnedDynamicEtaSelector` from a Phase G v4 per-loss checkpoint.
+
+    Per-loss audit fixtures train the canonical NN + power_law v4
+    YAML with one of the three loss variants (integrated_p,
+    cd_variance, static_width). Train via:
+
+        python -m scripts.train_learned_eta \\
+            --config experiments/canonical_normal_normal_powerlaw_v4.yaml \\
+            --loss <loss> [--alpha 0.05 if static_width] \\
+            --out artifacts/learned_eta_canonical_normal_normal_powerlaw_phaseC_<loss>_v4.eqx
+    """
     art = EtaArtifact(
         artifact_path=Path(
-            f"artifacts/learned_eta_canonical_normal_normal_powerlaw_phaseC_{loss}.eqx"
+            f"artifacts/learned_eta_canonical_normal_normal_powerlaw_phaseC_{loss}_v4.eqx"
         ),
         name="learned",
-        version=f"phaseC_{loss}",
+        version=f"phaseC_{loss}_v4",
     )
     return LearnedDynamicEtaSelector(artifact=art)
 
@@ -147,9 +157,11 @@ def main() -> None:
         type=float,
         default=None,
         help="Restrict the experiment's w_grid to a single point (e.g. 0.5). "
-        "Required for learned-η cells trained at one specific prior — "
-        "the LearnedDynamicEtaSelector refuses cross-experiment use, so "
-        "the default w_grid sweep would error on every w!=trained_w.",
+        "Pre-Phase-G v3 learned cells required this (they were trained at "
+        "one specific prior). Phase G v4 conditional fixtures train over a "
+        "range of (σ₀, σ) and accept any w whose generating (σ₀, σ) "
+        "lie within that range, so the constraint is now optional — but "
+        "it remains a useful knob for narrow sweeps.",
     )
     args = parser.parse_args()
 

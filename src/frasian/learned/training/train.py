@@ -82,10 +82,14 @@ def fit_eta_artifact(
     weight_decay: float = 1e-4,
     lambda_max: float = 10.0,
     lambda_warmup_frac: float = 0.3,
+    anti_wald_max: float = 0.0,
+    anti_collapse_max: float = 0.0,
+    anti_decay_frac: float = 0.5,
     patience: int = 8,
     min_delta: float = 1e-4,
     eta_hidden_sizes: tuple[int, ...] = (128, 128, 128),
     validity_hidden_sizes: tuple[int, ...] = (128, 128, 128),
+    normalize_inputs: bool = True,
     device: str = "auto",
     version: str = "v0",
     antithetic: bool = False,
@@ -122,14 +126,54 @@ def fit_eta_artifact(
     prior_dim = config.prior_cls.hyperparam_dim
     lik_dim = config.model_cls.hyperparam_dim
 
+    # Optional input z-score normalization. Diagnostic finding: enabling
+    # it on wide-hp v4 actually makes the model collapse harder to
+    # constant-η. Default OFF; opt in via `normalize_inputs=True`.
+    if normalize_inputs:
+        # θ normalization uses the absolute integration grid bounds (which
+        # equals theta_distribution.support() for non-anchored, or the
+        # explicit theta_grid_lo/hi for anchored — see ExperimentConfig).
+        if config.theta_grid_lo is not None and config.theta_grid_hi is not None:
+            theta_lo, theta_hi = config.theta_grid_lo, config.theta_grid_hi
+        else:
+            theta_lo, theta_hi = config.theta_distribution.support()
+        theta_loc = 0.5 * (theta_lo + theta_hi)
+        theta_scale = (theta_hi - theta_lo) / float(np.sqrt(12.0))
+        prior_names = config.prior_cls.hyperparam_names()
+        lik_names = config.model_cls.hyperparam_names()
+        hp_locs, hp_scales, hp_logs = config.hyperparam_distribution.feature_stats(
+            prior_names, lik_names,
+        )
+        eta_lo, eta_hi = config.eta_explore_box
+        eta_loc = 0.5 * (eta_lo + eta_hi)
+        eta_scale = (eta_hi - eta_lo) / float(np.sqrt(12.0))
+
+        eta_feature_loc = (theta_loc, *hp_locs)
+        eta_feature_scale = (theta_scale, *hp_scales)
+        eta_feature_log = (False, *hp_logs)
+        val_feature_loc = (theta_loc, *hp_locs, eta_loc)
+        val_feature_scale = (theta_scale, *hp_scales, eta_scale)
+        val_feature_log = (False, *hp_logs, False)
+    else:
+        eta_feature_loc = eta_feature_scale = eta_feature_log = None
+        val_feature_loc = val_feature_scale = val_feature_log = None
+
     eta_init_key, val_init_key = jax.random.split(root_key)
     eta_net = EtaNet(
         theta_dim=theta_dim, prior_dim=prior_dim, lik_dim=lik_dim,
-        hidden_sizes=eta_hidden_sizes, key=eta_init_key,
+        hidden_sizes=eta_hidden_sizes,
+        feature_loc=eta_feature_loc,
+        feature_scale=eta_feature_scale,
+        feature_log=eta_feature_log,
+        key=eta_init_key,
     )
     val_net = ValidityNet(
         theta_dim=theta_dim, prior_dim=prior_dim, lik_dim=lik_dim,
-        hidden_sizes=validity_hidden_sizes, key=val_init_key,
+        hidden_sizes=validity_hidden_sizes,
+        feature_loc=val_feature_loc,
+        feature_scale=val_feature_scale,
+        feature_log=val_feature_log,
+        key=val_init_key,
     )
 
     optimizer_a = optax.adamw(learning_rate=lr_a, weight_decay=weight_decay)
@@ -152,6 +196,11 @@ def fit_eta_artifact(
     prior_hp_val_np, lik_hp_val_np = config.hyperparam_distribution.sample(
         n_val_pairs, rng_val_setup,
         prior_names=prior_names, lik_names=lik_names,
+    )
+    # Convert relative θ → absolute when theta_distribution is anchored.
+    from .sampling import anchor_theta_to_prior as _anchor
+    theta_val_np = _anchor(
+        theta_val_np, prior_hp_val_np, prior_names, config.theta_distribution,
     )
     D_val_np = config.model_cls.sample_data_batch_with_hp(
         theta_val_np, lik_hp_val_np, rng_val_setup, n_data=config.n_data,
@@ -232,6 +281,9 @@ def fit_eta_artifact(
         alpha=alpha,
         lambda_max=lambda_max,
         lambda_warmup_frac=lambda_warmup_frac,
+        anti_wald_max=anti_wald_max,
+        anti_collapse_max=anti_collapse_max,
+        anti_decay_frac=anti_decay_frac,
         patience=patience,
         min_delta=min_delta,
         device=device_resolved,
@@ -287,6 +339,9 @@ def fit_eta_artifact(
         final_head_b_accuracy=final_head_b_acc,
         final_eta_pred_valid_rate=final_eta_pred_valid_rate,
         antithetic=False,
+        anti_wald_max=anti_wald_max,
+        anti_collapse_max=anti_collapse_max,
+        anti_decay_frac=anti_decay_frac,
     )
     if verbose:
         print(

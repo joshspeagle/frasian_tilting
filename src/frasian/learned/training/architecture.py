@@ -161,6 +161,9 @@ class EtaNet(eqx.Module):
     prior_dim: int = eqx.field(static=True)
     lik_dim: int = eqx.field(static=True)
     hidden_sizes: tuple[int, ...] = eqx.field(static=True)
+    feature_loc: tuple[float, ...] = eqx.field(static=True)
+    feature_scale: tuple[float, ...] = eqx.field(static=True)
+    feature_log: tuple[bool, ...] = eqx.field(static=True)
 
     def __init__(
         self,
@@ -168,6 +171,9 @@ class EtaNet(eqx.Module):
         prior_dim: int,
         lik_dim: int,
         hidden_sizes: tuple[int, ...] = (128, 128, 128),
+        feature_loc: tuple[float, ...] | None = None,
+        feature_scale: tuple[float, ...] | None = None,
+        feature_log: tuple[bool, ...] | None = None,
         *,
         key: jax.Array,
     ):
@@ -183,6 +189,29 @@ class EtaNet(eqx.Module):
         self.hidden_sizes = tuple(hidden_sizes)
         in_features = self.theta_dim + self.prior_dim + self.lik_dim
         self.mlp = _build_mlp(in_features, self.hidden_sizes, 1, key)
+        # Normalization defaults: identity (loc=0, scale=1, no log) so any
+        # caller that omits them gets the pre-Phase-G-fix behavior.
+        if feature_loc is None:
+            feature_loc = (0.0,) * in_features
+        if feature_scale is None:
+            feature_scale = (1.0,) * in_features
+        if feature_log is None:
+            feature_log = (False,) * in_features
+        if len(feature_loc) != in_features:
+            raise ValueError(
+                f"feature_loc must have len {in_features}; got {len(feature_loc)}."
+            )
+        if len(feature_scale) != in_features:
+            raise ValueError(
+                f"feature_scale must have len {in_features}; got {len(feature_scale)}."
+            )
+        if len(feature_log) != in_features:
+            raise ValueError(
+                f"feature_log must have len {in_features}; got {len(feature_log)}."
+            )
+        self.feature_loc = tuple(float(v) for v in feature_loc)
+        self.feature_scale = tuple(float(v) for v in feature_scale)
+        self.feature_log = tuple(bool(v) for v in feature_log)
 
     def __call__(
         self,
@@ -228,6 +257,12 @@ class EtaNet(eqx.Module):
                 f"({N}, {self.lik_dim}); got {tuple(lik_hp.shape)}."
             )
         x = jnp.concatenate([theta_2d, prior_hp, lik_hp], axis=-1)
+        loc = jnp.asarray(self.feature_loc)
+        scale = jnp.asarray(self.feature_scale)
+        log_mask = jnp.asarray(self.feature_log)
+        x_log = jnp.log(jnp.maximum(x, 1e-12))
+        x = jnp.where(log_mask, x_log, x)
+        x = (x - loc) / scale
         out = jax.vmap(self.mlp)(x)
         return out[..., 0]
 
@@ -237,6 +272,9 @@ class EtaNet(eqx.Module):
             "prior_dim": self.prior_dim,
             "lik_dim": self.lik_dim,
             "hidden_sizes": self.hidden_sizes,
+            "feature_loc": list(self.feature_loc),
+            "feature_scale": list(self.feature_scale),
+            "feature_log": list(self.feature_log),
         }
 
 
@@ -254,6 +292,9 @@ class ValidityNet(eqx.Module):
     prior_dim: int = eqx.field(static=True)
     lik_dim: int = eqx.field(static=True)
     hidden_sizes: tuple[int, ...] = eqx.field(static=True)
+    feature_loc: tuple[float, ...] = eqx.field(static=True)
+    feature_scale: tuple[float, ...] = eqx.field(static=True)
+    feature_log: tuple[bool, ...] = eqx.field(static=True)
 
     def __init__(
         self,
@@ -261,6 +302,9 @@ class ValidityNet(eqx.Module):
         prior_dim: int,
         lik_dim: int,
         hidden_sizes: tuple[int, ...] = (128, 128, 128),
+        feature_loc: tuple[float, ...] | None = None,
+        feature_scale: tuple[float, ...] | None = None,
+        feature_log: tuple[bool, ...] | None = None,
         *,
         key: jax.Array,
     ):
@@ -276,6 +320,21 @@ class ValidityNet(eqx.Module):
         self.hidden_sizes = tuple(hidden_sizes)
         in_features = self.theta_dim + self.prior_dim + self.lik_dim + 1
         self.mlp = _build_mlp(in_features, self.hidden_sizes, 1, key)
+        if feature_loc is None:
+            feature_loc = (0.0,) * in_features
+        if feature_scale is None:
+            feature_scale = (1.0,) * in_features
+        if feature_log is None:
+            feature_log = (False,) * in_features
+        for nm, val in (("loc", feature_loc), ("scale", feature_scale), ("log", feature_log)):
+            if len(val) != in_features:
+                raise ValueError(
+                    f"feature_{nm} must have len {in_features} (theta+prior+lik+eta); "
+                    f"got {len(val)}."
+                )
+        self.feature_loc = tuple(float(v) for v in feature_loc)
+        self.feature_scale = tuple(float(v) for v in feature_scale)
+        self.feature_log = tuple(bool(v) for v in feature_log)
 
     def __call__(
         self,
@@ -315,6 +374,12 @@ class ValidityNet(eqx.Module):
             )
         eta_2d = eta[:, None]
         x = jnp.concatenate([theta_2d, prior_hp, lik_hp, eta_2d], axis=-1)
+        loc = jnp.asarray(self.feature_loc)
+        scale = jnp.asarray(self.feature_scale)
+        log_mask = jnp.asarray(self.feature_log)
+        x_log = jnp.log(jnp.maximum(x, 1e-12))
+        x = jnp.where(log_mask, x_log, x)
+        x = (x - loc) / scale
         out = jax.vmap(self.mlp)(x)
         return out[..., 0]
 
@@ -324,6 +389,9 @@ class ValidityNet(eqx.Module):
             "prior_dim": self.prior_dim,
             "lik_dim": self.lik_dim,
             "hidden_sizes": self.hidden_sizes,
+            "feature_loc": list(self.feature_loc),
+            "feature_scale": list(self.feature_scale),
+            "feature_log": list(self.feature_log),
         }
 
 

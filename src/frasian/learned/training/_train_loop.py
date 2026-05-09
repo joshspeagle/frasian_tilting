@@ -31,12 +31,14 @@ from ._losses_compose import (
     compose_boundary_penalty,
     compose_width_loss,
     compute_log_p_lik_grid_np,
+    decay_schedule,
     lambda_schedule,
     precompute_generic_grids,
 )
 from ._validity_data import collect_validity_batch
 from .architecture import EtaNet, ValidityNet
-from .sampling import ExperimentConfig
+from .losses import anti_wald_penalty, eta_collapse_penalty
+from .sampling import ExperimentConfig, anchor_theta_to_prior
 
 _FORCE_X64 = _x64
 
@@ -136,6 +138,10 @@ class LoopArgs:
     verbose: bool
     support_theta_grid_np: np.ndarray | None = None
     log_p_lik_val_t: jax.Array | None = None
+    # Phase G diagnostic regularizers (opt-in; default 0 = off)
+    anti_wald_max: float = 0.0
+    anti_collapse_max: float = 0.0
+    anti_decay_frac: float = 0.5
 
 
 def evaluate_head_b_accuracy(
@@ -260,6 +266,8 @@ def _make_step_fns(
         lik_hp_batch_t: jax.Array,
         lam: jax.Array,
         beta: jax.Array,
+        lam_anti_wald: jax.Array,
+        lam_anti_collapse: jax.Array,
         log_p_lik_grid_t: jax.Array | None = None,
     ) -> tuple[tuple[jax.Array, tuple[jax.Array, jax.Array]], EtaNet]:
         def loss_fn(en: EtaNet) -> tuple[jax.Array, tuple[jax.Array, jax.Array]]:
@@ -286,7 +294,15 @@ def _make_step_fns(
                 lik_hp_batch_t=lik_hp_batch_t,
                 eta_pred=eta_pred,
             )
-            return loss_width + lam * penalty, (loss_width, penalty)
+            penalty_aw = anti_wald_penalty(eta_pred)
+            penalty_ac = eta_collapse_penalty(eta_pred)
+            total = (
+                loss_width
+                + lam * penalty
+                + lam_anti_wald * penalty_aw
+                + lam_anti_collapse * penalty_ac
+            )
+            return total, (loss_width, penalty)
         return eqx.filter_value_and_grad(loss_fn, has_aux=True)(eta_net)
 
     return head_b_step, head_a_step
@@ -362,6 +378,8 @@ def _training_step(
     theta_batch_np: np.ndarray,
     beta: jax.Array,
     lam: jax.Array,
+    lam_anti_wald: jax.Array,
+    lam_anti_collapse: jax.Array,
     step_idx: int,
 ) -> tuple[float, float, float, float] | None:
     """Run one minibatch step (Phase G conditional)."""
@@ -372,6 +390,10 @@ def _training_step(
     prior_hp_batch_np, lik_hp_batch_np = config.hyperparam_distribution.sample(
         len(theta_batch_np), args.rng_train,
         prior_names=prior_names, lik_names=lik_names,
+    )
+    # Convert relative θ → absolute when theta_distribution is anchored.
+    theta_batch_np = anchor_theta_to_prior(
+        theta_batch_np, prior_hp_batch_np, prior_names, config.theta_distribution,
     )
 
     theta_batch_t = jnp.asarray(theta_batch_np)
@@ -441,6 +463,8 @@ def _training_step(
             lik_hp_for_loss_t,
             lam,
             beta,
+            lam_anti_wald,
+            lam_anti_collapse,
             log_p_lik_grid_t,
         )
     except (ValueError, RuntimeError, ArithmeticError) as e:
@@ -476,6 +500,8 @@ def _run_epoch_steps(
     steps_per_epoch: int,
     beta: jax.Array,
     lam: jax.Array,
+    lam_anti_wald: jax.Array,
+    lam_anti_collapse: jax.Array,
 ) -> _EpochAggregates:
     ep_perm = args.rng_train.permutation(n_train)
     agg = _EpochAggregates()
@@ -490,6 +516,8 @@ def _run_epoch_steps(
             theta_batch_np=args.theta_train[idx],
             beta=beta,
             lam=lam,
+            lam_anti_wald=lam_anti_wald,
+            lam_anti_collapse=lam_anti_collapse,
             step_idx=step,
         )
         if metrics is None:
@@ -582,6 +610,14 @@ def _epoch_iteration(
     out.epochs_run = epoch + 1
     lam_val = lambda_schedule(epoch, args.n_epochs, args.lambda_max, args.lambda_warmup_frac)
     lam = jnp.asarray(lam_val)
+    lam_aw_val = decay_schedule(
+        epoch, args.n_epochs, args.anti_wald_max, args.anti_decay_frac,
+    )
+    lam_ac_val = decay_schedule(
+        epoch, args.n_epochs, args.anti_collapse_max, args.anti_decay_frac,
+    )
+    lam_anti_wald = jnp.asarray(lam_aw_val)
+    lam_anti_collapse = jnp.asarray(lam_ac_val)
     if args.loss_kind == "static_width":
         beta_val = beta_schedule(epoch, args.n_epochs)
         beta = jnp.asarray(beta_val)
@@ -597,6 +633,8 @@ def _epoch_iteration(
         steps_per_epoch=steps_per_epoch,
         beta=beta,
         lam=lam,
+        lam_anti_wald=lam_anti_wald,
+        lam_anti_collapse=lam_anti_collapse,
     )
     denom = max(agg.steps_taken, 1)
     out.train_losses.append(agg.train_loss / denom)

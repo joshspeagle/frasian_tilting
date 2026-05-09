@@ -70,6 +70,26 @@ class ScalarDist:
     def in_range(self, x: float) -> bool:
         return float(self.low) <= float(x) <= float(self.high)
 
+    def feature_stats(self) -> tuple[float, float, bool]:
+        """Return `(loc, scale, log_flag)` for input z-score normalization.
+
+        For ``uniform``: linear-space mean and std of U(low, high) →
+        ``loc = (low+high)/2``, ``scale = (high-low)/sqrt(12)``, log=False.
+        For ``loguniform``: log-space mean and std of LogU(low, high) →
+        ``loc = (log low + log high)/2``, ``scale = (log high - log low)/sqrt(12)``,
+        log=True. The Phase G EtaNet/ValidityNet apply
+        ``x' = (log(x) if log else x - loc) / scale`` per feature.
+        """
+        if self.kind == "uniform":
+            loc = 0.5 * (self.low + self.high)
+            scale = (self.high - self.low) / float(np.sqrt(12.0))
+            return float(loc), float(scale), False
+        log_lo = float(np.log(self.low))
+        log_hi = float(np.log(self.high))
+        loc = 0.5 * (log_lo + log_hi)
+        scale = (log_hi - log_lo) / float(np.sqrt(12.0))
+        return float(loc), float(scale), True
+
 
 @dataclass(frozen=True)
 class ScalarOutOfRange:
@@ -123,6 +143,28 @@ class HyperparamDistribution:
         prior_supp = {n: (s.low, s.high) for n, s in self.prior_specs.items()}
         lik_supp = {n: (s.low, s.high) for n, s in self.lik_specs.items()}
         return prior_supp, lik_supp
+
+    def feature_stats(
+        self,
+        prior_names: tuple[str, ...],
+        lik_names: tuple[str, ...],
+    ) -> tuple[list[float], list[float], list[bool]]:
+        """Per-column ``(loc, scale, log_flag)`` for input normalization.
+
+        Concatenates ``prior_specs[name]`` for ``prior_names`` then
+        ``lik_specs[name]`` for ``lik_names``, in that order.
+        """
+        self._validate_names(prior_names, lik_names)
+        locs: list[float] = []
+        scales: list[float] = []
+        logs: list[bool] = []
+        for name in prior_names:
+            loc, scale, log_flag = self.prior_specs[name].feature_stats()
+            locs.append(loc); scales.append(scale); logs.append(log_flag)
+        for name in lik_names:
+            loc, scale, log_flag = self.lik_specs[name].feature_stats()
+            locs.append(loc); scales.append(scale); logs.append(log_flag)
+        return locs, scales, logs
 
     def in_range(
         self,

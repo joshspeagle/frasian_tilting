@@ -11,9 +11,20 @@ hyperparam_distribution:
   lik:
     sigma: { dist: loguniform, low: 0.5,  high: 2.0 }
 theta_distribution:
-  type: uniform
-  low: -5.0
-  high:  5.0
+  # σ-anchored: per batch element, θ ~ U(μ₀ − K·σ₀, μ₀ + K·σ₀).
+  # Concentrates training mass where the prior is informative.
+  # Replaces the previous Uniform[-10, 10] which caused the model
+  # to collapse to η ≈ 1 (Wald) — high-conflict samples (D far
+  # from any μ₀) dominated the gradient, drowning out the prior-
+  # near samples that would push η < 1. With K=5 the model recovers
+  # v3's beats-Wald headline (3.6 vs 3.92 at the demo slice) and
+  # exceeds it on the hp average (24/24 hp triples beat Wald).
+  type: sigma_anchored_uniform
+  K: 5.0
+# Absolute integration grid bounds (must cover μ₀ ± K·σ₀ across the
+# full hp range plus a buffer for integrated-p tails).
+theta_grid_lo: -30.0
+theta_grid_hi:  30.0
 scheme: power_law
 statistic: waldo
 n_grid: 401

@@ -64,10 +64,51 @@ def main() -> None:
         default=0.3,
         help="fraction of epochs to ramp λ from 0 to lambda_max",
     )
+    parser.add_argument(
+        "--anti-wald-max", type=float, default=0.0,
+        help=(
+            "Phase G diagnostic: max weight on the anti-Wald regularizer "
+            "(`relu(η_pred)²`) which punishes positive η. Decays linearly "
+            "to 0 over --anti-decay-frac of training. Default 0 = off."
+        ),
+    )
+    parser.add_argument(
+        "--anti-collapse-max", type=float, default=0.0,
+        help=(
+            "Phase G diagnostic: max weight on the anti-collapse "
+            "regularizer (`1 / (Var_B[η_pred] + ε)`) which rewards spread "
+            "across the batch. Decays linearly to 0 over --anti-decay-frac "
+            "of training. Default 0 = off."
+        ),
+    )
+    parser.add_argument(
+        "--anti-decay-frac", type=float, default=0.5,
+        help="Fraction of epochs to decay both anti-* regularizers from max → 0.",
+    )
+    parser.add_argument(
+        "--no-normalize-inputs", dest="normalize_inputs", action="store_false",
+        help=(
+            "Disable EtaNet/ValidityNet input z-score normalization. Default "
+            "is ON (per-channel z-score using stats from the training "
+            "distribution; loguniform features z-scored in log-space)."
+        ),
+    )
+    parser.set_defaults(normalize_inputs=True)
     parser.add_argument("--patience", type=int, default=8)
     parser.add_argument("--min-delta", type=float, default=1e-4)
-    parser.add_argument("--eta-hidden-sizes", type=int, nargs="+", default=[64, 64])
-    parser.add_argument("--validity-hidden-sizes", type=int, nargs="+", default=[64, 64])
+    parser.add_argument(
+        "--eta-hidden-sizes", type=int, nargs="+", default=[128, 128, 128],
+        help=(
+            "EtaNet hidden layer widths. Default [128, 128, 128] matches the "
+            "v4 architecture's intent — the v3 default [64, 64] is undersized "
+            "for the conditional 4-block input (θ, μ₀, σ₀, σ) and produces a "
+            "near-constant η_φ via mode collapse."
+        ),
+    )
+    parser.add_argument(
+        "--validity-hidden-sizes", type=int, nargs="+", default=[128, 128, 128],
+        help="ValidityNet hidden layer widths. Same v3 → v4 capacity rationale as --eta-hidden-sizes.",
+    )
     parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"])
     parser.add_argument("--version", default="v0")
     parser.add_argument(
@@ -121,6 +162,8 @@ def main() -> None:
             n_lhs=overrides.get("n_lhs", config.n_lhs),
             n_data=config.n_data,
             eta_explore_box=config.eta_explore_box,
+            theta_grid_lo=config.theta_grid_lo,
+            theta_grid_hi=config.theta_grid_hi,
             seed=config.seed,
             name=config.name,
             description=config.description,
@@ -138,6 +181,8 @@ def main() -> None:
             n_lhs=512,
             n_data=config.n_data,
             eta_explore_box=config.eta_explore_box,
+            theta_grid_lo=config.theta_grid_lo,
+            theta_grid_hi=config.theta_grid_hi,
             seed=config.seed,
             name=config.name,
             description=config.description,
@@ -157,6 +202,10 @@ def main() -> None:
         weight_decay=args.weight_decay,
         lambda_max=args.lambda_max,
         lambda_warmup_frac=args.lambda_warmup_frac,
+        anti_wald_max=args.anti_wald_max,
+        anti_collapse_max=args.anti_collapse_max,
+        anti_decay_frac=args.anti_decay_frac,
+        normalize_inputs=args.normalize_inputs,
         patience=args.patience,
         min_delta=args.min_delta,
         eta_hidden_sizes=tuple(args.eta_hidden_sizes),

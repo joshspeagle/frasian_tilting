@@ -54,6 +54,7 @@ class UniformThetaDistribution:
     high: float
 
     name: ClassVar[str] = "uniform"
+    is_anchored: ClassVar[bool] = False
 
     def __post_init__(self) -> None:
         if not (np.isfinite(self.low) and np.isfinite(self.high)):
@@ -74,12 +75,59 @@ class UniformThetaDistribution:
         return {"type": "uniform", "low": float(self.low), "high": float(self.high)}
 
 
+@dataclass(frozen=True)
+class SigmaAnchoredUniformThetaDistribution:
+    """Per-batch-element uniform: θ ~ U(μ₀ - K·σ₀, μ₀ + K·σ₀).
+
+    The training loop sees a *relative* sample u ~ U(-K, K) from
+    ``sample(n, rng)`` and reconstructs the actual θ per batch element
+    as ``θ_actual[i] = μ₀_i + σ₀_i · u[i]``. This concentrates training
+    samples where the prior is informative (within K standard
+    deviations of the prior center), which lets the conditional
+    EtaNet learn a meaningful V-shaped η(θ) — wide-θ (uniform on a
+    fixed range) puts most samples in the no-prior-coverage tail,
+    causing the model to collapse to η ≈ 1 (Wald) on average.
+
+    K=5 is the recommended default — covers ±5σ₀ of the prior, the
+    same range used for typical prior coverage tests.
+
+    The integrated-p loss's θ-grid stays in absolute units (sized to
+    cover the union of all per-element θ ranges).
+    """
+
+    K: float = 5.0
+
+    name: ClassVar[str] = "sigma_anchored_uniform"
+    is_anchored: ClassVar[bool] = True
+
+    def __post_init__(self) -> None:
+        if not (np.isfinite(self.K) and self.K > 0):
+            raise ValueError(f"K must be a positive finite float; got {self.K}")
+
+    def sample(self, n: int, rng: Generator) -> NDArray[np.float64]:
+        """Return relative samples u ~ U(-K, K). Anchoring to per-element
+        prior happens at use time in the training loop."""
+        return rng.uniform(low=-float(self.K), high=float(self.K), size=n).astype(np.float64)
+
+    def support(self) -> tuple[float, float]:
+        """Relative support of the sampler (units of σ₀ from μ₀)."""
+        return (-float(self.K), float(self.K))
+
+    def fingerprint(self) -> tuple[Any, ...]:
+        return ("sigma_anchored_uniform", float(self.K))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"type": "sigma_anchored_uniform", "K": float(self.K)}
+
+
 THETA_DISTRIBUTION_REGISTRY: dict[str, Any] = {
     "uniform": UniformThetaDistribution,
+    "sigma_anchored_uniform": SigmaAnchoredUniformThetaDistribution,
 }
 
 _THETA_DIST_ALLOWED_KWARGS: dict[str, frozenset[str]] = {
     "uniform": frozenset({"low", "high"}),
+    "sigma_anchored_uniform": frozenset({"K"}),
 }
 
 
@@ -97,6 +145,39 @@ def _filter_kwargs(
             f"(allowed: {sorted(allowed)})"
         )
     return {k: v for k, v in spec.items() if k in allowed}
+
+
+def anchor_theta_to_prior(
+    theta_relative_np: NDArray[np.float64],
+    prior_hp_batch_np: NDArray[np.float64],
+    prior_names: tuple[str, ...],
+    theta_distribution: ThetaDistribution,
+) -> NDArray[np.float64]:
+    """Convert relative θ samples to absolute given per-element prior_hp.
+
+    When ``theta_distribution.is_anchored`` is True (e.g.
+    ``SigmaAnchoredUniformThetaDistribution``), the sampler emits values
+    in σ₀-units (e.g. U(-K, K)). This helper converts each relative
+    sample to absolute θ via ``μ₀_i + σ₀_i · u_i``, using the per-element
+    prior hyperparams. Requires the prior class to have ``loc`` and
+    ``scale`` in its ``hyperparam_names()``.
+
+    For non-anchored distributions, returns ``theta_relative_np`` unchanged.
+    """
+    if not getattr(theta_distribution, "is_anchored", False):
+        return theta_relative_np
+    if "loc" not in prior_names or "scale" not in prior_names:
+        raise ValueError(
+            f"theta_distribution {theta_distribution.name!r} requires the "
+            f"prior class to expose 'loc' and 'scale' in hyperparam_names; "
+            f"got names={prior_names!r}. Anchored sampling is currently "
+            "supported only for location-scale priors (e.g. NormalDistribution)."
+        )
+    loc_idx = prior_names.index("loc")
+    scale_idx = prior_names.index("scale")
+    mu0 = prior_hp_batch_np[:, loc_idx]
+    sigma0 = prior_hp_batch_np[:, scale_idx]
+    return (mu0 + sigma0 * theta_relative_np).astype(np.float64)
 
 
 def _build_theta_distribution_from_dict(
@@ -206,6 +287,14 @@ class ExperimentConfig:
     description: str = ""
     n_data: int = 1
     eta_explore_box: tuple[float, float] = (-5.0, 5.0)
+    # Absolute θ-grid bounds for the integrated-p loss + dynamic CI scan.
+    # If both None, defaults to theta_distribution.support() (legacy
+    # behavior; works only for non-anchored ThetaDistributions).
+    # For anchored distributions (sigma_anchored_uniform), MUST be set
+    # to cover the union of per-element θ ranges
+    # (μ₀ ± K·σ₀ + buffer for integrated-p tails).
+    theta_grid_lo: float | None = None
+    theta_grid_hi: float | None = None
 
     def __post_init__(self) -> None:
         if self.scheme_name not in _registry.tiltings:
@@ -243,6 +332,20 @@ class ExperimentConfig:
                 f"theta_distribution.support() must be finite for the "
                 f"learned-η training loop; got ({sup_lo}, {sup_hi})."
             )
+        if getattr(self.theta_distribution, "is_anchored", False):
+            if self.theta_grid_lo is None or self.theta_grid_hi is None:
+                raise ValueError(
+                    f"theta_distribution {self.theta_distribution.name!r} is "
+                    "anchored to per-element prior; absolute theta_grid_lo "
+                    "and theta_grid_hi MUST be set in the YAML to define the "
+                    "absolute integration grid (cover μ₀ ± K·σ₀ + buffer)."
+                )
+        if self.theta_grid_lo is not None and self.theta_grid_hi is not None:
+            if self.theta_grid_hi <= self.theta_grid_lo:
+                raise ValueError(
+                    f"theta_grid_hi must exceed theta_grid_lo; got "
+                    f"({self.theta_grid_lo}, {self.theta_grid_hi})."
+                )
         scheme = _registry.tiltings[self.scheme_name]()
         statistic = _registry.statistics[self.statistic_name]()
         if hasattr(statistic, "accepts_tilting") and not statistic.accepts_tilting(scheme):
@@ -261,7 +364,15 @@ class ExperimentConfig:
 
     @cached_property
     def theta_grid(self) -> NDArray[np.float64]:
-        """Canonical grid for dynamic-pvalue evaluation + CI inversion."""
+        """Canonical absolute θ-grid for dynamic-pvalue / integrated-p loss.
+
+        Always returns absolute θ values (used by the loss integration and
+        the dynamic CI scan). For non-anchored ThetaDistributions defaults
+        to the distribution's support; for anchored ones uses the explicit
+        ``theta_grid_lo``/``theta_grid_hi`` set in the YAML.
+        """
+        if self.theta_grid_lo is not None and self.theta_grid_hi is not None:
+            return np.linspace(self.theta_grid_lo, self.theta_grid_hi, self.n_grid)
         lo, hi = self.theta_distribution.support()
         return np.linspace(lo, hi, self.n_grid)
 
@@ -281,6 +392,8 @@ class ExperimentConfig:
             "description": self.description,
             "n_data": self.n_data,
             "eta_explore_box": list(self.eta_explore_box),
+            "theta_grid_lo": self.theta_grid_lo,
+            "theta_grid_hi": self.theta_grid_hi,
         }
 
     def fingerprint(self) -> str:
@@ -328,6 +441,12 @@ class ExperimentConfig:
             description=str(d.get("description", "")),
             n_data=int(d.get("n_data", 1)),
             eta_explore_box=_parse_eta_explore_box(d.get("eta_explore_box")),
+            theta_grid_lo=(
+                float(d["theta_grid_lo"]) if d.get("theta_grid_lo") is not None else None
+            ),
+            theta_grid_hi=(
+                float(d["theta_grid_hi"]) if d.get("theta_grid_hi") is not None else None
+            ),
         )
 
     @classmethod
@@ -361,6 +480,8 @@ def lhs_1d(
 __all__ = [
     "ThetaDistribution",
     "UniformThetaDistribution",
+    "SigmaAnchoredUniformThetaDistribution",
+    "anchor_theta_to_prior",
     "ExperimentConfig",
     "lhs_1d",
     "THETA_DISTRIBUTION_REGISTRY",

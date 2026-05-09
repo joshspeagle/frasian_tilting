@@ -361,6 +361,34 @@ def lambda_schedule(
     return float(lambda_max) * epoch / warmup_epochs
 
 
+def decay_schedule(
+    epoch: int,
+    n_epochs: int,
+    lambda_max: float,
+    decay_frac: float,
+) -> float:
+    """Linear decay from ``lambda_max`` at epoch 0 to 0 at
+    ``decay_frac * n_epochs``.
+
+    Mirror of ``lambda_schedule`` but inverted in time. Used by the
+    Phase G anti-Wald / anti-collapse regularizers
+    (``losses.anti_wald_penalty``, ``losses.eta_collapse_penalty``)
+    to perturb the optimizer out of the η ≈ 1 (Wald) basin during
+    early training, then release the bias so the underlying width
+    loss owns final convergence. Set ``lambda_max=0`` to disable
+    entirely (the framework default — these regularizers are
+    opt-in diagnostics, not required components of the loss).
+    """
+    if lambda_max <= 0.0:
+        return 0.0
+    if decay_frac <= 0.0:
+        return 0.0
+    decay_epochs = max(1, int(round(decay_frac * n_epochs)))
+    if epoch >= decay_epochs:
+        return 0.0
+    return float(lambda_max) * (1.0 - epoch / decay_epochs)
+
+
 def beta_schedule(
     epoch: int,
     n_epochs: int,
