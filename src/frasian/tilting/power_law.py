@@ -541,6 +541,326 @@ def _generic_tilted_mc_reference_batch(
     return t_samples, n_collapsed
 
 
+def _compute_obs_moments_per_eta_vec(
+    *,
+    data: NDArray[np.float64],
+    model: object,
+    prior: Prior,
+    eta_arr: NDArray[np.float64],
+    support: tuple[float, float],
+    n_grid: int = _GENERIC_TILT_N_GRID,
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Vectorised observed-data tilted moments across an eta-array.
+
+    For each ``eta_arr[i]`` returns the observed tilted distribution's
+    `(mu_obs, var_obs)` evaluated against `data` (a single observation
+    set). Used by ``_generic_tilted_pvalue_vec`` so the dynamic-η fine
+    scan doesn't recompute observed-moments per-eta in a Python loop.
+
+    Implementation: builds a single θ-grid covering the observed
+    posterior; computes log_lik on the grid once (theta-independent of
+    `eta`); per-eta combines with `(1 - eta) · log_prior(theta_grid)`
+    via broadcasting, then per-row trapezoid normalisation +
+    moment integration. Single (n_eta, n_grid) numpy block.
+    """
+    posterior_obs = model.posterior(data, prior)
+    mu_post = float(np.asarray(posterior_obs.mean()))
+    var_post = float(np.asarray(posterior_obs.var()))
+    sigma_post = float(np.sqrt(max(var_post, 1e-300)))
+
+    support_lo, support_hi = float(support[0]), float(support[1])
+    half = 8.0 * sigma_post
+    lo = max(mu_post - half, support_lo)
+    hi = min(mu_post + half, support_hi)
+    if not np.isfinite(lo) or not np.isfinite(hi) or not (lo < hi):
+        # Fallback: if window is degenerate, return mu_post / 0 per eta.
+        n_eta = int(np.asarray(eta_arr).size)
+        return np.full(n_eta, mu_post), np.zeros(n_eta)
+    theta_grid = np.linspace(lo, hi, int(n_grid))
+
+    log_lik = np.asarray(
+        model.likelihood(data).loglik(theta_grid), dtype=np.float64
+    )  # (n_grid,)
+    log_prior = np.asarray(prior.logpdf(theta_grid), dtype=np.float64)  # (n_grid,)
+    eta_arr_np = np.asarray(eta_arr, dtype=np.float64)
+    # log_q[i, k] = log_lik[k] + (1 - eta_arr[i]) * log_prior[k]
+    log_q = log_lik[None, :] + (1.0 - eta_arr_np)[:, None] * log_prior[None, :]
+    log_q = np.where(np.isfinite(log_q), log_q, -1e300)
+    log_q_max = log_q.max(axis=-1, keepdims=True)
+    pdf_unnorm = np.exp(log_q - log_q_max)  # (n_eta, n_grid)
+    Z = np.trapezoid(pdf_unnorm, theta_grid, axis=-1)  # (n_eta,)
+    Z_safe = np.where(Z > 0, Z, 1.0)
+    pdf = pdf_unnorm / Z_safe[:, None]
+    mean_arr = np.trapezoid(theta_grid[None, :] * pdf, theta_grid, axis=-1)
+    m2_arr = np.trapezoid(theta_grid[None, :] ** 2 * pdf, theta_grid, axis=-1)
+    var_arr = np.maximum(m2_arr - mean_arr * mean_arr, 0.0)
+    # Where Z was bad, fall back to posterior moments at that eta — the
+    # tilted moments are ill-defined; downstream consumers use these to
+    # compute t_obs, where var≈0 will yield NaN/inf t_obs and the row's
+    # p-value gets the conservative "no extreme draws" upper bound.
+    finite = (Z > 0) & np.isfinite(Z)
+    mean_arr = np.where(finite, mean_arr, mu_post)
+    var_arr = np.where(finite, var_arr, 0.0)
+    return mean_arr, var_arr
+
+
+_VEC_PVALUE_CHUNK_MEM_BUDGET_MB: float = 50.0
+"""Target peak memory per `_generic_tilted_pvalue_vec` chunk.
+
+Used to set `chunk_size` adaptively based on `(n_mc, n_grid)`. The
+log_lik_3d allocation alone is `chunk × n_mc × n_grid × 8 bytes`;
+peak memory is roughly 4-5× that across temporaries (log_q,
+pdf_unnorm, pdf, mean_3d, m2_3d). Bumping the budget too high leads
+to allocator slowdowns on large tensors (observed ~10x wall-clock
+inflation when chunks exceeded ~250 MB during Phase F development).
+"""
+
+
+def _adaptive_chunk_size(n_mc: int, n_grid: int) -> int:
+    """Pick a chunk_size keeping the per-chunk log_lik allocation
+    around `_VEC_PVALUE_CHUNK_MEM_BUDGET_MB`."""
+    # Each log_lik element is float64 = 8 bytes; allow 4x overhead for
+    # the broadcast intermediates (log_q, pdf_unnorm, pdf, etc.).
+    bytes_per_chunk_row = int(n_mc) * int(n_grid) * 8 * 4
+    budget = int(_VEC_PVALUE_CHUNK_MEM_BUDGET_MB * 1024 * 1024)
+    chunk = max(budget // max(bytes_per_chunk_row, 1), 1)
+    return min(chunk, 256)  # cap at 256 to keep Python loop overhead bounded
+
+
+def _generic_tilted_pvalue_vec(
+    theta_arr: NDArray[np.float64],
+    data: NDArray[np.float64],
+    model: object,
+    prior: Prior,
+    eta_arr: NDArray[np.float64],
+    statistic_name: str,
+    *,
+    n_mc: int = _GENERIC_TILTED_PVALUE_N_MC,
+    n_grid: int = _GENERIC_TILTED_PVALUE_N_GRID_MC,
+    derived_seed: int | None = None,
+    alpha: float = 0.0,
+    base_seed: int = _GENERIC_TILTED_PVALUE_BASE_SEED,
+    chunk_size: int | None = None,
+) -> NDArray[np.float64]:
+    """Vectorised generic MC tilted p-value across (theta_arr, eta_arr).
+
+    Computes p-values for many (theta_i, eta_i) pairs in one call.
+    Used by the dynamic-η fine-scan path in
+    `dynamic_tilted_confidence_interval_generic` — replaces 401 scalar
+    calls (~88 ms each = 35 s) with one batched call (~100-200 ms total).
+
+    Triple-batched memory layout: `D_3d (chunk, n_mc, n_obs)`,
+    `log_lik_3d (chunk, n_mc, n_grid)` etc. Chunked along the theta
+    axis (default 64) so peak memory stays in single-call-friendly
+    territory (~26 MB for the log_lik tensor at the canonical sizes).
+
+    For ``statistic_name="wald"``: eta-independent; delegates to
+    scalar Wald per theta in a Python loop (Wald is fast enough that
+    vectorisation isn't needed). For ``statistic_name="waldo"``:
+    full triple-batched MC reference.
+
+    CRN: a fresh `np.random.default_rng(derived_seed + chunk_offset)`
+    per chunk so the MC stream is reproducible AND deterministic w.r.t.
+    chunking. Within a chunk, all (theta_i, mc_j) pairs draw from a
+    single big `rng.normal/binomial` call shifted by the per-theta
+    location parameter (NN/Bernoulli sampling vectorises naturally).
+    """
+    from ..models.base import (
+        batch_loglik_grid as _batch_loglik_grid,
+        posterior_moments_batch as _posterior_moments_batch,
+    )
+    from ..statistics.wald import WaldStatistic
+
+    theta_arr_np = np.asarray(theta_arr, dtype=np.float64)
+    eta_arr_np = np.asarray(eta_arr, dtype=np.float64)
+    if theta_arr_np.shape != eta_arr_np.shape:
+        raise ValueError(
+            f"theta_arr and eta_arr must have the same shape; got "
+            f"{theta_arr_np.shape!r} and {eta_arr_np.shape!r}."
+        )
+    n_theta = int(theta_arr_np.size)
+
+    if statistic_name == "wald":
+        # Wald is eta-independent; delegate per theta. The scalar generic
+        # Wald is already fast (chi²₁ inversion via a single jsp_stats call
+        # per theta; cf. WaldStatistic._generic_pvalue).
+        wald = WaldStatistic()
+        return np.asarray([
+            float(np.asarray(wald._generic_pvalue(float(t), data, model)))
+            for t in theta_arr_np
+        ], dtype=np.float64)
+
+    if statistic_name != "waldo":
+        raise NotImplementedError(
+            f"_generic_tilted_pvalue_vec not implemented for "
+            f"statistic={statistic_name!r}; supported: 'wald', 'waldo'."
+        )
+
+    data_arr = np.atleast_1d(np.asarray(data, dtype=np.float64))
+    if data_arr.ndim != 1:
+        raise NotImplementedError(
+            f"_generic_tilted_pvalue_vec expects 1-D data; got "
+            f"data.ndim={data_arr.ndim}."
+        )
+    n_obs = int(data_arr.size)
+    support = _resolve_support(model, data_arr)
+    support_lo, support_hi = float(support[0]), float(support[1])
+
+    if derived_seed is None:
+        derived_seed = _stable_tilted_pvalue_seed(
+            data_arr, model, prior, 0.0, alpha, base_seed
+        )
+
+    # Hoist observed tilted moments per eta — single batched grid integration
+    # across the eta-axis. Returns shape (n_theta,) for both mu_obs and var_obs.
+    mu_obs_per_theta, var_obs_per_theta = _compute_obs_moments_per_eta_vec(
+        data=data_arr,
+        model=model,
+        prior=prior,
+        eta_arr=eta_arr_np,
+        support=support,
+        n_grid=_GENERIC_TILT_N_GRID,
+    )
+    var_obs_safe = np.maximum(var_obs_per_theta, 1e-300)
+    diff_obs = mu_obs_per_theta - theta_arr_np
+    t_obs = diff_obs * diff_obs / var_obs_safe  # (n_theta,)
+
+    # Process in chunks along the theta axis to bound peak memory.
+    if chunk_size is None:
+        chunk_size = _adaptive_chunk_size(int(n_mc), int(n_grid))
+    p_out = np.empty(n_theta, dtype=np.float64)
+    for chunk_start in range(0, n_theta, int(chunk_size)):
+        chunk_end = min(chunk_start + int(chunk_size), n_theta)
+        chunk_n = chunk_end - chunk_start
+        theta_chunk = theta_arr_np[chunk_start:chunk_end]
+        eta_chunk = eta_arr_np[chunk_start:chunk_end]
+        t_obs_chunk = t_obs[chunk_start:chunk_end]
+
+        # Batched sampling: for each theta_i in the chunk, draw n_mc
+        # datasets of n_obs observations under H_0:theta_i. The chunk
+        # offset in the seed keeps each chunk's stream reproducible
+        # AND independent across chunks.
+        rng = np.random.default_rng(int(derived_seed) + chunk_start)
+        D_3d = _sample_data_batch_per_theta(
+            model, theta_chunk, rng, int(n_mc), int(n_obs)
+        )  # (chunk_n, n_mc, n_obs)
+
+        # Posterior moments per (chunk_i, mc_j). Reshape to 2D for
+        # `posterior_moments_batch`, then reshape back.
+        D_flat = D_3d.reshape(chunk_n * int(n_mc), int(n_obs))
+        mu_post_flat, var_post_flat = _posterior_moments_batch(model, D_flat, prior)
+        mu_post_3d = mu_post_flat.reshape(chunk_n, int(n_mc))
+        var_post_3d = var_post_flat.reshape(chunk_n, int(n_mc))
+
+        # Single conservative theta-window for the tilted-density grid,
+        # covering all (chunk_i, mc_j) posteriors. Computed from the
+        # union of (mu - 8 sigma_post, mu + 8 sigma_post) across rows.
+        sigma_post_3d = np.sqrt(np.maximum(var_post_3d, 1e-300))
+        finite_mu = np.isfinite(mu_post_3d) & np.isfinite(sigma_post_3d)
+        if not np.any(finite_mu):
+            p_out[chunk_start:chunk_end] = 1.0  # all collapsed → conservative
+            continue
+        half_chunk = 8.0 * sigma_post_3d
+        lo_chunk = max(
+            float(np.nanmin((mu_post_3d - half_chunk)[finite_mu])),
+            support_lo,
+        )
+        hi_chunk = min(
+            float(np.nanmax((mu_post_3d + half_chunk)[finite_mu])),
+            support_hi,
+        )
+        if not np.isfinite(lo_chunk) or not np.isfinite(hi_chunk) or not (lo_chunk < hi_chunk):
+            p_out[chunk_start:chunk_end] = 1.0
+            continue
+        theta_grid_chunk = np.linspace(lo_chunk, hi_chunk, int(n_grid))
+
+        # Batched log-likelihood evaluation across rows × grid.
+        log_lik_2d = _batch_loglik_grid(model, D_flat, theta_grid_chunk)  # (chunk_n*n_mc, n_grid)
+        log_lik_3d = log_lik_2d.reshape(chunk_n, int(n_mc), int(n_grid))
+        log_prior = np.asarray(prior.logpdf(theta_grid_chunk), dtype=np.float64)
+
+        # log_q[i, j, k] = log_lik_3d[i, j, k] + (1 - eta_chunk[i]) * log_prior[k]
+        log_q = log_lik_3d + (1.0 - eta_chunk[:, None, None]) * log_prior[None, None, :]
+        log_q = np.where(np.isfinite(log_q), log_q, -1e300)
+        log_q_max = log_q.max(axis=-1, keepdims=True)
+        pdf_unnorm = np.exp(log_q - log_q_max)
+        Z = np.trapezoid(pdf_unnorm, theta_grid_chunk, axis=-1)  # (chunk_n, n_mc)
+        Z_safe = np.where(Z > 0, Z, 1.0)
+        pdf = pdf_unnorm / Z_safe[..., None]
+        mean_3d = np.trapezoid(theta_grid_chunk[None, None, :] * pdf, theta_grid_chunk, axis=-1)
+        m2_3d = np.trapezoid(theta_grid_chunk[None, None, :] ** 2 * pdf, theta_grid_chunk, axis=-1)
+        var_tilted_3d = np.maximum(m2_3d - mean_3d * mean_3d, 0.0)
+
+        # Per-row collapse mask (bad normalisation OR zero variance).
+        finite_z = (Z > 0) & np.isfinite(Z)
+        finite_var = (var_tilted_3d > 0) & np.isfinite(var_tilted_3d)
+        finite_row = finite_z & finite_var
+
+        # t per (i, j): (mean_tilted[i, j] - theta_chunk[i])^2 / var_tilted[i, j]
+        diff_3d = mean_3d - theta_chunk[:, None]
+        with np.errstate(invalid="ignore", divide="ignore"):
+            t_3d = diff_3d * diff_3d / np.where(finite_row, var_tilted_3d, 1.0)
+        t_3d = np.where(finite_row, t_3d, 0.0)  # collapsed → t=0 per legacy
+
+        # Empirical p per theta_i with (k+1)/(n+1) smoothing.
+        more_extreme = t_3d >= t_obs_chunk[:, None]
+        n_more = float_(more_extreme.sum(axis=-1))
+        n_eff = finite_row.sum(axis=-1).astype(np.float64)
+        # Where n_eff == 0 (all rows collapsed), use conservative p=1.
+        with np.errstate(invalid="ignore", divide="ignore"):
+            p_chunk = np.where(
+                n_eff > 0,
+                (n_more + 1.0) / (n_eff + 1.0),
+                1.0,
+            )
+        p_out[chunk_start:chunk_end] = p_chunk
+    return p_out
+
+
+def _sample_data_batch_per_theta(
+    model: object,
+    theta_arr: NDArray[np.float64],
+    rng: np.random.Generator,
+    n_mc: int,
+    n_obs: int,
+) -> NDArray[np.float64]:
+    """Draw `n_mc × n_obs` observations under H_0:theta_arr[i] for each i.
+
+    Returns shape ``(n_theta, n_mc, n_obs)``. Vectorised for NN
+    (single rng.normal call shifted per theta) and Bernoulli (single
+    rng.binomial call with broadcast probability). Falls back to a
+    Python loop over theta for models without these properties.
+    """
+    from ..models.normal_normal import NormalNormalModel
+    from ..models.bernoulli import BernoulliModel
+
+    n_theta = int(theta_arr.size)
+    n_mc, n_obs = int(n_mc), int(n_obs)
+    if isinstance(model, NormalNormalModel):
+        # Single rng call returns N(0, sigma²) draws; shift per theta.
+        # ~50x faster than n_theta separate rng.normal calls.
+        z = rng.normal(loc=0.0, scale=model.sigma, size=(n_theta, n_mc, n_obs))
+        return z + theta_arr[:, None, None]
+    if isinstance(model, BernoulliModel):
+        # rng.binomial accepts an n-shape `p` argument that broadcasts.
+        # Broadcast theta to (n_theta, 1, 1) and rely on numpy's
+        # broadcasting to fill the (n_theta, n_mc, n_obs) tensor.
+        theta_b = np.broadcast_to(theta_arr[:, None, None], (n_theta, n_mc, n_obs))
+        return rng.binomial(1, theta_b).astype(np.float64)
+    # Generic fallback — Python loop. Slow but correct for any model.
+    out = np.empty((n_theta, n_mc, n_obs), dtype=np.float64)
+    from ..models.base import sample_data_batch as _sample_data_batch
+    for i, theta_f in enumerate(theta_arr):
+        out[i] = _sample_data_batch(model, float(theta_f), rng, n_mc, n_obs)
+    return out
+
+
+# Helper alias so the vectorised pvalue formula stays dense at the
+# call site; `np.float_` was deprecated in numpy 2.0 — use `.astype`.
+def float_(x: NDArray) -> NDArray[np.float64]:
+    return np.asarray(x, dtype=np.float64)
+
+
 def _generic_tilted_pvalue(
     theta: float,
     data: NDArray[np.float64],
@@ -1132,6 +1452,156 @@ class PowerLawTilting:
             prior=prior,
         )
 
+    def dynamic_tilted_confidence_interval_generic(
+        self,
+        alpha: float,
+        D: float,
+        data: NDArray[np.float64],
+        model: object,
+        prior: NormalDistribution,
+        statistic_name: str,
+        eta_selector,
+        n_grid: int = 401,
+        coarse_n: int = 25,
+        search_mult: float = 8.0,
+        n_mc: int = _GENERIC_TILTED_PVALUE_N_MC,
+    ) -> tuple[list[tuple[float, float]], float, int]:
+        """Dynamic-η CI inversion using the GENERIC (MC) tilted p-value.
+
+        Algorithm:
+          1. Coarse-grid η*(θ) selection via the supplied `eta_selector`
+             (NumericalEtaSelector internally — closed-form NN, fast).
+          2. Interpolate η*(θ) onto the fine θ-grid.
+          3. Vectorised generic-MC p-value across all (θ_i, η_i) pairs
+             via `_generic_tilted_pvalue_vec`. Single batched call.
+          4. **Linear interpolation at each α-crossing** — NOT brentq.
+             Fine grid spacing at canonical settings is `16σ/400 = 0.04σ`;
+             linear-interp accuracy is `O((0.04σ)² × p-curvature)` ≈
+             sub-mm in θ-space, well below MC noise on the p-value.
+             brentq would refine each crossing further but each
+             refinement is a fresh scalar `_generic_tilted_pvalue` call
+             (~100 ms at n_mc=2000) — for ~30 crossings that's ~3s
+             additional cost per CI with no measurable accuracy gain.
+
+        Cost: dominated by the vec fine-scan call. At n_mc=2000,
+        n_grid=401, n_grid_mc=256: ~1-2 s/CI. With n_jobs=8 parallelism,
+        ~30 min per coverage experiment.
+
+        Caveat: with low n_mc (~200), MC noise on the fine scan can
+        produce spurious sub-α regions near the true CI boundaries —
+        the WaldoStatistic.n_mc default is 2000, which is the safe
+        regime at α=0.05. Using `WaldoStatistic(n_mc=...)` lower trades
+        accuracy for speed.
+        """
+        from ..models.normal_normal import NormalNormalModel
+        from ._generic_pvalue import _stable_tilted_pvalue_seed
+        from .eta_selectors import _NamedStatistic
+
+        if not is_normal_normal(model):
+            raise NotImplementedError(
+                "dynamic_tilted_confidence_interval_generic currently requires "
+                "NormalNormalModel — the dynamic-η selector is NN-only by design "
+                "(NumericalEtaSelector inside is closed-form NN); generalising "
+                "to non-NN models requires a generic eta selector first."
+            )
+        sigma = float(model.sigma)
+        mu0 = float(prior.loc)
+        sigma0 = float(prior.scale)
+
+        # CRN seed: stable across processes. Per-CI; brentq isn't used
+        # here but the same seed is reused for any future scalar calls.
+        derived_seed = _stable_tilted_pvalue_seed(
+            np.atleast_1d(np.asarray(data, dtype=np.float64)),
+            model, prior, 0.0, alpha, _GENERIC_TILTED_PVALUE_BASE_SEED,
+        )
+
+        # 1. Search window — the same Normal-Normal `D ± k·σ` heuristic
+        #    used by `dynamic_ci_scan`. With auto-widen on boundary hit.
+        for widen in (1.0, 2.0):
+            search_half = float(widen * search_mult * sigma)
+            theta_lo = D - search_half
+            theta_hi = D + search_half
+            theta_grid = np.linspace(theta_lo, theta_hi, int(n_grid))
+
+            # 2. Coarse η selection — closed-form NN via NumericalEtaSelector.
+            coarse_theta_grid = np.linspace(theta_lo, theta_hi, int(coarse_n))
+            coarse_eta = eta_selector.select_grid(
+                coarse_theta_grid,
+                self,
+                model=model,
+                prior=prior,
+                alpha=alpha,
+                statistic=_NamedStatistic(statistic_name),
+            )
+            eta_at_theta = np.interp(theta_grid, coarse_theta_grid, coarse_eta)
+
+            # 3. Fine-scan p-values via the triple-batched MC vec fn.
+            data_arr = np.atleast_1d(np.asarray(data, dtype=np.float64))
+            p_theta = _generic_tilted_pvalue_vec(
+                theta_grid,
+                data_arr,
+                model,
+                prior,
+                eta_at_theta,
+                statistic_name,
+                n_mc=int(n_mc),
+                n_grid=_GENERIC_TILTED_PVALUE_N_GRID_MC,
+                derived_seed=derived_seed,
+                alpha=alpha,
+                base_seed=_GENERIC_TILTED_PVALUE_BASE_SEED,
+            )
+
+            # 4. Find α-crossings via linear interpolation; build regions.
+            diff = p_theta - alpha
+            sgn = np.where(diff >= 0.0, 1, -1).astype(np.int64)
+            crossings: list[float] = []
+            for i in range(theta_grid.size - 1):
+                if sgn[i] != sgn[i + 1]:
+                    denom = diff[i] - diff[i + 1]
+                    if denom == 0.0:
+                        crossings.append(float(0.5 * (theta_grid[i] + theta_grid[i + 1])))
+                    else:
+                        t = diff[i] / denom
+                        crossings.append(
+                            float(theta_grid[i] + t * (theta_grid[i + 1] - theta_grid[i]))
+                        )
+
+            # Pad with window edges when the boundary is inside the
+            # accept region — same logic as `dynamic_ci_scan`.
+            entries = list(crossings)
+            hit_boundary = False
+            if sgn[0] > 0:
+                entries = [float(theta_lo)] + entries
+                hit_boundary = True
+            if sgn[-1] > 0:
+                entries = entries + [float(theta_hi)]
+                hit_boundary = True
+
+            if not hit_boundary:
+                break  # search window large enough; done
+            if widen == 2.0:
+                # Boundary still hit at 2× search width — escalate.
+                from .._errors import BracketingFailed
+                raise BracketingFailed(
+                    f"dynamic_tilted_confidence_interval_generic: CI extends "
+                    f"past search box (±{search_half}·σ around D={D!r}; "
+                    f"sigma={sigma!r}). Increase search_mult."
+                )
+
+        if len(entries) % 2 != 0:
+            from .._errors import BracketingFailed
+            raise BracketingFailed(
+                f"dynamic_tilted_confidence_interval_generic produced "
+                f"odd-parity entries; got {entries!r}. Indicates a missed "
+                f"tangential α-touch on the grid. Try a finer theta-grid."
+            )
+
+        regions: list[tuple[float, float]] = [
+            (entries[i], entries[i + 1]) for i in range(0, len(entries), 2)
+        ]
+        total = float(sum(hi - lo for lo, hi in regions))
+        return regions, total, len(regions)
+
     # ----- Uniform CI / regions / pvalue interface (called by experiments) -----
 
     def _require_normal_sandbox(self, model: Model, prior: Prior) -> None:
@@ -1194,27 +1664,66 @@ class PowerLawTilting:
         runtime path; ``config`` plumbing closes that gap.
         """
         # Phase 3c: dispatch on (model, prior) — generic for non-Normal-Normal,
-        # closed-form for Normal-Normal. Dynamic selectors still require NN.
+        # closed-form for Normal-Normal. Dynamic selectors require NN
+        # for the eta-selector itself (NumericalEtaSelector is NN-only).
         # Path-coverage-debug override: a statistic carrying
         # `force_generic=True` collapses both branches onto the generic
         # MC path even on NN, so the "tilted CI = invert tilted p-value =
         # generic test-statistic computation" architecture is exercised
-        # uniformly. Dynamic + force_generic isn't supported (the dynamic
-        # scanner is NN-flavoured); raise rather than silently downgrade.
+        # uniformly.
+        #
+        # NEW (Phase F): dynamic + force_generic IS supported on NN via
+        # the triple-batched `_generic_tilted_pvalue_vec` (vectorises 401
+        # fine-scan p-values into one call). η selection stays closed-
+        # form (NumericalEtaSelector internal); only the CI inversion
+        # uses generic MC. ~3 s/CI vs the closed-form ~0.7 ms but
+        # tractable; gives an honest path-coverage check on the dynamic
+        # cell. For non-NN pairings the dynamic selector still raises.
         force_generic = bool(getattr(statistic, "force_generic", False))
         route_generic = force_generic or not self._is_normal_normal_pair(model, prior)
         if route_generic:
             if getattr(self.selector, "is_dynamic", False):
+                if force_generic and self._is_normal_normal_pair(model, prior):
+                    # Phase F: triple-batched generic dynamic on NN.
+                    if config is not None:
+                        n_grid = int(config.dynamic_n_grid)
+                        coarse_n = int(config.dynamic_coarse_n)
+                        search_mult = float(config.dynamic_search_mult)
+                    else:
+                        n_grid = int(getattr(self.selector, "n_grid", 401))
+                        coarse_n = int(getattr(self.selector, "coarse_n", 25))
+                        search_mult = float(getattr(self.selector, "search_mult", 8.0))
+                    # Honour `statistic.n_mc` (default _GENERIC_TILTED_PVALUE_N_MC=200).
+                    # Dynamic-η fine-scan p-values cross α many times when MC noise
+                    # is comparable to alpha; n_mc>=2000 is the safe regime at α=0.05.
+                    stat_n_mc = int(getattr(statistic, "n_mc", _GENERIC_TILTED_PVALUE_N_MC))
+                    D = _data_to_scalar_D(data)
+                    regions, _, _ = self.dynamic_tilted_confidence_interval_generic(
+                        alpha,
+                        D,
+                        np.atleast_1d(np.asarray(data, dtype=np.float64)),
+                        model,
+                        prior,
+                        statistic.name,
+                        self.selector,
+                        n_grid=n_grid,
+                        coarse_n=coarse_n,
+                        search_mult=search_mult,
+                        n_mc=stat_n_mc,
+                    )
+                    if not regions:
+                        raise RuntimeError(
+                            f"dynamic generic CI inversion produced no regions at D={D!r}"
+                        )
+                    return regions
                 if force_generic:
                     raise NotImplementedError(
                         "PowerLawTilting + dynamic-η selector + "
-                        "force_generic=True is not supported: the dynamic "
-                        "scanner is Normal-Normal-flavoured (windows D ± "
-                        "search_mult * sigma) and has no generic "
-                        "counterpart yet. Use a static selector "
-                        "(FixedEtaSelector / NumericalEtaSelector) with "
-                        "force_generic=True to exercise the generic "
-                        "tilted-CI path on NN."
+                        "force_generic=True currently only supported on "
+                        "NormalNormalModel + NormalDistribution prior. "
+                        "Generalising to non-NN models requires a generic "
+                        "eta-selector (NumericalEtaSelector inside is "
+                        "closed-form NN)."
                     )
                 raise NotImplementedError(
                     "PowerLawTilting dynamic-η selector currently requires "

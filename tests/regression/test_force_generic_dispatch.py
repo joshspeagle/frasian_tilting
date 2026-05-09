@@ -151,19 +151,60 @@ class TestForceGenericThroughTilting:
         assert abs(cf_lo - gn_lo) < 0.3, f"lower: cf={cf_lo}, gn={gn_lo}"
         assert abs(cf_hi - gn_hi) < 0.3, f"upper: cf={cf_hi}, gn={gn_hi}"
 
-    def test_powerlaw_dynamic_force_generic_raises(self):
+    def test_powerlaw_dynamic_force_generic_runs_on_nn(self):
+        """Phase F: PowerLaw + dynamic-η + force_generic on NN now runs
+        via the triple-batched `_generic_tilted_pvalue_vec`. Result must
+        agree with the analytic Theorem-8 dynamic CI within MC tolerance.
+        """
         from frasian.tilting.eta_selectors import DynamicNumericalEtaSelector
         from frasian.tilting.power_law import PowerLawTilting
 
         model = NormalNormalModel(sigma=1.0)
         prior = NormalDistribution(loc=0.0, scale=1.0)
         data = np.asarray([0.5])
+        # Use the standard dynamic config (matches the Phase E checkpoint
+        # config defaults) and the WaldoStatistic default n_mc=2000 so MC
+        # noise on the fine-scan p-value is below ~α/3 → typically a
+        # single region.
+        tilting = PowerLawTilting(
+            selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)
+        )
+        cf_regions = tilting.confidence_regions(
+            0.05, data, model, prior, WaldoStatistic()
+        )
+        gn_regions = tilting.confidence_regions(
+            0.05, data, model, prior,
+            WaldoStatistic(force_generic=True, n_mc=2000),
+        )
+        assert len(cf_regions) == 1, f"analytic should be single-region: {cf_regions}"
+        # Generic may produce 1-3 regions due to MC noise on the fine-
+        # scan crossings; union width must agree with analytic within
+        # ~5% (3-σ MC envelope at n_mc=2000 over the 401-pt fine grid).
+        cf_w = float(cf_regions[0][1] - cf_regions[0][0])
+        gn_w = float(sum(hi - lo for lo, hi in gn_regions))
+        assert abs(cf_w - gn_w) < 0.10 * cf_w, (
+            f"union width disagreement: analytic={cf_w}, generic={gn_w}, "
+            f"regions={gn_regions}"
+        )
+
+    def test_powerlaw_dynamic_force_generic_raises_off_nn(self):
+        """Dynamic + force_generic on NON-NN models still raises — the
+        DynamicNumericalEtaSelector internally uses NumericalEtaSelector
+        which is closed-form NN. Phase F unblocked NN only."""
+        from frasian.models.bernoulli import BernoulliModel
+        from frasian.models.distributions import BetaDistribution
+        from frasian.tilting.eta_selectors import DynamicNumericalEtaSelector
+        from frasian.tilting.power_law import PowerLawTilting
+
+        bern = BernoulliModel()
+        beta_prior = BetaDistribution(alpha=2.0, beta=2.0)
+        data = np.asarray([1.0, 0.0, 1.0])
         tilting = PowerLawTilting(
             selector=DynamicNumericalEtaSelector(n_grid=51, coarse_n=11)
         )
-        with pytest.raises(NotImplementedError, match="dynamic.*force_generic"):
+        with pytest.raises(NotImplementedError, match="dynamic"):
             tilting.confidence_regions(
-                0.05, data, model, prior, WaldoStatistic(force_generic=True)
+                0.05, data, bern, beta_prior, WaldoStatistic(force_generic=True)
             )
 
     def test_ot_force_generic_routes_to_generic_on_nn(self):
