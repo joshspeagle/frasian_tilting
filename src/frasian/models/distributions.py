@@ -208,3 +208,129 @@ class GaussianLikelihood:
     def loglik(self, theta: ArrayLike) -> jax.Array:
         z = (jnp.asarray(theta) - self.D) / self.sigma
         return -0.5 * z * z - 0.5 * jnp.log(2.0 * jnp.pi * self.sigma**2)
+
+
+@dataclass(frozen=True)
+class GaussianMixtureDistribution:
+    """Two-component Gaussian mixture conforming to the `Distribution` protocol.
+
+    Used by `MixtureTilting.tilt(...)` to wrap the linear-density
+    interpolation `(1-eta) * N(mu_n, sigma_n^2) + eta * N(D, sigma^2)`.
+    May be bimodal when components are far apart relative to their widths
+    (Behboodian 1970: bimodal iff `|mu_0 - mu_1| > 2 * min(sigma_0, sigma_1)`).
+
+    Closed-form `mean`, `var`, `pdf`, `logpdf`, `cdf`. Numerical
+    `quantile` via brentq on the (monotone) CDF. `sample` via
+    categorical pick + Gaussian draw.
+
+    The class is hard-wired to n=2 (the only shape used by the framework:
+    posterior + likelihood). Generic n-component mixtures are out of scope.
+    """
+
+    weights: tuple[float, float]
+    means: tuple[float, float]
+    scales: tuple[float, float]
+    n_components: ClassVar[int] = 2
+
+    def __post_init__(self) -> None:
+        if len(self.weights) != 2 or len(self.means) != 2 or len(self.scales) != 2:
+            raise ValueError(
+                f"GaussianMixtureDistribution: expected 2 components; "
+                f"got weights={self.weights!r}, means={self.means!r}, "
+                f"scales={self.scales!r}."
+            )
+        w0, w1 = float(self.weights[0]), float(self.weights[1])
+        if not (np.isfinite(w0) and np.isfinite(w1)):
+            raise ValueError(f"weights must be finite, got {self.weights!r}")
+        if w0 < 0.0 or w1 < 0.0:
+            raise ValueError(f"weights must be non-negative, got {self.weights!r}")
+        if not np.isclose(w0 + w1, 1.0, atol=1e-10):
+            raise ValueError(
+                f"weights must sum to 1, got {self.weights!r} (sum={w0+w1})"
+            )
+        for s in self.scales:
+            if not (np.isfinite(s) and float(s) > 0.0):
+                raise ValueError(
+                    f"scale must be positive and finite, got {self.scales!r}"
+                )
+        for m in self.means:
+            if not np.isfinite(m):
+                raise ValueError(f"mean must be finite, got {self.means!r}")
+
+    def pdf(self, x: ArrayLike) -> jax.Array:
+        x_arr = jnp.asarray(x, dtype=jnp.float64)
+        c0 = jsp_stats.norm.pdf(x_arr, loc=self.means[0], scale=self.scales[0])
+        c1 = jsp_stats.norm.pdf(x_arr, loc=self.means[1], scale=self.scales[1])
+        return self.weights[0] * c0 + self.weights[1] * c1
+
+    def logpdf(self, x: ArrayLike) -> jax.Array:
+        x_arr = jnp.asarray(x, dtype=jnp.float64)
+        log_c0 = jsp_stats.norm.logpdf(x_arr, loc=self.means[0], scale=self.scales[0])
+        log_c1 = jsp_stats.norm.logpdf(x_arr, loc=self.means[1], scale=self.scales[1])
+        log_w0 = jnp.log(jnp.asarray(self.weights[0]))
+        log_w1 = jnp.log(jnp.asarray(self.weights[1]))
+        a = log_w0 + log_c0
+        b = log_w1 + log_c1
+        m = jnp.maximum(a, b)
+        return m + jnp.log(jnp.exp(a - m) + jnp.exp(b - m))
+
+    def cdf(self, x: ArrayLike) -> jax.Array:
+        x_arr = jnp.asarray(x, dtype=jnp.float64)
+        c0 = jsp_stats.norm.cdf(x_arr, loc=self.means[0], scale=self.scales[0])
+        c1 = jsp_stats.norm.cdf(x_arr, loc=self.means[1], scale=self.scales[1])
+        return self.weights[0] * c0 + self.weights[1] * c1
+
+    def quantile(self, q: ArrayLike) -> jax.Array:
+        """Inverse CDF via brentq. The mixture CDF is strictly increasing
+        wherever both component pdfs are non-zero (i.e., everywhere on R
+        for Gaussian endpoints), so a unique inverse exists.
+        """
+        from scipy import optimize
+        q_arr = np.atleast_1d(np.asarray(q, dtype=np.float64))
+        out = np.empty_like(q_arr)
+        # Bracket: union of component +/-20 sigma ranges.
+        lo = float(min(self.means) - 20.0 * max(self.scales))
+        hi = float(max(self.means) + 20.0 * max(self.scales))
+        for i, qi in enumerate(q_arr):
+            qi_f = float(qi)
+            if qi_f <= 0.0:
+                out[i] = -np.inf
+                continue
+            if qi_f >= 1.0:
+                out[i] = np.inf
+                continue
+
+            def f(x: float, qi_f: float = qi_f) -> float:
+                return float(self.cdf(jnp.asarray(x))) - qi_f
+
+            out[i] = float(optimize.brentq(f, lo, hi, xtol=1e-12))
+        result = out if q_arr.size > 1 else np.asarray(float(out[0]))
+        return jnp.asarray(result)
+
+    def mean(self) -> float:
+        w0, w1 = float(self.weights[0]), float(self.weights[1])
+        m0, m1 = float(self.means[0]), float(self.means[1])
+        return w0 * m0 + w1 * m1
+
+    def var(self) -> float:
+        # Total variance: E[Var|Z] + Var[E[X|Z]]
+        # = sum_k w_k sigma_k^2 + sum_k w_k (mu_k - E[X])^2
+        w = (float(self.weights[0]), float(self.weights[1]))
+        m = (float(self.means[0]), float(self.means[1]))
+        s = (float(self.scales[0]), float(self.scales[1]))
+        mean_total = w[0] * m[0] + w[1] * m[1]
+        within = w[0] * s[0] ** 2 + w[1] * s[1] ** 2
+        between = w[0] * (m[0] - mean_total) ** 2 + w[1] * (m[1] - mean_total) ** 2
+        return within + between
+
+    def sample(self, rng: Generator, n: int) -> NDArray[np.float64]:
+        comp = rng.choice(
+            2, size=int(n),
+            p=[float(self.weights[0]), float(self.weights[1])],
+        )
+        x = np.where(
+            comp == 0,
+            rng.normal(loc=float(self.means[0]), scale=float(self.scales[0]), size=int(n)),
+            rng.normal(loc=float(self.means[1]), scale=float(self.scales[1]), size=int(n)),
+        )
+        return x.astype(np.float64)
