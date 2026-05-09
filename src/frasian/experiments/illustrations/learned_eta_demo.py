@@ -1,4 +1,4 @@
-"""Illustration: Phase E learned-η selector — η(θ) curve + boundary heatmap.
+"""Illustration: Phase G learned-η selector — η(θ) curve + boundary heatmap.
 
 Two panels:
   Panel A — η_pred(θ) vs the legacy NumericalEtaSelector. Shows the
@@ -10,9 +10,11 @@ Two panels:
             *learned* admissible boundary that the boundary penalty
             pushes EtaNet inside.
 
-Requires a Phase E checkpoint (format v2) with ValidityNet state.
-Trains a smoke checkpoint on the fly when none is available so the
-demo is runnable without prior setup.
+Requires a Phase G v4 checkpoint (conditional architecture). The
+demo evaluates at a fixed canonical (μ₀=0, σ₀=1, σ=1) which sits
+inside the trained hyperparam range; pass --mu0/--sigma0/--sigma to
+explore other in-range slices. Trains a fixture on the fly when none
+is available.
 """
 
 from __future__ import annotations
@@ -36,39 +38,37 @@ from frasian.tilting.eta_selectors import (
 from frasian.tilting.power_law import PowerLawTilting
 
 
-def _ensure_phase_e_checkpoint(smoke: bool) -> Path:
-    """Locate or train a Phase E checkpoint (format v2)."""
-    # Anchor at project root so paths don't depend on CWD.
+_V4_CONFIG_NAME = "canonical_normal_normal_powerlaw_v4"
+
+
+def _ensure_v4_checkpoint(smoke: bool) -> Path:
+    """Locate or train the canonical NN+power_law v4 checkpoint."""
     project_root = Path(__file__).resolve().parents[4]
-    candidates = [
-        project_root / "artifacts" / "learned_eta_canonical_normal_normal_powerlaw_v0_smoke.eqx",
-        project_root / "artifacts" / "learned_eta_canonical_normal_normal_powerlaw_v1.eqx",
-    ]
-    for c in candidates:
-        if c.exists():
-            return c
-    print("[learned_eta_demo] no Phase E checkpoint found; training one...")
+    out = project_root / "artifacts" / f"learned_eta_{_V4_CONFIG_NAME}.eqx"
+    if out.exists():
+        return out
+    print("[learned_eta_demo] no v4 checkpoint found; training one...")
     from frasian._registry_bootstrap import bootstrap
 
     bootstrap()
     from frasian.learned.training.sampling import ExperimentConfig
     from frasian.learned.training.train import fit_eta_artifact
 
-    cfg_path = project_root / "experiments" / "canonical_normal_normal_powerlaw.yaml"
+    cfg_path = project_root / "experiments" / f"{_V4_CONFIG_NAME}.yaml"
     cfg = ExperimentConfig.from_yaml(cfg_path)
     if smoke:
         cfg = ExperimentConfig(
             scheme_name=cfg.scheme_name,
             statistic_name=cfg.statistic_name,
-            prior=cfg.prior,
-            model=cfg.model,
+            prior_cls=cfg.prior_cls,
+            model_cls=cfg.model_cls,
+            hyperparam_distribution=cfg.hyperparam_distribution,
             theta_distribution=cfg.theta_distribution,
             n_grid=51,
             n_lhs=512,
-            eta_explore_box=cfg.eta_explore_box,
+            n_data=cfg.n_data,
             seed=cfg.seed,
         )
-    out = project_root / "artifacts" / "learned_eta_canonical_normal_normal_powerlaw_v0_smoke.eqx"
     fit_eta_artifact(
         config=cfg,
         out_path=out,
@@ -83,9 +83,15 @@ def _ensure_phase_e_checkpoint(smoke: bool) -> Path:
     return out
 
 
-def main(smoke: bool = False, out: Path | None = None) -> Path:
+def main(
+    smoke: bool = False,
+    out: Path | None = None,
+    mu0: float = 0.0,
+    sigma0: float = 1.0,
+    sigma: float = 1.0,
+) -> Path:
     alpha = 0.05
-    ckpt_path = _ensure_phase_e_checkpoint(smoke=smoke)
+    ckpt_path = _ensure_v4_checkpoint(smoke=smoke)
 
     from frasian.learned.eta_artifact import EtaArtifact
 
@@ -95,19 +101,16 @@ def main(smoke: bool = False, out: Path | None = None) -> Path:
     )
     artifact.load()
 
-    # Read the trained experiment from the checkpoint config so the
-    # demo works for any (μ₀, σ) the user trained at, not just (0, 1).
     cfg = artifact.metadata["experiment_config"]
-    theta_lo, theta_hi = float(cfg["theta_distribution_fingerprint"][1]), float(
-        cfg["theta_distribution_fingerprint"][2]
-    )
-    mu0 = float(cfg["prior_fingerprint"][1])
-    sigma0 = float(cfg["prior_fingerprint"][2])
-    sigma = float(cfg["model_fingerprint"][1])
-    w_trained = sigma0**2 / (sigma**2 + sigma0**2)
+    theta_lo = float(cfg["theta_distribution_fingerprint"][1])
+    theta_hi = float(cfg["theta_distribution_fingerprint"][2])
+    w_eval = sigma0**2 / (sigma**2 + sigma0**2)
 
-    # Built for parity with legacy_selector below; the demo plots predict_eta
-    # directly so the selector itself is unused (kept to document the wiring).
+    demo_model = NormalNormalModel(sigma=sigma)
+    demo_prior = NormalDistribution(loc=mu0, scale=sigma0)
+    prior_hp = demo_prior.hyperparams()
+    lik_hp = demo_model.hyperparams()
+
     _learned_selector = LearnedDynamicEtaSelector(artifact=artifact)
     legacy_selector = DynamicNumericalEtaSelector()
     scheme = PowerLawTilting()
@@ -117,10 +120,8 @@ def main(smoke: bool = False, out: Path | None = None) -> Path:
 
     fig, (ax_eta, ax_boundary) = plt.subplots(1, 2, figsize=(12.0, 4.5))
 
-    # Panel A — η(θ) curves.
-    eta_learned = artifact.predict_eta(theta_grid)
-    demo_model = NormalNormalModel(sigma=sigma)
-    demo_prior = NormalDistribution(loc=mu0, scale=sigma0)
+    # Panel A — η(θ) curves at the demo (mu0, sigma0, sigma) slice.
+    eta_learned = artifact.predict_eta(theta_grid, prior_hp, lik_hp)
     eta_legacy = legacy_selector.select_grid(
         theta_grid,
         scheme,
@@ -130,7 +131,8 @@ def main(smoke: bool = False, out: Path | None = None) -> Path:
         alpha=alpha,
     )
     ax_eta.plot(
-        theta_grid, eta_learned, color="C0", lw=2.0, label=f"EtaNet (Phase E, w={w_trained:.2f})"
+        theta_grid, eta_learned, color="C0", lw=2.0,
+        label=f"EtaNet v4 (μ₀={mu0}, σ₀={sigma0}, σ={sigma}, w={w_eval:.2f})",
     )
     ax_eta.plot(
         theta_grid,
@@ -139,16 +141,15 @@ def main(smoke: bool = False, out: Path | None = None) -> Path:
         lw=1.5,
         linestyle="--",
         alpha=0.8,
-        label=f"NumericalEtaSelector (legacy, w={w_trained:.2f})",
+        label=f"NumericalEtaSelector (legacy, w={w_eval:.2f})",
     )
-    # Show the admissible boundary.
-    eta_min = (2 * w_trained - 1) / w_trained if w_trained > 0 else float("-inf")
-    eta_max = 1.0 / max(1.0 - w_trained, 1e-9)
+    eta_min = (2 * w_eval - 1) / w_eval if w_eval > 0 else float("-inf")
+    eta_max = 1.0 / max(1.0 - w_eval, 1e-9)
     ax_eta.axhline(eta_min, color="grey", lw=0.6, alpha=0.5, label=f"η_min = {eta_min:.2f}")
     ax_eta.axhline(eta_max, color="grey", lw=0.6, alpha=0.5, label=f"η_max = {eta_max:.2f}")
     ax_eta.set_xlabel("θ")
     ax_eta.set_ylabel("η(θ)")
-    ax_eta.set_title("Panel A — η(θ) (Phase E EtaNet vs legacy)")
+    ax_eta.set_title("Panel A — η(θ) (Phase G EtaNet vs legacy)")
     ax_eta.legend(loc="best", fontsize=8)
 
     # Panel B — ValidityNet boundary heatmap with EtaNet's η_pred curve.
@@ -157,7 +158,7 @@ def main(smoke: bool = False, out: Path | None = None) -> Path:
     eta_max_plot = min(eta_max + 0.5, 3.0) if np.isfinite(eta_max) else 3.0
     eta_axis = np.linspace(eta_min_plot, eta_max_plot, n_eta)
     Theta, Eta = np.meshgrid(theta_grid, eta_axis, indexing="xy")
-    p_valid = artifact.predict_validity(Theta, Eta)
+    p_valid = artifact.predict_validity(Theta, Eta, prior_hp, lik_hp)
     im = ax_boundary.imshow(
         p_valid,
         origin="lower",
@@ -168,7 +169,6 @@ def main(smoke: bool = False, out: Path | None = None) -> Path:
         vmax=1.0,
     )
     fig.colorbar(im, ax=ax_boundary, label="ValidityNet P(valid | θ, η)")
-    # Overlay η_pred and the analytical admissible boundary.
     ax_boundary.plot(theta_grid, eta_learned, color="black", lw=2.0, label="η_pred (EtaNet)")
     if np.isfinite(eta_min):
         ax_boundary.axhline(eta_min, color="black", lw=0.8, ls=":", label="analytical boundary")
@@ -191,6 +191,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--out", type=Path, default=None)
+    parser.add_argument("--mu0", type=float, default=0.0)
+    parser.add_argument("--sigma0", type=float, default=1.0)
+    parser.add_argument("--sigma", type=float, default=1.0)
     args = parser.parse_args()
     try:
         import jax  # noqa: F401
@@ -198,5 +201,8 @@ if __name__ == "__main__":
     except ImportError:
         print("learned_eta_demo: jax/equinox not available; skipping.")
         raise SystemExit(0) from None
-    path = main(smoke=args.smoke, out=args.out)
+    path = main(
+        smoke=args.smoke, out=args.out,
+        mu0=args.mu0, sigma0=args.sigma0, sigma=args.sigma,
+    )
     print(f"wrote {path}")

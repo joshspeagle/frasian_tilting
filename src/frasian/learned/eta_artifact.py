@@ -57,7 +57,7 @@ class EtaArtifact:
         - ``_metadata``: full checkpoint metadata dict
     """
 
-    artifact_path: Path = Path("artifacts/learned_eta_v0_smoke.eqx")
+    artifact_path: Path = Path("artifacts/learned_eta_v4.eqx")
     name: str = "learned_eta"
     version: str = "v0"
     device: str = "auto"

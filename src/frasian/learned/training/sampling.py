@@ -170,6 +170,18 @@ def _model_class_name(model_cls: type) -> str:
     raise ValueError(f"Unknown model_class {model_cls!r}")
 
 
+def _parse_eta_explore_box(raw: Any | None) -> tuple[float, float]:
+    """Coerce a YAML/dict eta_explore_box entry to a (lo, hi) tuple."""
+    if raw is None:
+        return (-5.0, 5.0)
+    if not (isinstance(raw, (list, tuple)) and len(raw) == 2):
+        raise ValueError(
+            f"eta_explore_box must be a 2-element list/tuple [lo, hi]; "
+            f"got {raw!r}."
+        )
+    return (float(raw[0]), float(raw[1]))
+
+
 @dataclass(frozen=True)
 class ExperimentConfig:
     """Self-describing experiment for the conditional learned-η training loop (v4).
@@ -193,6 +205,7 @@ class ExperimentConfig:
     name: str = ""
     description: str = ""
     n_data: int = 1
+    eta_explore_box: tuple[float, float] = (-5.0, 5.0)
 
     def __post_init__(self) -> None:
         if self.scheme_name not in _registry.tiltings:
@@ -217,6 +230,12 @@ class ExperimentConfig:
             raise ValueError(
                 f"n_data must be >= 1 (number of likelihood draws per θ "
                 f"in the MC width loss); got {self.n_data}."
+            )
+        eta_lo, eta_hi = self.eta_explore_box
+        if not (eta_lo < eta_hi):
+            raise ValueError(
+                f"eta_explore_box must satisfy lo < hi; got "
+                f"({eta_lo}, {eta_hi})."
             )
         sup_lo, sup_hi = self.theta_distribution.support()
         if not (np.isfinite(sup_lo) and np.isfinite(sup_hi)):
@@ -261,6 +280,7 @@ class ExperimentConfig:
             "name": self.name,
             "description": self.description,
             "n_data": self.n_data,
+            "eta_explore_box": list(self.eta_explore_box),
         }
 
     def fingerprint(self) -> str:
@@ -307,6 +327,7 @@ class ExperimentConfig:
             name=str(d.get("name", "")),
             description=str(d.get("description", "")),
             n_data=int(d.get("n_data", 1)),
+            eta_explore_box=_parse_eta_explore_box(d.get("eta_explore_box")),
         )
 
     @classmethod

@@ -110,6 +110,14 @@ results/
 # local so the git tree stays scoped to source/tests/docs/methods only.
 docs/superpowers/
 
+# Phase G v4 learned-η fixtures: gitignored because conditional
+# checkpoints are larger and trivially re-trainable from the YAMLs
+# in `experiments/canonical_*_v4.yaml`. Train via:
+#     python -m scripts.train_learned_eta \
+#         --config experiments/canonical_<scheme>_v4.yaml \
+#         --out artifacts/learned_eta_canonical_<scheme>_v4.eqx
+artifacts/learned_eta_*_v4.eqx
+
 # Temporary files
 *.tmp
 *.temp

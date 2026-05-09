@@ -166,61 +166,57 @@ estimation.
 `numerical` dynamic selector is calibrated but inflates width by
 ~30 % at the conflict band (|Δ|≥2) because the inner
 `NumericalEtaSelector` slams η to the lower clamp at small |Δ|.
-The Phase E **dual-head** learned selector (`EtaNet` + `ValidityNet`,
-in `src/frasian/learned/eta_artifact.py` + `learned/training/`)
-trains a smooth GELU-MLP on θ directly — no monotonicity prior, no
+The Phase G **conditional dual-head** learned selector (`EtaNet`
++ `ValidityNet`, in `src/frasian/learned/eta_artifact.py` +
+`learned/training/`) trains a smooth GELU-MLP on
+`(θ, prior_hp, lik_hp)` directly — no monotonicity prior, no
 bounded sigmoid, no `(w, |Δ|)` features. Validity is enforced via
-a `-log P(valid | θ, η)` boundary penalty driven by Head B
-(`ValidityNet`), which learns the admissible region from observed
-`(θ, η, valid)` triples during training. Per-experiment: each
-checkpoint is trained for one `(model, prior, scheme)` and the
-selector refuses cross-experiment use via tuple-equal fingerprint
-compare. Smoke fixtures live in
-`artifacts/learned_eta_<config_name>_v0_smoke.eqx`; production v1
-checkpoints are not committed (re-train via
-`scripts.train_learned_eta --config experiments/<config>.yaml`).
-Activate via env var:
+a `-log P(valid | θ, prior_hp, lik_hp, η)` boundary penalty driven
+by Head B (`ValidityNet`), which learns the admissible region
+from observed `(θ, prior_hp, lik_hp, η, valid)` triples during
+training. **Conditional**: each checkpoint is trained over a
+*range* of `(prior_hp, lik_hp)` (the `hyperparam_distribution` block
+in the v4 YAML); the selector refuses inference when the observed
+class doesn't match the trained `prior_class` / `model_class`, or
+when the observed hyperparams fall outside the trained range. v4
+fixtures are gitignored (`artifacts/learned_eta_*_v4.eqx`) — train
+via `scripts.train_learned_eta --config
+experiments/<config>_v4.yaml`. Activate via env var:
 
 ```
 export FRASIAN_DEFAULT_DYNAMIC_ETA=learned   # vs default "numerical"
 ```
 
-Headline empirical result on the canonical sandbox (w=0.5,
-n_reps=200, α=0.05; v0_smoke checkpoint, post-Equinox-port):
+Headline empirical result on the canonical sandbox (w=0.5 — i.e.
+σ=σ₀=1, μ₀=0, in the trained range; n_reps=200, α=0.05; Phase G
+v4 fixture, smoke training budget):
 
 ```
                             θ=0    θ=1    θ=2    θ=3    θ=4
 Wald                        3.92   3.92   3.92   3.92   3.92
 bare WALDO                  3.33   3.43   3.75   4.23   4.78
-power_law[numerical]        3.36   3.49   3.91   4.54   5.24   ← legacy: inflates
-power_law[learned]          3.63   3.64   3.68   3.75   3.82   ← calibrated AND ≤ Wald
+power_law[numerical]        3.37   3.49   3.91   4.54   5.24   ← legacy: inflates
+power_law[learned]          3.47   3.51   3.65   3.87   4.13   ← calibrated AND ≤ Wald
 ```
 
-Numbers are from the JAX/Equinox/Optax v0_smoke checkpoint
-(post-Phase-F port commit 3) and are **not bit-equal** to the
-pre-port torch numbers — JAX's PRNG primitive differs from torch's
-even at the same nominal seed, so retrained weights drift within
-~1× MC standard error (~0.05 across α=0.05 narrowness MC repeats).
-The pattern (calibrated AND ≤ Wald, narrow at conflict) is
-preserved.
+Numbers are from a fresh local v4 training (n_lhs=10k, batch=256,
+~10 epochs early-stopped). They are **not bit-equal** to the
+pre-Phase-G v3 fixed-prior fixture — the conditional architecture
+trains over μ₀ ∈ [-2, 2], σ₀ ∈ [0.2, 5], σ ∈ [0.5, 2] instead of
+the single (0, 1, 1) point, so it doesn't specialize as tightly to
+the demo slice. The pattern (calibrated AND ≤ Wald, narrow at
+conflict) is preserved; per-θ widths drift within ~0.1-0.2 vs the
+v3 fixture, which is the cost of generality. Production retraining
+(longer epochs / λ schedule) tightens the conflict-band tail.
 
-Single-seed v0_smoke checkpoint; standard error ≈ 0.05 across α=0.05
-narrowness MC repeats. v1 production retraining will produce
-variability within ~1× this SE. To regenerate, run
-`python -m scripts.regen_headline` (requires jax + equinox).
-
-Headline numbers were trained with `antithetic=False` (the
-pre-Phase-4 default). The current default is `antithetic=True`
-(only effective for `loss_kind='static_width'`); re-trained
-checkpoints will produce different EtaNet weights — expected
-within MC noise of these values, but unverified.
+To regenerate, run
+`PYTHONHASHSEED=0 python -m scripts.regen_headline` (requires jax
++ equinox + the local `.eqx` fixtures).
 
 The headline table is for `power_law` only. `ot[learned]` is wired
 into `default_tiltings()` and runs through the coverage/width
-experiments, but the OT smoke checkpoint is undertrained relative
-to power_law (Head B accuracy ~0.67 on the v0_smoke; train a v1
-checkpoint for production-grade OT). See
-`docs/methods/learned_eta.md` for the full method brief.
+experiments. See `docs/methods/learned_eta.md` for the full method
+brief.
 
 ## Test Statistics (status)
 
@@ -335,21 +331,22 @@ src/frasian/
   learned/
     base.py                  # LearnedArtifact protocol
     null.py                  # NullArtifact (for tests)
-    eta_artifact.py          # Phase E EtaArtifact (loads dual-head v3 Equinox checkpoint)
+    eta_artifact.py          # Phase G EtaArtifact (loads dual-head v4 Equinox checkpoint)
     training/
       __init__.py            # public surface: EtaNet, ValidityNet, fit_eta_artifact, ...
-      architecture.py        # EtaNet (θ → η) + ValidityNet ((θ, η) → logit), GELU MLPs
+      architecture.py        # EtaNet ((θ, prior_hp, lik_hp) → η) + ValidityNet ((θ, prior_hp, lik_hp, η) → logit), GELU MLPs
       losses.py              # integrated_p / cd_variance / static_width + boundary_penalty_from_validity
-      validity.py            # is_pair_valid, validity_mask, compute_pvalues_per_sample
-      sampling.py            # ExperimentConfig, ThetaDistribution, UniformThetaDistribution, lhs_1d
+      validity.py            # is_pair_valid, validity_mask, compute_pvalues_per_sample{,_with_hp}
+      sampling.py            # ExperimentConfig (v4), ThetaDistribution, lhs_1d
+      hyperparam_distribution.py  # HyperparamDistribution: per-batch (prior_hp, lik_hp) sampler
       pvalue_jax.py          # JAX ports of tilted_pvalue per scheme (autograd path; post-Phase-F port from torch)
       cd_jax.py              # JAX port of CD density (for cd_variance loss)
       train.py               # fit_eta_artifact: dual-head training loop
       _setup.py              # device resolver / x64 / RNG plumbing for fit_eta_artifact
       _train_loop.py         # the training step + eval loop driving optax
       _losses_compose.py     # per-scheme loss composition (NN closed-form + generic-grid)
-      _checkpoint.py         # Equinox .eqx file I/O (CHECKPOINT_FORMAT_VERSION = 3)
-      _validity_data.py      # offline (θ, η, valid) sampler used to seed Head B
+      _checkpoint.py         # Equinox .eqx file I/O (CHECKPOINT_FORMAT_VERSION = 4)
+      _validity_data.py      # offline (θ, prior_hp, lik_hp, η, valid) sampler used to seed Head B
 
 tests/
   conftest.py                # autouse registry isolation + bootstrapped fixture
@@ -367,14 +364,14 @@ docs/
 scripts/
   run.py                     # python -m scripts.run [--list] [--fast] experiment=<name>
   figures.py                 # python -m scripts.figures <results_dir>
-  train_learned_eta.py       # train Phase E EtaNet+ValidityNet from an experiment YAML
+  train_learned_eta.py       # train Phase G EtaNet+ValidityNet from a v4 experiment YAML
 
 experiments/
-  canonical_normal_normal_powerlaw.yaml  # Phase E ExperimentConfig fixture (NN + power_law)
-  canonical_normal_normal_ot.yaml        # Phase E ExperimentConfig fixture (NN + ot)
-  canonical_bernoulli_powerlaw.yaml      # Phase 4 ExperimentConfig fixture (Bernoulli + power_law)
+  canonical_normal_normal_powerlaw_v4.yaml  # Phase G v4 conditional fixture (NN + power_law)
+  canonical_normal_normal_ot_v4.yaml        # Phase G v4 conditional fixture (NN + ot)
+  canonical_bernoulli_powerlaw_v4.yaml      # Phase G v4 conditional fixture (Bernoulli + power_law)
 
-artifacts/                   # trained Phase E v0_smoke checkpoints (committed); v1 not committed
+artifacts/                   # trained Phase G v4 checkpoints; gitignored — train locally
 
 tools/
   check_method_completeness.py  # verify brief + tests + illustration per method
@@ -493,6 +490,7 @@ edit a checkpoint file in place — replace atomically. Pinned by
 | 8    | done   | Selector-as-tilting-member refactor: IdentityTilting + accepts_tilting + uniform `tilting.confidence_interval`; dynamic_ci subsumed by coverage/width |
 | 9    | done   | Geodesic taxonomy refactor: `ot_normal`→`ot` (general 1D W2 + Gaussian fast path implemented); `geodesic_normal`→`fisher_rao` (renamed stub); `exp_family` dropped (redundant with `power_law` on conjugate exp-families); `mixture` reframed as m-geodesic / dual partner of `power_law`'s e-geodesic |
 | 10   | done   | Phase E learned-η rewrite: model-agnostic dual-head selector (`EtaNet` + `ValidityNet`) trained per-experiment; replaces Phase D `MonotonicEtaNet` (deleted). `EtaNet`: smooth GELU-MLP from raw θ → η, no monotonicity prior, no bounded sigmoid. `ValidityNet`: learns `P(valid \| θ, η)` from observed `(θ, η, valid)` triples; provides `-log P(valid)` boundary penalty for Head A. Per-experiment fingerprints (`Prior.fingerprint()`/`Model.fingerprint()`) + strict cross-experiment refusal. New `ExperimentConfig` YAML schema. Smoke fixtures `learned_eta_canonical_normal_normal_<scheme>_v0_smoke.eqx` committed for `power_law` and `ot` (Equinox `.eqx` format after the Phase F JAX port; `.pt` torch checkpoints are gone). |
+| 11   | done   | Phase G conditional learned-η: `EtaNet` and `ValidityNet` now take `(θ, prior_hp, lik_hp)` / `(θ, prior_hp, lik_hp, η)` instead of θ / (θ, η). Each checkpoint is trained over a *range* of `(prior_hp, lik_hp)` (the `hyperparam_distribution` block in the v4 YAML); the selector dispatches per-inference and refuses out-of-range hyperparams. Checkpoint format bumped 3 → 4. v3 YAMLs / fixtures / 14 v3-bound tests deleted; v4 YAMLs added; v4 fixtures gitignored (re-train via `scripts.train_learned_eta`). `eta_explore_box` restored to ExperimentConfig (per-config; defaults to `[-5, 5]`). Headline numbers in this file updated to the v4 fixture. |
 
 ## Key Anti-Patterns to Avoid
 

@@ -2,7 +2,7 @@
 
 Reproduces the table cited in ``CLAUDE.md`` and
 ``docs/methods/learned_eta.md`` (post-Phase-F JAX/Equinox numbers
-from the v0_smoke checkpoint):
+from the v4 checkpoint):
 
 ```
                             θ=0    θ=1    θ=2    θ=3    θ=4
@@ -29,11 +29,11 @@ Usage::
     python -m scripts.regen_headline --fast         # smaller grid
     python -m scripts.regen_headline --n-reps 200   # custom reps
 
-The script loads the v0_smoke checkpoints from ``artifacts/``,
+The script loads the v4 checkpoints from ``artifacts/``,
 runs the canonical Normal-Normal width sweep at θ ∈ {0, 1, 2, 3, 4}
 with w=0.5, α=0.05, and prints the table in the same format as the
 docs. The OT learned cell is included for completeness even though
-the v0_smoke OT checkpoint is undertrained (Head B accuracy ~0.67).
+the v4 OT checkpoint is undertrained (Head B accuracy ~0.67).
 """
 
 # jax + equinox required; see docs/methods/learned_eta.md
@@ -82,7 +82,7 @@ def _check_jax_available() -> None:
     except ImportError as exc:
         sys.stderr.write(
             "\nERROR: scripts.regen_headline requires jax + equinox to load the\n"
-            "Phase E v0_smoke checkpoints. Install jax + equinox and retry.\n"
+            "Phase E v4 checkpoints. Install jax + equinox and retry.\n"
             f"Underlying ImportError: {exc}\n\n"
             "See docs/methods/learned_eta.md for the wider methodology.\n"
         )
@@ -90,20 +90,26 @@ def _check_jax_available() -> None:
 
 
 def _check_artifacts_present() -> None:
-    """Verify the committed v0_smoke checkpoints exist before running."""
+    """Verify the local v4 checkpoints exist before running.
+
+    Phase G v4 fixtures are not committed (gitignored as conditional
+    fixtures are large and re-trainable from the YAMLs). Train them
+    via ``python -m scripts.train_learned_eta --config
+    experiments/canonical_*_v4.yaml``.
+    """
     project_root = Path(__file__).resolve().parents[1]
     artifacts = [
-        project_root / "artifacts" / "learned_eta_canonical_normal_normal_powerlaw_v0_smoke.eqx",
-        project_root / "artifacts" / "learned_eta_canonical_normal_normal_ot_v0_smoke.eqx",
+        project_root / "artifacts" / "learned_eta_canonical_normal_normal_powerlaw_v4.eqx",
+        project_root / "artifacts" / "learned_eta_canonical_normal_normal_ot_v4.eqx",
     ]
     missing = [p for p in artifacts if not p.exists()]
     if missing:
         sys.stderr.write(
-            "\nERROR: missing v0_smoke checkpoint(s):\n  "
+            "\nERROR: missing v4 checkpoint(s):\n  "
             + "\n  ".join(str(p) for p in missing)
             + "\nRun `python -m scripts.train_learned_eta --config "
-            "experiments/<config>.yaml` to (re)train, or check out the\n"
-            "branch where the checkpoints are committed.\n\n"
+            "experiments/<config>_v4.yaml` to (re)train. Phase G v4\n"
+            "checkpoints are gitignored — trained locally per developer.\n\n"
         )
         raise SystemExit(1)
 

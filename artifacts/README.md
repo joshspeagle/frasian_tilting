@@ -1,18 +1,21 @@
-# Trained checkpoints (Phase E / Phase F-ported)
+# Trained checkpoints (Phase G conditional learned-η)
 
-This directory holds trained Phase E `EtaArtifact` checkpoints used by
-`LearnedDynamicEtaSelector`. After the Phase F port commit 3 the
-checkpoint format is **v3** (Equinox/Optax/JAX) — a self-describing
-binary `.eqx` container with the keys listed in
+This directory holds trained `EtaArtifact` checkpoints used by
+`LearnedDynamicEtaSelector`. Phase G ships **checkpoint format v4**
+— a self-describing Equinox `.eqx` container with the keys listed in
 `src/frasian/learned/eta_artifact.py:_REQUIRED_KEYS`.
 
-Phase E checkpoints are **per-experiment**: each one is trained at one
-specific (model, prior, scheme, statistic) configuration recorded in
-its `experiment_config` metadata. The selector compares the trained
-configuration's fingerprints against inference-time `model.fingerprint()`
-and `prior.fingerprint()`; mismatch raises `MissingArtifactError`.
+Phase G checkpoints are **conditional**: each one is trained over a
+*range* of `(prior_hp, lik_hp)` (the
+`hyperparam_distribution` block in the experiment YAML) instead of a
+single fixed prior + likelihood. At inference time the selector reads
+`prior.hyperparams()` and `model.hyperparams()` and threads them into
+`predict_eta(theta, prior_hp, lik_hp)`. The selector refuses inference
+when the observed `(prior_class, model_class)` pair doesn't match the
+trained classes, or when the observed hyperparams fall outside the
+trained range.
 
-## On-disk format (v3)
+## On-disk format (v4)
 
 ```
 [4 bytes BE uint32: len(metadata_json)]
@@ -22,70 +25,50 @@ and `prior.fingerprint()`; mismatch raises `MissingArtifactError`.
 ```
 
 The metadata header carries `equinox_version` + `jax_version`,
-`arch_sha`, `experiment_config` (with prior / model / theta_distribution
-fingerprints), all training hyperparameters and per-epoch metrics.
-The trained net leaves follow in the same order
-(`eta_net`, then `val_net`).
+`arch_sha`, `experiment_config` (with `prior_class`, `model_class`,
+serialised `hyperparam_distribution`, theta_distribution fingerprint),
+all training hyperparameters, and per-epoch metrics. The trained net
+leaves follow in the same order (`eta_net`, then `val_net`).
 
-## What's committed
+## What's NOT committed
 
-Only the **v0_smoke** test fixtures are committed to git:
+Unlike pre-Phase-G v0_smoke fixtures, **no v4 checkpoints are
+committed to git**: the conditional architecture's wider training
+distribution makes binaries larger and the YAML-driven training is
+fast enough to make local regen the better option. The `.eqx` files
+are gitignored via `artifacts/learned_eta_*_v4.eqx`.
 
-| File | Config | Scheme | Purpose |
-|---|---|---|---|
-| `learned_eta_canonical_normal_normal_powerlaw_v0_smoke.eqx` | `canonical_normal_normal_powerlaw.yaml` | `power_law` | L2/L3/L4 test fixture |
-| `learned_eta_canonical_normal_normal_ot_v0_smoke.eqx` | `canonical_normal_normal_ot.yaml` (with widened θ-range) | `ot` | L2/L3/L4 test fixture |
-| `learned_eta_canonical_bernoulli_powerlaw_v0_smoke.eqx` | `canonical_bernoulli_powerlaw.yaml` | `power_law` | Phase 4 generic-grid kernel fixture; first non-Normal-Normal checkpoint. Regen: `python -m scripts.regen_bernoulli_smoke` |
-
-These are intentionally small (64×64 hidden, ~5–10K LHS, ~30–120
-epochs) — enough to pass calibration + narrowness regressions at
-the trained w but not for production use. The committed OT smoke
-trains on a widened `theta_distribution=Uniform[-10, 10]` (vs
-the canonical YAML's `[-5, 5]`) so the runtime `dynamic_ci_scan`'s
-extrapolation to `θ ≈ μ₀ ± 2|Δ|` stays inside the trained support
-at the conflict band.
-
-## Production checkpoints (NOT committed)
-
-Production-grade checkpoints (larger LHS, more epochs, full λ
-schedule) are not committed because they're larger and re-trainable.
-Train them locally:
+## Training a fixture
 
 ```bash
 python -m scripts.train_learned_eta \
-    --config experiments/canonical_normal_normal_powerlaw.yaml \
-    --n-lhs 10000 --n-epochs 100 --batch-size 256 --n-aux 256 \
-    --lambda-max 10.0 --lambda-warmup-frac 0.3 \
-    --patience 15 --min-delta 1e-4 \
-    --out artifacts/learned_eta_canonical_normal_normal_powerlaw_v1.eqx --version v1
+    --config experiments/canonical_normal_normal_powerlaw_v4.yaml \
+    --out artifacts/learned_eta_canonical_normal_normal_powerlaw_v4.eqx \
+    --n-epochs 30 --batch-size 256
 
 python -m scripts.train_learned_eta \
-    --config experiments/canonical_normal_normal_ot.yaml \
-    --n-lhs 10000 --n-epochs 100 --batch-size 256 --n-aux 256 \
-    --lambda-max 10.0 --lambda-warmup-frac 0.3 \
-    --patience 15 --min-delta 1e-4 \
-    --out artifacts/learned_eta_canonical_normal_normal_ot_v1.eqx --version v1
+    --config experiments/canonical_normal_normal_ot_v4.yaml \
+    --out artifacts/learned_eta_canonical_normal_normal_ot_v4.eqx \
+    --n-epochs 30 --batch-size 256
+
+python -m scripts.train_learned_eta \
+    --config experiments/canonical_bernoulli_powerlaw_v4.yaml \
+    --out artifacts/learned_eta_canonical_bernoulli_powerlaw_v4.eqx \
+    --n-epochs 30 --batch-size 256
 ```
 
-Expected runtime on CPU (post-Phase-F port; JAX/Equinox/Optax):
-~5–15 minutes per scheme with early stopping. The JAX path is
-roughly 2–3× faster than the legacy torch path on the same machine
-because the per-step jit-compiled forward + grad fuses what was
-previously three eager ops (forward / backward / opt.step).
+For production-grade checkpoints, increase `--n-lhs`, `--n-epochs`,
+and tune the `--lambda-*` schedule (see
+`docs/methods/learned_eta.md`).
+
+Expected runtime on CPU: a few minutes per fixture.
 
 ## Resolution order
 
-`_default_cells._make_learned_selector(scheme)` tries checkpoints in
-this order:
-
-1. `learned_eta_<config_name>_v1.eqx`         (production)
-2. `learned_eta_<config_name>_v0_smoke.eqx`   (committed test fixture)
-
-The first existing file is loaded. The mapping from `scheme` to
-`config_name` is in `_PHASE_E_CHECKPOINT_FOR_SCHEME` in
-`src/frasian/_default_cells.py`. If neither exists,
-`MissingArtifactError` is raised with a hint to run the training
-script.
+`_default_cells._make_learned_selector(scheme)` looks up
+`learned_eta_<config_name>.eqx` where `config_name` is the YAML stem
+(e.g. `canonical_normal_normal_powerlaw_v4`). If the file is absent,
+`FileNotFoundError` is raised with a hint to run the training script.
 
 ## Activating the learned selector globally
 
@@ -103,18 +86,19 @@ If you change any of:
 - `src/frasian/learned/training/architecture.py` (architecture)
 - `src/frasian/learned/training/pvalue_jax.py` (JAX p-value)
 - `src/frasian/learned/training/losses.py` (boundary penalty / width)
-- `src/frasian/learned/training/sampling.py` (ExperimentConfig schema)
+- `src/frasian/learned/training/sampling.py` (`ExperimentConfig` schema)
+- `src/frasian/learned/training/hyperparam_distribution.py` (sampler)
 
-you must retrain. The checkpoint format records most of these; the
-v3 selector refuses to load mismatching fingerprints and warns
-on `equinox_version` / `arch_sha` drift.
+you must retrain. The v4 selector refuses to load mismatching
+class fingerprints and warns on `equinox_version` / `arch_sha` drift.
 
 ## Format history
 
 | Version | Period | Container | Notes |
 |---|---|---|---|
 | v2 | Phase E | torch `.pt` (pickled state dicts) | Legacy; not loadable post-port |
-| v3 | Phase F port commit 3+ | Equinox `.eqx` (length-prefixed JSON header + serialised leaves) | Current |
+| v3 | Phase F port commit 3+ | Equinox `.eqx`; fixed-prior architecture | Replaced by v4 |
+| v4 | Phase G | Equinox `.eqx`; conditional architecture (`prior_hp` + `lik_hp` inputs) | Current |
 
 See `docs/methods/learned_eta.md` for the full method brief and
 `src/frasian/learned/eta_artifact.py` for the documented checkpoint

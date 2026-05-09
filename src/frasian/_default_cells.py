@@ -70,8 +70,8 @@ def _resolve_dynamic_eta_mode() -> str:
 
 
 _PHASE_E_CHECKPOINT_FOR_SCHEME = {
-    "power_law": "canonical_normal_normal_powerlaw",
-    "ot": "canonical_normal_normal_ot",
+    "power_law": "canonical_normal_normal_powerlaw_v4",
+    "ot": "canonical_normal_normal_ot_v4",
 }
 
 
@@ -100,8 +100,7 @@ def _make_learned_selector(scheme_name: str):
     # `_default_cells.py` lives at `<root>/src/frasian/`.
     project_root = Path(__file__).resolve().parents[2]
     candidates = [
-        project_root / "artifacts" / f"learned_eta_{config_name}_v1.eqx",
-        project_root / "artifacts" / f"learned_eta_{config_name}_v0_smoke.eqx",
+        project_root / "artifacts" / f"learned_eta_{config_name}.eqx",
     ]
     chosen = next((c for c in candidates if c.exists()), None)
     if chosen is None:

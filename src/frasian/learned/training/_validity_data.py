@@ -27,10 +27,10 @@ from .validity import compute_pvalues_per_sample_with_hp, validity_mask
 
 _FORCE_X64 = _x64
 
-# Aux η-explore range. Default mirrors the v3 ``eta_explore_box`` default.
-# Conservative wide range — Head B learns the admissible boundary from
-# observed (θ, η, valid) triples, so the box just needs to bracket the
-# true admissible region for the trained hyperparam ranges.
+# Aux η-explore range fallback. Per-config range is read from
+# ``ExperimentConfig.eta_explore_box`` (Phase G v4 schema). These
+# constants are kept only as a defensive default for the rare callers
+# that build a batch without a config in hand.
 _ETA_EXPLORE_LO: float = -5.0
 _ETA_EXPLORE_HI: float = 5.0
 
@@ -66,7 +66,8 @@ def collect_validity_batch(
         n_aux, rng, prior_names=prior_names, lik_names=lik_names,
     )
     theta_aux_np = config.theta_distribution.sample(n_aux, rng)
-    eta_aux_np = rng.uniform(_ETA_EXPLORE_LO, _ETA_EXPLORE_HI,
+    eta_lo, eta_hi = config.eta_explore_box
+    eta_aux_np = rng.uniform(eta_lo, eta_hi,
                               size=n_aux).astype(np.float64)
     D_aux_np = config.model_cls.sample_data_batch_with_hp(
         theta_aux_np, lik_hp_aux, rng, n_data=config.n_data,
@@ -118,7 +119,8 @@ def prepare_held_out_validity(
     prior_hp_held, lik_hp_held = config.hyperparam_distribution.sample(
         n_held, rng, prior_names=prior_names, lik_names=lik_names,
     )
-    eta_held_aux = rng.uniform(_ETA_EXPLORE_LO, _ETA_EXPLORE_HI,
+    eta_lo, eta_hi = config.eta_explore_box
+    eta_held_aux = rng.uniform(eta_lo, eta_hi,
                                 size=n_held).astype(np.float64)
     D_held = config.model_cls.sample_data_batch_with_hp(
         theta_held, lik_hp_held, rng, n_data=config.n_data,

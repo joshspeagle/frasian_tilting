@@ -622,7 +622,9 @@ class LearnedDynamicEtaSelector:
                 f"{self.artifact.name} not loaded; " f"call .load() before _check_scheme()."
             )
         meta = self.artifact.metadata
-        trained_scheme = meta["experiment_config"]["scheme_name"]
+        cfg = meta["experiment_config"]
+        # v4 schema serialises as "scheme"; v3 used "scheme_name". Accept both.
+        trained_scheme = cfg.get("scheme") or cfg.get("scheme_name")
         if scheme.name != trained_scheme:
             raise MissingArtifactError(
                 f"{self.artifact.name} trained for scheme={trained_scheme!r}, "

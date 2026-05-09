@@ -1,13 +1,13 @@
-"""CLI for the Phase E learned-η selector training.
+"""CLI for the Phase G learned-η selector training.
 
 Drives the dual-head training loop (``EtaNet`` + ``ValidityNet``) off
-an ``ExperimentConfig`` YAML file.
+an ``ExperimentConfig`` v4 YAML file.
 
 Example:
     python -m scripts.train_learned_eta \\
-        --config experiments/canonical_normal_normal_powerlaw.yaml \\
+        --config experiments/canonical_normal_normal_powerlaw_v4.yaml \\
         --n-epochs 30 --patience 8 \\
-        --out artifacts/learned_eta_canonical_normal_normal_powerlaw_v1.eqx
+        --out artifacts/learned_eta_canonical_normal_normal_powerlaw_v4.eqx
 """
 
 from __future__ import annotations
@@ -20,8 +20,8 @@ from frasian._registry_bootstrap import bootstrap
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Train a Phase E learned-η selector "
-        "(EtaNet + ValidityNet) on an ExperimentConfig."
+        description="Train a Phase G conditional learned-η selector "
+        "(EtaNet + ValidityNet) on an ExperimentConfig v4 YAML."
     )
     parser.add_argument("--config", type=Path, required=True, help="ExperimentConfig YAML path.")
     parser.add_argument("--out", type=Path, required=True)
@@ -30,8 +30,8 @@ def main() -> None:
         action="store_true",
         help=(
             "Overwrite --out if it already exists. Audit P0-15: the script "
-            "previously overwrote committed v0_smoke artifacts silently; "
-            "default is now refuse-on-exists."
+            "previously overwrote checkpoints silently; default is now "
+            "refuse-on-exists."
         ),
     )
     parser.add_argument(
@@ -89,15 +89,11 @@ def main() -> None:
     args = parser.parse_args()
 
     # Audit P0-15: refuse to silently overwrite an existing checkpoint.
-    # Committed v0_smoke artifacts in artifacts/ are at particular risk
-    # because they live at well-known paths; overwriting them silently
-    # changes the headline numbers without any prompt or version bump.
     if args.out.exists() and not args.force:
         raise SystemExit(
             f"\nERROR: --out path already exists: {args.out!s}\n"
             f"Pass --force to overwrite, or choose a different path.\n"
-            f"(Audit P0-15: the script previously overwrote silently;\n"
-            f" committed v0_smoke artifacts are at particular risk.)\n"
+            f"(Audit P0-15: the script previously overwrote silently.)\n"
         )
 
     bootstrap()
@@ -117,8 +113,9 @@ def main() -> None:
         config = ExperimentConfig(
             scheme_name=config.scheme_name,
             statistic_name=config.statistic_name,
-            prior=config.prior,
-            model=config.model,
+            prior_cls=config.prior_cls,
+            model_cls=config.model_cls,
+            hyperparam_distribution=config.hyperparam_distribution,
             theta_distribution=config.theta_distribution,
             n_grid=overrides.get("n_grid", config.n_grid),
             n_lhs=overrides.get("n_lhs", config.n_lhs),
@@ -133,8 +130,9 @@ def main() -> None:
         config = ExperimentConfig(
             scheme_name=config.scheme_name,
             statistic_name=config.statistic_name,
-            prior=config.prior,
-            model=config.model,
+            prior_cls=config.prior_cls,
+            model_cls=config.model_cls,
+            hyperparam_distribution=config.hyperparam_distribution,
             theta_distribution=config.theta_distribution,
             n_grid=51,
             n_lhs=512,
@@ -145,6 +143,7 @@ def main() -> None:
             description=config.description,
         )
 
+    n_aux = args.n_aux if args.n_aux is not None else args.batch_size
     result = fit_eta_artifact(
         config=config,
         out_path=args.out,
@@ -152,7 +151,7 @@ def main() -> None:
         alpha=args.alpha,
         n_epochs=10 if args.fast else args.n_epochs,
         batch_size=args.batch_size,
-        n_aux=args.n_aux,
+        n_aux=n_aux,
         lr_a=args.lr_a,
         lr_b=args.lr_b,
         weight_decay=args.weight_decay,

@@ -457,16 +457,42 @@ def compute_pvalues_per_sample_with_hp(
 
     Phase G: each batch element has its own (prior_hp, lik_hp).
     Constructs ``prior_i`` and ``model_i`` per element via
-    ``from_hyperparams``, then calls the scheme's ``tilted_pvalue``.
+    ``from_hyperparams``, then calls the scheme's ``tilted_pvalue``
+    (NN closed-form fast path) or the scheme's generic-MC pvalue
+    (Bernoulli + other non-NN models, where the closed-form path
+    raises ``NotImplementedError``).
     Returns NaN on failure (matching ``_compute_pvalues_per_sample_loop``).
     """
     n = theta_arr.shape[0]
     out = np.full(n, np.nan, dtype=np.float64)
     is_2d = D_arr.ndim == 2
+    use_generic = model_cls.__name__ != "NormalNormalModel"
+    generic_call = (
+        _resolve_generic_tilted_pvalue(getattr(scheme, "name", ""))
+        if use_generic
+        else None
+    )
     for i in range(n):
         try:
             prior_i = prior_cls.from_hyperparams(prior_hp_batch[i])
             model_i = model_cls.from_hyperparams(lik_hp_batch[i])
+            if use_generic and generic_call is not None:
+                data_i = (
+                    np.asarray(D_arr[i], dtype=np.float64)
+                    if is_2d
+                    else np.atleast_1d(np.asarray(D_arr[i], dtype=np.float64))
+                )
+                p = generic_call(
+                    theta=float(theta_arr[i]),
+                    data=data_i,
+                    model=model_i,
+                    prior=prior_i,
+                    eta=float(eta_arr[i]),
+                    statistic_name=statistic_name,
+                    n_mc=_N_MC_VALIDITY,
+                )
+                out[i] = float(p)
+                continue
             d_i = (
                 np.asarray(D_arr[i], dtype=np.float64)
                 if is_2d
