@@ -127,133 +127,202 @@ def _build_mlp(
 
 
 class EtaNet(eqx.Module):
-    """Smooth MLP from θ ∈ R^p to raw η ∈ R.
+    """Conditional MLP: (θ, prior_hp, lik_hp) → η.
 
-    No bounded output, no monotonicity constraint. Validity is
-    enforced by the boundary penalty on Head B's prediction —
-    see ``losses.boundary_penalty_from_validity``.
+    Phase G three-block input. The MLP learns η_φ(θ | prior_hp, lik_hp)
+    so a single checkpoint covers any (prior, likelihood) configuration
+    in the trained hyperparameter ranges. No bounded output, no
+    monotonicity constraint; validity enforced via the Head-B
+    boundary penalty.
+
+    Equivariance not exploited: for Normal-Normal, the loss is
+    invariant under translation/scale of (θ, μ₀, σ₀, σ); the network
+    learns it implicitly. A regression test in
+    ``tests/regression/test_conditional_eta_equivariance.py`` checks
+    this on the trained checkpoint.
 
     Parameters
     ----------
     theta_dim : int
-        Dimension of θ. Defaults to 1 (Normal-Normal). Vector θ is
-        accepted for future model extensions; the existing
-        ``power_law`` / ``ot`` schemes are scalar today.
+        Dimension of θ (always 1 for current scalar models).
+    prior_dim : int
+        ``prior.hyperparam_dim`` — e.g. 2 for NormalDistribution.
+    lik_dim : int
+        ``model.hyperparam_dim`` — 1 for NormalNormalModel,
+        0 for BernoulliModel.
     hidden_sizes : tuple of int
-        Hidden layer widths. Must be uniform (same width for every
-        layer) for the equinox port; see ``_build_mlp``.
+        Hidden layer widths. Defaults to ``(128, 128, 128)``.
     key : jax.Array
-        PRNG key for weight initialisation. Required.
+        PRNG key for weight init. Required.
     """
 
     mlp: eqx.nn.MLP
     theta_dim: int = eqx.field(static=True)
+    prior_dim: int = eqx.field(static=True)
+    lik_dim: int = eqx.field(static=True)
     hidden_sizes: tuple[int, ...] = eqx.field(static=True)
 
     def __init__(
         self,
-        theta_dim: int = 1,
-        hidden_sizes: tuple[int, ...] = (64, 64),
+        theta_dim: int,
+        prior_dim: int,
+        lik_dim: int,
+        hidden_sizes: tuple[int, ...] = (128, 128, 128),
         *,
         key: jax.Array,
     ):
         if theta_dim < 1:
             raise ValueError(f"theta_dim must be >= 1, got {theta_dim}")
+        if prior_dim < 0:
+            raise ValueError(f"prior_dim must be >= 0, got {prior_dim}")
+        if lik_dim < 0:
+            raise ValueError(f"lik_dim must be >= 0, got {lik_dim}")
         self.theta_dim = int(theta_dim)
+        self.prior_dim = int(prior_dim)
+        self.lik_dim = int(lik_dim)
         self.hidden_sizes = tuple(hidden_sizes)
-        self.mlp = _build_mlp(self.theta_dim, self.hidden_sizes, 1, key)
+        in_features = self.theta_dim + self.prior_dim + self.lik_dim
+        self.mlp = _build_mlp(in_features, self.hidden_sizes, 1, key)
 
-    def __call__(self, theta: jax.Array) -> jax.Array:
-        """Forward pass.
+    def __call__(
+        self,
+        theta: jax.Array,
+        prior_hp: jax.Array,
+        lik_hp: jax.Array,
+    ) -> jax.Array:
+        """Forward. All inputs share batch size N on axis 0.
 
-        theta : ``(N,)`` (when ``theta_dim==1``) or ``(N, theta_dim)``.
-        returns : ``(N,)`` raw η values.
+        theta    : ``(N,)`` for ``theta_dim==1``, or ``(N, theta_dim)``.
+        prior_hp : ``(N, prior_dim)``.
+        lik_hp   : ``(N, lik_dim)``.
+        returns  : ``(N,)`` raw η values.
         """
         if theta.ndim == 1:
             if self.theta_dim != 1:
                 raise ValueError(
                     f"EtaNet(theta_dim={self.theta_dim}) requires (N, "
-                    f"{self.theta_dim}) input; got 1D shape "
+                    f"{self.theta_dim}) theta input; got 1D shape "
                     f"{tuple(theta.shape)}."
                 )
-            x = theta[..., None]  # (N, 1)
+            theta_2d = theta[:, None]
         elif theta.ndim == 2:
             if theta.shape[-1] != self.theta_dim:
                 raise ValueError(
-                    f"EtaNet(theta_dim={self.theta_dim}) expected "
-                    f"input shape (N, {self.theta_dim}); got "
-                    f"{tuple(theta.shape)}."
+                    f"EtaNet(theta_dim={self.theta_dim}) expected theta "
+                    f"shape (N, {self.theta_dim}); got {tuple(theta.shape)}."
                 )
-            x = theta
+            theta_2d = theta
         else:
             raise ValueError(
-                f"EtaNet expects 1D or 2D input; got shape {tuple(theta.shape)}."
+                f"EtaNet expects 1D or 2D theta; got shape {tuple(theta.shape)}."
             )
-        # eqx.nn.MLP expects a single sample (in_size,) → (out_size,).
-        # vmap over the leading batch axis to get (N, 1), then squeeze.
-        out = jax.vmap(self.mlp)(x)  # (N, 1)
-        return out[..., 0]  # (N,)
+        N = theta_2d.shape[0]
+        if prior_hp.shape != (N, self.prior_dim):
+            raise ValueError(
+                f"EtaNet(prior_dim={self.prior_dim}) expected prior_hp "
+                f"shape ({N}, {self.prior_dim}); got {tuple(prior_hp.shape)}."
+            )
+        if lik_hp.shape != (N, self.lik_dim):
+            raise ValueError(
+                f"EtaNet(lik_dim={self.lik_dim}) expected lik_hp shape "
+                f"({N}, {self.lik_dim}); got {tuple(lik_hp.shape)}."
+            )
+        x = jnp.concatenate([theta_2d, prior_hp, lik_hp], axis=-1)
+        out = jax.vmap(self.mlp)(x)
+        return out[..., 0]
 
     def architecture_kwargs(self) -> dict[str, Any]:
-        """Kwargs to re-instantiate this exact architecture."""
         return {
             "theta_dim": self.theta_dim,
+            "prior_dim": self.prior_dim,
+            "lik_dim": self.lik_dim,
             "hidden_sizes": self.hidden_sizes,
         }
 
 
 class ValidityNet(eqx.Module):
-    """MLP from (θ, η) to a single logit.
+    """Conditional MLP: (θ, prior_hp, lik_hp, η) → logit.
 
-    Trained on validity labels (whether ``scheme.tilted_pvalue`` at
-    (θ, η) is finite and in [0, 1]) via binary-cross-entropy-with-logits.
-    The logit output is intentional — sigmoid is applied at loss time
-    via the BCE-with-logits formulation (numerically stable) and the
-    boundary penalty uses ``jax.nn.log_sigmoid`` directly.
-
-    No clamp on logits. ``log_sigmoid`` is numerically stable for any
-    finite input, and clamping kills the wrong-side gradient — see
-    ``losses.boundary_penalty_from_validity`` for the rationale.
-
-    Input convention: a single ``(N, theta_dim + 1)`` tensor with θ
-    in the leading ``theta_dim`` columns and η in the last column.
+    Phase G four-block input. Trained on validity labels via
+    BCE-with-logits. The logit output is intentional — sigmoid is
+    applied at loss time. ``log_sigmoid`` is numerically stable for any
+    finite input.
     """
 
     mlp: eqx.nn.MLP
     theta_dim: int = eqx.field(static=True)
+    prior_dim: int = eqx.field(static=True)
+    lik_dim: int = eqx.field(static=True)
     hidden_sizes: tuple[int, ...] = eqx.field(static=True)
 
     def __init__(
         self,
-        theta_dim: int = 1,
-        hidden_sizes: tuple[int, ...] = (64, 64),
+        theta_dim: int,
+        prior_dim: int,
+        lik_dim: int,
+        hidden_sizes: tuple[int, ...] = (128, 128, 128),
         *,
         key: jax.Array,
     ):
         if theta_dim < 1:
             raise ValueError(f"theta_dim must be >= 1, got {theta_dim}")
-        self.theta_dim = int(theta_dim)
-        self.hidden_sizes = tuple(hidden_sizes)
-        self.mlp = _build_mlp(self.theta_dim + 1, self.hidden_sizes, 1, key)
-
-    def __call__(self, inputs: jax.Array) -> jax.Array:
-        """Forward pass.
-
-        inputs : ``(N, theta_dim + 1)`` array — concat of θ and η.
-        returns : ``(N,)`` logits.
-        """
-        if inputs.ndim != 2 or inputs.shape[-1] != self.theta_dim + 1:
+        if prior_dim < 0 or lik_dim < 0:
             raise ValueError(
-                f"ValidityNet(theta_dim={self.theta_dim}) expects "
-                f"input shape (N, {self.theta_dim + 1}); got "
-                f"{tuple(inputs.shape)}."
+                f"prior_dim and lik_dim must be >= 0; got {prior_dim}, {lik_dim}"
             )
-        out = jax.vmap(self.mlp)(inputs)  # (N, 1)
-        return out[..., 0]  # (N,)
+        self.theta_dim = int(theta_dim)
+        self.prior_dim = int(prior_dim)
+        self.lik_dim = int(lik_dim)
+        self.hidden_sizes = tuple(hidden_sizes)
+        in_features = self.theta_dim + self.prior_dim + self.lik_dim + 1
+        self.mlp = _build_mlp(in_features, self.hidden_sizes, 1, key)
+
+    def __call__(
+        self,
+        theta: jax.Array,
+        prior_hp: jax.Array,
+        lik_hp: jax.Array,
+        eta: jax.Array,
+    ) -> jax.Array:
+        if theta.ndim == 1:
+            if self.theta_dim != 1:
+                raise ValueError(
+                    f"ValidityNet(theta_dim={self.theta_dim}) requires "
+                    f"(N, {self.theta_dim}) theta input; got 1D."
+                )
+            theta_2d = theta[:, None]
+        elif theta.ndim == 2 and theta.shape[-1] == self.theta_dim:
+            theta_2d = theta
+        else:
+            raise ValueError(
+                f"ValidityNet expected theta (N,) or (N, {self.theta_dim}); "
+                f"got {tuple(theta.shape)}."
+            )
+        N = theta_2d.shape[0]
+        if prior_hp.shape != (N, self.prior_dim):
+            raise ValueError(
+                f"ValidityNet expected prior_hp ({N}, {self.prior_dim}); "
+                f"got {tuple(prior_hp.shape)}."
+            )
+        if lik_hp.shape != (N, self.lik_dim):
+            raise ValueError(
+                f"ValidityNet expected lik_hp ({N}, {self.lik_dim}); "
+                f"got {tuple(lik_hp.shape)}."
+            )
+        if eta.shape != (N,):
+            raise ValueError(
+                f"ValidityNet expected eta ({N},); got {tuple(eta.shape)}."
+            )
+        eta_2d = eta[:, None]
+        x = jnp.concatenate([theta_2d, prior_hp, lik_hp, eta_2d], axis=-1)
+        out = jax.vmap(self.mlp)(x)
+        return out[..., 0]
 
     def architecture_kwargs(self) -> dict[str, Any]:
         return {
             "theta_dim": self.theta_dim,
+            "prior_dim": self.prior_dim,
+            "lik_dim": self.lik_dim,
             "hidden_sizes": self.hidden_sizes,
         }
 
