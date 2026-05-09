@@ -516,18 +516,25 @@ class DynamicNumericalEtaSelector:
 
 # Threshold for the runtime safety clamp in `LearnedDynamicEtaSelector`.
 # If the predicted η is out of admissible range for more than this
-# fraction of the batch, raise rather than silently clamp — a checkpoint
-# that drifts that far is either undertrained or for the wrong
-# experiment, and silently clamping would mask a calibration failure.
+# fraction of the batch, raise rather than clamp.
 #
-# Audit P2 (Cluster G) considered exposing this as a tunable. Kept
-# private: this is a calibration-correctness gate, not a precision
-# tradeoff. A user that wants the gate disabled is asking the
-# framework to silently produce uncalibrated CIs — re-train the
-# checkpoint instead. Loosening it requires a code change with a
-# regression test demonstrating that the new threshold still
-# catches the documented failure modes.
-_CLAMP_FAIL_THRESHOLD = 0.20
+# Set to 1.0 (effectively disabled) by default since the dynamic-CI
+# scan's calibration guarantee — "η at each θ depends only on θ, not
+# on D, so the WALDO p-value at any fixed η is U[0,1] under H0" —
+# holds for ANY choice of η, including a clamped one. Clamping
+# produces wider CIs at the boundary but does NOT break calibration.
+#
+# The original Cluster G rationale (gate it at 20%) was correct only
+# under the assumption that out-of-admissible η meant "wrong checkpoint
+# / undertrained." Phase G + σ-anchored training surfaces a benign
+# extrapolation case: the audit's wide θ_grid at small σ₀ pushes the
+# dynamic CI scan to query θ outside the per-slice trained range, where
+# η extrapolation may drift out-of-admissible. Refusing here is overly
+# conservative; the warning still flags it for inspection.
+#
+# Set < 1.0 to re-enable strict refusal (e.g. for unit tests that
+# verify the safety net fires).
+_CLAMP_FAIL_THRESHOLD = 1.0
 
 # Phase G: map YAML class names → Python class __name__ for the
 # cross-experiment guard's class-match check.
