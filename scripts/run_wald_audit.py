@@ -36,27 +36,30 @@ from frasian.tilting.eta_selectors import (
     NumericalEtaSelector,
 )
 from frasian.tilting.identity import IdentityTilting
+from frasian.tilting.ot import OTTilting
 from frasian.tilting.power_law import PowerLawTilting
 
 
-def _learned_selector(loss: str) -> LearnedDynamicEtaSelector:
+def _learned_selector(loss: str, scheme: str = "powerlaw") -> LearnedDynamicEtaSelector:
     """Build a `LearnedDynamicEtaSelector` from a Phase G v4 per-loss checkpoint.
 
-    Per-loss audit fixtures train the canonical NN + power_law v4
+    Per-loss audit fixtures train the canonical NN + ``<scheme>`` v4
     YAML with one of the three loss variants (integrated_p,
     cd_variance, static_width). Train via:
 
         python -m scripts.train_learned_eta \\
-            --config experiments/canonical_normal_normal_powerlaw_v4.yaml \\
+            --config experiments/canonical_normal_normal_<scheme>_v4.yaml \\
             --loss <loss> [--alpha 0.05 if static_width] \\
-            --out artifacts/learned_eta_canonical_normal_normal_powerlaw_phaseC_<loss>_v4.eqx
+            --out artifacts/learned_eta_canonical_normal_normal_<scheme>_phaseC_<loss>_v4.eqx
+
+    ``scheme`` ∈ {``"powerlaw"``, ``"ot"``}.
     """
     art = EtaArtifact(
         artifact_path=Path(
-            f"artifacts/learned_eta_canonical_normal_normal_powerlaw_phaseC_{loss}_v4.eqx"
+            f"artifacts/learned_eta_canonical_normal_normal_{scheme}_phaseC_{loss}_v4.eqx"
         ),
         name="learned",
-        version=f"phaseC_{loss}_v4",
+        version=f"phaseC_{scheme}_{loss}_v4",
     )
     return LearnedDynamicEtaSelector(artifact=art)
 
@@ -113,6 +116,21 @@ def _build_cell(flavor: str):
     if flavor == "pl_learned_intp":
         return (PowerLawTilting(selector=_learned_selector("integrated_p")),
                 WaldoStatistic(force_generic=False), pl_bare)
+    if flavor == "pl_learned_intp_generic":
+        return (PowerLawTilting(selector=_learned_selector("integrated_p")),
+                WaldoStatistic(force_generic=True), pl_bare)
+    # OT learned-η variants (no `*_generic` flavor — OT + dynamic +
+    # force_generic explicitly raises, see `tilting/ot.py:1157-1161`).
+    ot_bare = OTTilting()
+    if flavor == "ot_learned_intp":
+        return (OTTilting(selector=_learned_selector("integrated_p", scheme="ot")),
+                WaldoStatistic(force_generic=False), ot_bare)
+    if flavor == "ot_learned_cd_var":
+        return (OTTilting(selector=_learned_selector("cd_variance", scheme="ot")),
+                WaldoStatistic(force_generic=False), ot_bare)
+    if flavor == "ot_learned_static_w":
+        return (OTTilting(selector=_learned_selector("static_width", scheme="ot")),
+                WaldoStatistic(force_generic=False), ot_bare)
     if flavor == "pl_learned_cd_var":
         return (PowerLawTilting(selector=_learned_selector("cd_variance")),
                 WaldoStatistic(force_generic=False), pl_bare)
@@ -129,6 +147,8 @@ _FLAVORS = [
     "pl_numerical", "pl_numerical_intp", "pl_numerical_generic",
     "pl_dyn_numerical", "pl_dyn_numerical_generic",
     "pl_learned_intp", "pl_learned_cd_var", "pl_learned_static_w",
+    "pl_learned_intp_generic",
+    "ot_learned_intp", "ot_learned_cd_var", "ot_learned_static_w",
 ]
 
 

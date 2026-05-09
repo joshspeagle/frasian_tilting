@@ -646,6 +646,76 @@ def _generic_tilted_pvalue_ot(
     return float(p)
 
 
+def _generic_tilted_pvalue_ot_vec(
+    theta_arr: NDArray[np.float64],
+    data: NDArray[np.float64],
+    model: object,
+    prior: Prior,
+    eta_arr: NDArray[np.float64],
+    statistic_name: str,
+    *,
+    n_mc: int = _GENERIC_TILTED_PVALUE_N_MC,
+    n_grid: int = _GENERIC_TILTED_PVALUE_N_GRID_MC,
+    derived_seed: int | None = None,
+    alpha: float = 0.0,
+    base_seed: int = _GENERIC_TILTED_PVALUE_BASE_SEED,
+) -> NDArray[np.float64]:
+    """Generic MC tilted p-value across (theta_arr, eta_arr) for OT.
+
+    OT analog of ``power_law._generic_tilted_pvalue_vec``. Mirrors the
+    same call signature so the dynamic-CI scanner can swap schemes by
+    name. Used by ``OTTilting.dynamic_tilted_confidence_interval_ot_generic``
+    to fine-scan the dynamic-η p-value at force_generic=True on NN.
+
+    Implementation note: the current OT version is a Python loop over
+    (theta_i, eta_i) wrapping the scalar ``_generic_tilted_pvalue_ot``,
+    NOT a true triple-batched implementation like power_law's vec
+    helper. Each scalar call already vectorises the per-(θ, η) MC
+    reference (``_generic_tilted_mc_reference_batch_ot``), so the
+    wall-time gap vs a fully-batched OT vec is roughly the n_theta
+    Python-loop overhead — small in absolute terms (~ms/iter) but
+    n_theta=401 fine-grid points × ~100ms per scalar call adds up
+    (~30-40 s/CI). Adequate for sanity checks; for production audits
+    a true batched OT vec (mirroring power_law's chunked triple-batch)
+    is a tractable follow-up.
+    """
+    from ._generic_pvalue import _stable_tilted_pvalue_seed
+
+    theta_arr_np = np.asarray(theta_arr, dtype=np.float64)
+    eta_arr_np = np.asarray(eta_arr, dtype=np.float64)
+    if theta_arr_np.shape != eta_arr_np.shape:
+        raise ValueError(
+            f"theta_arr and eta_arr must have the same shape; got "
+            f"{theta_arr_np.shape!r} and {eta_arr_np.shape!r}."
+        )
+    data_arr = np.atleast_1d(np.asarray(data, dtype=np.float64))
+    if derived_seed is None:
+        derived_seed = _stable_tilted_pvalue_seed(
+            data_arr, model, prior, 0.0, alpha, base_seed
+        )
+
+    n_theta = int(theta_arr_np.size)
+    p_out = np.empty(n_theta, dtype=np.float64)
+    for i in range(n_theta):
+        # Per-element CRN: derived_seed + i to keep streams reproducible
+        # AND independent across grid points (mirrors power_law's chunked
+        # CRN). Use the scalar helper as the inner primitive — already
+        # vectorised across the per-(θ, η) MC sample axis.
+        p_out[i] = _generic_tilted_pvalue_ot(
+            float(theta_arr_np[i]),
+            data_arr,
+            model,
+            prior,
+            float(eta_arr_np[i]),
+            statistic_name,
+            n_mc=int(n_mc),
+            derived_seed=int(derived_seed) + i,
+            alpha=alpha,
+            base_seed=base_seed,
+        )
+    return p_out
+
+
 def _generic_tilted_confidence_interval_ot(
     alpha: float,
     data: NDArray[np.float64],
@@ -1096,6 +1166,131 @@ class OTTilting:
             prior=prior,
         )
 
+    def dynamic_tilted_confidence_interval_ot_generic(
+        self,
+        alpha: float,
+        D: float,
+        data: NDArray[np.float64],
+        model: Model,
+        prior: NormalDistribution,
+        statistic_name: str,
+        eta_selector,
+        n_grid: int = 401,
+        coarse_n: int = 25,
+        search_mult: float = 8.0,
+        n_mc: int = _GENERIC_TILTED_PVALUE_N_MC,
+    ) -> tuple[list[tuple[float, float]], float, int]:
+        """Dynamic-η CI inversion for OT using the GENERIC (MC) p-value.
+
+        OT analog of
+        ``power_law.dynamic_tilted_confidence_interval_generic``.
+        Algorithm:
+          1. Coarse-grid η*(θ) selection via ``eta_selector`` (closed-form
+             internally).
+          2. Interpolate η*(θ) onto the fine θ-grid.
+          3. Vectorised generic-MC p-value via
+             ``_generic_tilted_pvalue_ot_vec`` (currently a Python loop
+             wrapper around the scalar — see helper docstring for the
+             perf trade-off).
+          4. Linear interpolation at α-crossings to build accept regions
+             (same approach as power_law's vec dynamic).
+
+        Cost: dominated by the n_grid × scalar-MC calls. At
+        n_mc=2000, n_grid=401: ~30-40 s/CI under the loop wrapper. A
+        true triple-batched OT vec helper (mirroring power_law's chunked
+        D_3d / log_lik_3d layout) would bring this down to ~1-2 s/CI.
+
+        Caveat: with low n_mc (~200), MC noise on the fine scan can
+        produce spurious sub-α regions near the true CI boundaries —
+        n_mc≥2000 is the safe regime at α=0.05.
+        """
+        from .._errors import BracketingFailed
+        from ..models.normal_normal import NormalNormalModel
+        from ._generic_pvalue import _stable_tilted_pvalue_seed
+        from .eta_selectors import _NamedStatistic
+
+        if not is_normal_normal(model):
+            raise NotImplementedError(
+                "dynamic_tilted_confidence_interval_ot_generic currently "
+                "requires NormalNormalModel — the dynamic-η selector is "
+                "NN-only by design (NumericalEtaSelector inside is closed-"
+                "form NN); generalising to non-NN models requires a generic "
+                "eta selector first."
+            )
+        sigma = float(model.sigma)
+
+        derived_seed = _stable_tilted_pvalue_seed(
+            np.atleast_1d(np.asarray(data, dtype=np.float64)),
+            model, prior, 0.0, alpha, _GENERIC_TILTED_PVALUE_BASE_SEED,
+        )
+
+        for widen in (1.0, 2.0):
+            search_half = float(widen * search_mult * sigma)
+            theta_lo = D - search_half
+            theta_hi = D + search_half
+            theta_grid = np.linspace(theta_lo, theta_hi, int(n_grid))
+
+            coarse_theta_grid = np.linspace(theta_lo, theta_hi, int(coarse_n))
+            coarse_eta = eta_selector.select_grid(
+                coarse_theta_grid, self,
+                model=model, prior=prior, alpha=alpha,
+                statistic=_NamedStatistic(statistic_name),
+            )
+            eta_at_theta = np.interp(theta_grid, coarse_theta_grid, coarse_eta)
+
+            data_arr = np.atleast_1d(np.asarray(data, dtype=np.float64))
+            p_theta = _generic_tilted_pvalue_ot_vec(
+                theta_grid, data_arr, model, prior, eta_at_theta, statistic_name,
+                n_mc=int(n_mc), n_grid=_GENERIC_TILTED_PVALUE_N_GRID_MC,
+                derived_seed=derived_seed, alpha=alpha,
+                base_seed=_GENERIC_TILTED_PVALUE_BASE_SEED,
+            )
+
+            diff = p_theta - alpha
+            sgn = np.where(diff >= 0.0, 1, -1).astype(np.int64)
+            crossings: list[float] = []
+            for i in range(theta_grid.size - 1):
+                if sgn[i] != sgn[i + 1]:
+                    denom = diff[i] - diff[i + 1]
+                    if denom == 0.0:
+                        crossings.append(float(0.5 * (theta_grid[i] + theta_grid[i + 1])))
+                    else:
+                        t = diff[i] / denom
+                        crossings.append(
+                            float(theta_grid[i] + t * (theta_grid[i + 1] - theta_grid[i]))
+                        )
+
+            entries = list(crossings)
+            hit_boundary = False
+            if sgn[0] > 0:
+                entries = [float(theta_lo)] + entries
+                hit_boundary = True
+            if sgn[-1] > 0:
+                entries = entries + [float(theta_hi)]
+                hit_boundary = True
+
+            if not hit_boundary:
+                break
+            if widen == 2.0:
+                raise BracketingFailed(
+                    f"dynamic_tilted_confidence_interval_ot_generic: CI "
+                    f"extends past search box (±{search_half}·σ around "
+                    f"D={D!r}; sigma={sigma!r}). Increase search_mult."
+                )
+
+        if len(entries) % 2 != 0:
+            raise BracketingFailed(
+                f"dynamic_tilted_confidence_interval_ot_generic produced "
+                f"odd-parity entries; got {entries!r}. Indicates a missed "
+                f"tangential α-touch on the grid. Try a finer theta-grid."
+            )
+
+        regions: list[tuple[float, float]] = [
+            (entries[i], entries[i + 1]) for i in range(0, len(entries), 2)
+        ]
+        total = float(sum(hi - lo for lo, hi in regions))
+        return regions, total, len(regions)
+
     # ----- Uniform CI / regions / pvalue interface -----
 
     def _require_normal_sandbox(self, model: Model, prior: Prior) -> None:
@@ -1148,17 +1343,55 @@ class OTTilting:
         """
         # `statistic.force_generic=True` collapses both branches onto
         # the generic MC path even on NN — same flag honored by
-        # PowerLawTilting. Dynamic + force_generic isn't supported
-        # (the dynamic scanner is NN-flavoured).
+        # PowerLawTilting. Phase H: dynamic + force_generic IS now
+        # supported on NN via `dynamic_tilted_confidence_interval_ot_generic`
+        # (mirrors power_law's Phase F enhancement); the underlying
+        # `_generic_tilted_pvalue_ot_vec` is currently a Python-loop
+        # wrapper around the scalar so wall time is ~30-40 s/CI vs
+        # power_law's 1-2 s/CI. Adequate for sanity checks; a true
+        # triple-batched OT vec is a tractable follow-up.
         force_generic = bool(getattr(statistic, "force_generic", False))
         route_generic = force_generic or not self._is_normal_normal_pair(model, prior)
         if route_generic:
             if getattr(self.selector, "is_dynamic", False):
+                if force_generic and self._is_normal_normal_pair(model, prior):
+                    if config is not None:
+                        n_grid = int(config.dynamic_n_grid)
+                        coarse_n = int(config.dynamic_coarse_n)
+                        search_mult = float(config.dynamic_search_mult)
+                    else:
+                        n_grid = int(getattr(self.selector, "n_grid", 401))
+                        coarse_n = int(getattr(self.selector, "coarse_n", 25))
+                        search_mult = float(getattr(self.selector, "search_mult", 8.0))
+                    stat_n_mc = int(
+                        getattr(statistic, "n_mc", _GENERIC_TILTED_PVALUE_N_MC)
+                    )
+                    D = _data_to_scalar_D(data)
+                    regions, _, _ = self.dynamic_tilted_confidence_interval_ot_generic(
+                        alpha,
+                        D,
+                        np.atleast_1d(np.asarray(data, dtype=np.float64)),
+                        model,
+                        prior,
+                        statistic.name,
+                        self.selector,
+                        n_grid=n_grid,
+                        coarse_n=coarse_n,
+                        search_mult=search_mult,
+                        n_mc=stat_n_mc,
+                    )
+                    if not regions:
+                        raise RuntimeError(
+                            f"dynamic generic OT CI inversion produced no "
+                            f"regions at D={D!r}"
+                        )
+                    return regions
                 if force_generic:
                     raise NotImplementedError(
                         "OTTilting + dynamic-η selector + force_generic=True "
-                        "is not supported (dynamic scanner is NN-flavoured). "
-                        "Use a static selector with force_generic=True."
+                        "currently only supported on NormalNormalModel + "
+                        "NormalDistribution prior. Generalising to non-NN "
+                        "models requires a generic eta-selector."
                     )
                 raise NotImplementedError(
                     "OTTilting dynamic-η selector currently requires "
