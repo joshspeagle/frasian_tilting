@@ -461,6 +461,20 @@ class MixtureTilting:
         eta_likelihood_only=1.0,
     )
 
+    @property
+    def cell_name(self) -> str:
+        """Display name including selector annotation when non-default.
+
+        Mirrors `PowerLawTilting.cell_name` / `OTTilting.cell_name`. The
+        bare `MixtureTilting()` (FixedEtaSelector(eta=0.0)) renders as
+        ``"mixture"``; with a non-default selector renders as
+        ``"mixture[<selector_name>]"`` (e.g. ``mixture[learned_dynamic]``).
+        """
+        sel_name = getattr(self.selector, "name", "")
+        if isinstance(self.selector, FixedEtaSelector) and self.selector.eta == 0.0:
+            return self.name
+        return f"{self.name}[{sel_name}]"
+
     # ------ Tilt: NN closed-form path (returns GaussianMixtureDistribution) ------
 
     def tilt(

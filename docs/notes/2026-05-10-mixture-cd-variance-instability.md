@@ -154,13 +154,28 @@ notably worse than mixture intp / static_w which trained cleanly.
 
 ## Decision and next step
 
-**Decision (2026-05-10):** ship #5 fixture as `mx_learned_cd_var`
-with documented limitations. Audit it alongside `mx_learned_intp`
-(val=1.61, η_valid=1.000) and `mx_learned_static_w` (val=4.07,
-η_valid=1.000) — those two are the headline; cd_var is supplementary
-and partial.
+**Decision (2026-05-10):** initially shipped #5 fixture as
+`mx_learned_cd_var` with documented limitations. Coverage audit at
+full Config.fast() w_grid revealed catastrophic miscalibration —
+0.22 coverage at w=0.35, vs nominal 0.95. The 19% out-of-bounds η
+values were producing inadmissible CIs at inference. Fixture not
+shippable.
 
-**True fix (deferred):** structural sigmoid bound on EtaNet output for
+**Resolution (same day, 2026-05-10):** applied the structural
+sigmoid bound below. Headline post-fix:
+
+| flavor       | val pre | val post | η_valid pre | η_valid post | coverage post |
+|--------------|---------|----------|-------------|--------------|---------------|
+| mx intp      | 1.61    | 1.61     | 1.000       | 1.000        | 0.95-0.965    |
+| mx cd_var    | 13.57   | **1.25** | **0.811**   | **1.000**    | 0.955-0.965   |
+| mx static_w  | 4.07    | 4.06     | 1.000       | 1.000        | 0.96-0.97     |
+
+All three coverages within nominal [0.95, 0.97]. Widths comparable
+to WALDO (3.77-4.73 vs WALDO's 3.88-4.59). Bound is a no-op for
+intp/static_w (their optima were already in [0, 1]); structural
+constraint eliminates the boundary-attractor pathology for cd_var.
+
+**Structural sigmoid bound:** EtaNet output for
 mixture. Approach:
 
 1. Add a `bound_eta: tuple[float, float] | None` field to EtaNet (or
@@ -181,8 +196,12 @@ mixture. Approach:
    (their η values are already in [0, 1]); for cd_var it bounds the
    network structurally → no Adam-overshoot possible.
 
-Estimated effort: 2-4 hours implementation + 1 hour testing +
-re-training. Substantial but well-scoped.
+Implementation landed 2026-05-10 (this same day). Surface area was
+smaller than expected: only EtaNet's `__call__` (sigmoid squash) +
+`architecture_kwargs` round-trip + `train.py` per-scheme dispatch
+were needed. The other "consumers" (loss / boundary penalty /
+selector / diagnostics) all consume `eta_net(...)` outputs, so the
+transform propagates automatically. Total: ~50 lines of code.
 
 ## Out-of-scope for this investigation
 

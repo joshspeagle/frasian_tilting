@@ -164,6 +164,7 @@ class EtaNet(eqx.Module):
     feature_loc: tuple[float, ...] = eqx.field(static=True)
     feature_scale: tuple[float, ...] = eqx.field(static=True)
     feature_log: tuple[bool, ...] = eqx.field(static=True)
+    output_bounds: tuple[float, float] | None = eqx.field(static=True)
 
     def __init__(
         self,
@@ -174,6 +175,7 @@ class EtaNet(eqx.Module):
         feature_loc: tuple[float, ...] | None = None,
         feature_scale: tuple[float, ...] | None = None,
         feature_log: tuple[bool, ...] | None = None,
+        output_bounds: tuple[float, float] | None = None,
         *,
         key: jax.Array,
     ):
@@ -212,6 +214,15 @@ class EtaNet(eqx.Module):
         self.feature_loc = tuple(float(v) for v in feature_loc)
         self.feature_scale = tuple(float(v) for v in feature_scale)
         self.feature_log = tuple(bool(v) for v in feature_log)
+        if output_bounds is not None:
+            lo, hi = float(output_bounds[0]), float(output_bounds[1])
+            if not (hi > lo):
+                raise ValueError(
+                    f"output_bounds must satisfy hi > lo; got ({lo}, {hi})."
+                )
+            self.output_bounds = (lo, hi)
+        else:
+            self.output_bounds = None
 
     def __call__(
         self,
@@ -224,7 +235,8 @@ class EtaNet(eqx.Module):
         theta    : ``(N,)`` for ``theta_dim==1``, or ``(N, theta_dim)``.
         prior_hp : ``(N, prior_dim)``.
         lik_hp   : ``(N, lik_dim)``.
-        returns  : ``(N,)`` raw η values.
+        returns  : ``(N,)`` η values, optionally bounded to
+                   ``output_bounds`` via a sigmoid squash.
         """
         if theta.ndim == 1:
             if self.theta_dim != 1:
@@ -264,7 +276,11 @@ class EtaNet(eqx.Module):
         x = jnp.where(log_mask, x_log, x)
         x = (x - loc) / scale
         out = jax.vmap(self.mlp)(x)
-        return out[..., 0]
+        raw = out[..., 0]
+        if self.output_bounds is None:
+            return raw
+        lo, hi = self.output_bounds
+        return lo + (hi - lo) * jax.nn.sigmoid(raw)
 
     def architecture_kwargs(self) -> dict[str, Any]:
         return {
@@ -275,6 +291,11 @@ class EtaNet(eqx.Module):
             "feature_loc": list(self.feature_loc),
             "feature_scale": list(self.feature_scale),
             "feature_log": list(self.feature_log),
+            "output_bounds": (
+                list(self.output_bounds)
+                if self.output_bounds is not None
+                else None
+            ),
         }
 
 

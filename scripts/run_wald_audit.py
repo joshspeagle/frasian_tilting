@@ -202,12 +202,9 @@ _FLAVORS = [
     "mx_fixed0_generic", "mx_fixed05_generic",
     "mx_numerical", "mx_numerical_intp", "mx_numerical_generic",
     "mx_dyn_numerical", "mx_dyn_numerical_generic",
-    # Learned-η variants. mx_learned_cd_var is marginal (η_valid=0.81
-    # just clears clamp threshold; val~13 vs PL/OT~1.3 — best
-    # achievable with current ValidityNet-gated soft-mask + lr/λ
-    # tuning). True fix requires structural sigmoid bound on EtaNet
-    # output, deferred. See
-    # `docs/notes/2026-05-10-mixture-cd-variance-instability.md`.
+    # Learned-η variants. All three calibrated post-bound (sigmoid
+    # squash on EtaNet output, mixture-only via train.py dispatch).
+    # See `docs/notes/2026-05-10-mixture-cd-variance-instability.md`.
     "mx_learned_intp", "mx_learned_cd_var", "mx_learned_static_w",
 ]
 
