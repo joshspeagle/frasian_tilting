@@ -278,24 +278,138 @@ small-grid case at <100 (was ~1e31 pre-fix).
 - Stage B: `fcb6257` (generic-MC path + 4 selectors + 9 mx_* audit flavors)
 - Bug fix + ot_dyn_numerical: `1d8110a` (this commit)
 
+## Loss-landscape probe results
+
+### Per-θ marginal probe (`scripts/loss_landscape_probe.py`)
+
+For each (scheme, θ_test) at fixed (μ₀=0, σ₀=σ=1, D=0), swept
+η ∈ [-1, 1.5] and plotted `p(θ_test; D, η)`. The argmin of this
+quantity is where the **per-θ marginal contribution** of
+`integrated_pvalue_loss` is minimized.
+
+Result: argmin at η ≈ -1 for every θ_test from 0 to 5 (PL and OT),
+while trained nets sit at η ≈ +0.7 to +0.9 — the opposite corner of
+η-space.
+
+**At |θ| ≥ 3, p(θ;D,η) is essentially zero across the entire η range.**
+The loss has no gradient signal in the tail region. So the tail-decay
+isn't an "incorrect optimum" — it's the network's smooth interpolation
+filling in something where the loss is genuinely uninformative. This
+explains the visual "drift toward 0.5-0.65" at large |θ| in
+`v4_eta_curves.png`.
+
+### Full-loss probe at constant η (`scripts/full_loss_landscape_probe.py`)
+
+Evaluated `integrated_pvalue_loss(p)` for `p = p(θ_grid; D, η_const)`
+over the same θ-grid as training (`[-5, +5]`, K=5 σ-anchored). The
+loss is **monotonically increasing in η_const over [-1, 1.5]**:
+
+```
+  eta:    -1.00  -0.50   0.00  +0.25  +0.50  +0.70  +0.85  +1.00  +1.10  +1.25  +1.50
+  loss:   0.958  0.998  1.064  1.117  1.197  1.297  1.412  1.596  1.795  2.386  5.798
+```
+
+Trained net mean η ≈ +0.885 → loss ≈ 1.41. **That is 1.5× the global
+optimum** at η = -1 (loss = 0.96).
+
+There is no plateau, no second basin, no flat region anywhere in
+[-1, 1.5]. The trained network has stopped at a point where the
+loss gradient is clearly nonzero and pointing toward η = -1. This
+is a **training optimization failure**, not a "loss legitimately
+prefers η ≈ +0.85" answer.
+
+### Why the optimizer gets stuck at η ≈ +0.85
+
+Looking at `_train_loop.py:299-304`, the total training loss is:
+
+```
+total = loss_width
+      + λ · boundary_penalty           (validity head)
+      + λ_anti_wald · anti_wald_penalty (mean relu(η)² — pushes η ≤ 0)
+      + λ_anti_collapse · eta_collapse_penalty (1/var(η) — rewards spread)
+```
+
+The `anti_wald` and `anti_collapse` penalties are **scheduled to decay
+during training** (per the comment in `losses.py:155-179`):
+
+> *Combined with a decay schedule, it perturbs the optimizer out of
+> the Wald basin during early training, then releases its bias so the
+> underlying width loss owns convergence.*
+
+Empirically: the optimizer escapes from η ≈ +1 (the original Wald
+collapse documented in
+[2026-05-09-phase-g-v4-fix.md](./2026-05-09-phase-g-v4-fix.md)) but
+**only partway**. After anti-wald decays, the optimizer is left at
+η ≈ +0.85 — neither at the Wald plateau (+1) nor at the width-loss
+optimum (-1). The width loss has positive gradient toward η=-1 but
+it's not strong enough to drag the network across η-space in the
+remaining training steps.
+
+This explains:
+- Why the σ-anchored fix from the prior note "beats v3" without
+  reaching the analytic optimum: it moved the basin from +1 to
+  +0.85, both still on the wrong side of where the width loss
+  alone wants η.
+- Why all three losses (`integrated_p`, `cd_variance`, `static_width`)
+  produce similar trained-η means (~0.7-0.9, all positive): the
+  optimizer's stuck location is dominated by the optimization
+  dynamics, not by the loss-function shape itself.
+- Why the per-θ shape varies by loss while the means cluster: in
+  the central region where signals exist, the losses produce
+  different η(θ) responses; in the tails where the loss is flat,
+  all three drift smoothly toward whatever the central value
+  is.
+
+### Implication for Stage C (mixture training)
+
+Mixture's admissible η-range is `[0, η_max]` — so **the width-loss
+optimum at η=-1 is inadmissible**. The network can't be "stuck on
+the wrong side of the optimum" the way PL/OT are; the optimum is
+**inside** mixture's admissible range or at its boundary.
+
+The trained mixture η-curves will likely settle at η-values
+similar in absolute terms (~0.7 to ~+1) to PL/OT — but for mixture
+this might actually be **near-optimal** rather than 1.5× off. We'll
+need to verify this with a similar full-loss probe on the trained
+mixture fixtures after Stage C.
+
+The tail-decay (loss-flat region) will probably appear in mixture
+too, for the same reasons. That's universal across schemes.
+
+## What changed in the codebase (probe scripts)
+
+- `scripts/loss_landscape_probe.py` — per-θ_test marginal probe
+  (commit incoming).
+- `scripts/full_loss_landscape_probe.py` — constant-η full-loss probe
+  (commit incoming).
+- Probe figures saved to `output/illustrations/loss_landscape_probe.png`
+  and `output/illustrations/full_loss_landscape_probe.png`.
+
 ## Open questions / follow-ups
 
 1. **Settle the smoothness narrative.** Is the empirical Lipschitz
    advantage of mixture (~1/3 of PL's) the right metric to highlight,
    or should we report swing-normalized Lipschitz (~similar across
-   schemes) as the primary measure? This affects how the result is
-   pitched in any future writeup.
+   schemes) as the primary measure?
 
-2. **Run the loss-landscape probe (Stage C prereq).** Before
-   training mixture's learned-η, verify the PL learned-η
-   tail-decay is an interpretable feature of the loss, not a
-   sparse-data extrapolation artifact.
+2. **Validity-head ablation.** Train one PL fixture with the
+   validity-head boundary penalty weight λ = 0 to see whether the
+   network reaches η ≈ -1. If yes, the validity head is what's
+   keeping the optimizer at +0.85.
 
-3. **Consider K=10 training distribution.** If experiment C above
-   shows boundary effects, switch the v4 default from K=5 to K=10
-   (or anchor differently) for mixture training to avoid the same
-   pathology.
+3. **anti_wald-extension experiment.** Try running training with the
+   anti-wald penalty kept on for the full schedule (no decay). If
+   the trained network reaches η ≈ -1 cleanly, the decay schedule
+   is the real culprit — current schedule decays before width-loss
+   takes over. Saved as a follow-up because it requires a config
+   change.
 
-4. **Fix the η-curve plot script** to also show training-θ-range
-   shading, so future readers see at a glance which |θ| values are
-   in-distribution vs. extrapolation.
+4. **Audit results re-interpretation.** The existing
+   `pl_learned_*` and `ot_learned_*` audit cells reflect learned-η
+   solutions that are **1.5× off the per-slice loss optimum**. They
+   still beat Wald/WALDO in the headline (per the prior note), but
+   the absolute width / coverage numbers underestimate the true
+   "best possible learned-η" performance for those schemes.
+
+5. **Fix the η-curve plot script** to also show training-θ-range
+   shading.
