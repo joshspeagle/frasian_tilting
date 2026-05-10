@@ -175,6 +175,16 @@ def _build_cell(flavor: str):
     if flavor == "mx_dyn_numerical_generic":
         return (MixtureTilting(selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)),
                 WaldoStatistic(force_generic=True), mx_bare)
+    # Mixture learned-η variants (added 2026-05-10).
+    if flavor == "mx_learned_intp":
+        return (MixtureTilting(selector=_learned_selector("integrated_p", scheme="mixture")),
+                WaldoStatistic(force_generic=False), mx_bare)
+    if flavor == "mx_learned_cd_var":
+        return (MixtureTilting(selector=_learned_selector("cd_variance", scheme="mixture")),
+                WaldoStatistic(force_generic=False), mx_bare)
+    if flavor == "mx_learned_static_w":
+        return (MixtureTilting(selector=_learned_selector("static_width", scheme="mixture")),
+                WaldoStatistic(force_generic=False), mx_bare)
     raise ValueError(f"unknown flavor {flavor!r}")
 
 
@@ -192,6 +202,13 @@ _FLAVORS = [
     "mx_fixed0_generic", "mx_fixed05_generic",
     "mx_numerical", "mx_numerical_intp", "mx_numerical_generic",
     "mx_dyn_numerical", "mx_dyn_numerical_generic",
+    # Learned-η variants. mx_learned_cd_var is marginal (η_valid=0.81
+    # just clears clamp threshold; val~13 vs PL/OT~1.3 — best
+    # achievable with current ValidityNet-gated soft-mask + lr/λ
+    # tuning). True fix requires structural sigmoid bound on EtaNet
+    # output, deferred. See
+    # `docs/notes/2026-05-10-mixture-cd-variance-instability.md`.
+    "mx_learned_intp", "mx_learned_cd_var", "mx_learned_static_w",
 ]
 
 

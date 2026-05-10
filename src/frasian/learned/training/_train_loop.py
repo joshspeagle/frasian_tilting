@@ -294,6 +294,7 @@ def _make_step_fns(
                 log_p_lik_grid_t=log_p_lik_grid_t,
                 support_theta_grid_t=support_theta_grid_t,
                 log_p_prior_grid_t=log_p_prior_grid_t,
+                val_net=val_net,
             )
             eta_pred = en(theta_batch_t, prior_hp_batch_t, lik_hp_batch_t)
             penalty = compose_boundary_penalty(
@@ -353,6 +354,7 @@ def _make_eval_fn(
     @eqx.filter_jit
     def eval_loss(
         eta_net: EtaNet,
+        val_net: ValidityNet,
         theta_grid_t: jax.Array,
         D_val_t: jax.Array,
         prior_hp_val_t: jax.Array,
@@ -374,6 +376,7 @@ def _make_eval_fn(
             log_p_lik_grid_t=log_p_lik_grid_t,
             support_theta_grid_t=support_theta_grid_t,
             log_p_prior_grid_t=log_p_prior_grid_t,
+            val_net=val_net,
         )
 
     return eval_loss
@@ -547,6 +550,7 @@ def _evaluate_epoch(
         v_loss = float(
             eval_fn(
                 args.eta_net,
+                args.val_net,
                 args.theta_grid_t,
                 args.D_val_t,
                 args.prior_hp_val_t,

@@ -276,8 +276,34 @@ def compose_width_loss(
     log_p_lik_grid_t: jax.Array | None = None,
     support_theta_grid_t: jax.Array | None = None,
     log_p_prior_grid_t: jax.Array | None = None,
+    val_net: ValidityNet | None = None,
 ) -> jax.Array:
-    """Conditional width loss (Phase G). Per-batch (prior_hp, lik_hp)."""
+    """Conditional width loss (Phase G). Per-batch (prior_hp, lik_hp).
+
+    When ``val_net`` is provided, the per-(B, G) p-value surface is
+    soft-masked by ``ValidityNet``'s learned admissibility probability:
+
+        p_masked = val_prob * p_grid + (1 - val_prob) * stop_grad(p_grid)
+
+    The forward value is unchanged; the gradient through p is scaled
+    by ``val_prob ∈ [0, 1]``. Where ValidityNet predicts the (θ, η)
+    pair is invalid (val_prob ≈ 0), the gradient through that grid
+    point is zero — preventing the loss from rewarding excursions
+    outside the admissible region. The boundary penalty (separate
+    loss term) still drives the network back toward valid η using
+    the unmasked ValidityNet signal.
+
+    Currently gated on ``scheme_name == "mixture"``: PL and OT trained
+    cleanly without the soft mask in 2026-05-10 retrain (their wider
+    admissibility windows + bounded loss landscape make Adam overshoot
+    rare). Mixture's narrow admissibility + cd_variance's
+    boundary-attracting optimum require the mask to prevent η<0 drift.
+    Applying to PL/OT is a no-op in expectation (val_prob ≈ 1
+    everywhere they operate) but adds a forward pass cost.
+
+    See ``docs/notes/2026-05-10-mixture-cd-variance-instability.md``
+    for the diagnostic sequence that motivated this design.
+    """
     if D_batch_t.ndim == 0:
         D_batch_t = D_batch_t[None]
     if D_batch_t.ndim not in (1, 2):
@@ -320,6 +346,48 @@ def compose_width_loss(
                 stacklevel=2,
             )
     theta_grid_b = jnp.broadcast_to(theta_grid_t[None, :], (B, G))
+
+    # ValidityNet-gated soft mask (mixture only — see docstring).
+    if val_net is not None and config.scheme_name == "mixture":
+        # Recompute eta_bg via the same flatten/reshape pattern as the
+        # adapter; cheap (one EtaNet forward pass, jit-cached).
+        theta_bg_2d = jnp.broadcast_to(theta_grid_t[None, :], (B, G))
+        theta_bg_flat = theta_bg_2d.reshape(B * G)
+        prior_hp_bg = jnp.broadcast_to(
+            prior_hp_batch_t[:, None, :], (B, G, prior_hp_batch_t.shape[1]),
+        ).reshape(B * G, prior_hp_batch_t.shape[1])
+        lik_hp_bg = jnp.broadcast_to(
+            lik_hp_batch_t[:, None, :], (B, G, lik_hp_batch_t.shape[1]),
+        ).reshape(B * G, lik_hp_batch_t.shape[1])
+        eta_flat = eta_net(theta_bg_flat, prior_hp_bg, lik_hp_bg)
+        params_v, static_v = eqx.partition(val_net, eqx.is_array)
+        params_v_detached = jax.tree.map(jax.lax.stop_gradient, params_v)
+        val_net_detached = eqx.combine(params_v_detached, static_v)
+        val_logits_flat = val_net_detached(
+            theta_bg_flat, prior_hp_bg, lik_hp_bg, eta_flat,
+        )
+        val_prob = jax.nn.sigmoid(val_logits_flat).reshape(B, G)
+        # Forward-preserving soft mask: gradient through p_grid is
+        # scaled by val_prob ∈ [0, 1]. Where ValidityNet predicts
+        # invalid, gradient is suppressed; the boundary penalty (via
+        # `compose_boundary_penalty`) handles pull-back. This is a
+        # gradient-only mask: the loss VALUE is unchanged. Confirmed
+        # to push η_valid_rate from 0.55 (no mask, default config) to
+        # 0.81 (with mask + lr=1e-4 + λ=50). For a stronger fix that
+        # also makes the loss VALUE high past the boundary, see the
+        # value-replacement form in
+        # `docs/notes/2026-05-10-mixture-cd-variance-instability.md`
+        # (tested but not adopted as default — the quadratic decline
+        # of P(valid) in the boundary band cancels the gain). True
+        # fix is the structural sigmoid-bound on EtaNet output;
+        # deferred to a follow-up because it requires retraining all
+        # mixture fixtures and threading the transform through every
+        # consumer (training loss, boundary penalty, inference
+        # selector, diagnostics).
+        p_grid = (
+            val_prob * p_grid
+            + (1.0 - val_prob) * jax.lax.stop_gradient(p_grid)
+        )
 
     if loss_kind == "integrated_p":
         return integrated_pvalue_loss(p_grid, theta_grid_b)
