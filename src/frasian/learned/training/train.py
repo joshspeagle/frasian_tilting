@@ -182,14 +182,15 @@ def fit_eta_artifact(
         val_feature_loc = val_feature_scale = val_feature_log = None
 
     eta_init_key, val_init_key = jax.random.split(root_key)
-    # Per-scheme structural output bound. Mixture's cd_variance loss has
+    # Per-scheme structural output bound, read from the scheme's
+    # ``ParamSpec.training_output_bounds``. Mixture's cd_variance loss has
     # a boundary-attractor pathology (saturated p≈1 past η>1 → variance
     # ≈0 false minimum) that no soft penalty fixes; bounding the network
     # output to the admissible window structurally is the only stable
     # cure. See docs/notes/2026-05-10-mixture-cd-variance-instability.md.
-    # Other schemes (power_law, ot) train cleanly without a bound; keep
-    # them unconstrained so they can find the analytical optimum.
-    output_bounds = (0.0, 1.0) if config.scheme_name == "mixture" else None
+    # Other schemes (power_law, ot) train cleanly unbounded; their
+    # param_space sets ``training_output_bounds=None``.
+    output_bounds = getattr(scheme.param_space, "training_output_bounds", None)
     eta_net = EtaNet(
         theta_dim=theta_dim, prior_dim=prior_dim, lik_dim=lik_dim,
         hidden_sizes=eta_hidden_sizes,

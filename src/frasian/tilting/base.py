@@ -47,6 +47,16 @@ class ParamSpec:
     should treat None as "concept doesn't apply" and skip the clamp.
     """
 
+    training_output_bounds: tuple[float, float] | None = None
+    """Per-scheme structural bound on EtaNet's output during learned-η
+    training. When set, ``fit_eta_artifact`` constructs the EtaNet
+    with ``output_bounds=(lo, hi)``, applying a sigmoid squash to the
+    network output. For mixture this is ``(0.0, 1.0)`` (cures the
+    cd_variance boundary-attractor pathology — see
+    ``docs/notes/2026-05-10-mixture-cd-variance-instability.md``); for
+    PL/OT this is None (their losses are well-behaved unbounded).
+    """
+
 
 @runtime_checkable
 class TiltingScheme(Protocol):

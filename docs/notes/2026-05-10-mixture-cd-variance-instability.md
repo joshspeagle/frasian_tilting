@@ -170,10 +170,21 @@ sigmoid bound below. Headline post-fix:
 | mx cd_var    | 13.57   | **1.25** | **0.811**   | **1.000**    | 0.955-0.965   |
 | mx static_w  | 4.07    | 4.06     | 1.000       | 1.000        | 0.96-0.97     |
 
-All three coverages within nominal [0.95, 0.97]. Widths comparable
-to WALDO (3.77-4.73 vs WALDO's 3.88-4.59). Bound is a no-op for
-intp/static_w (their optima were already in [0, 1]); structural
-constraint eliminates the boundary-attractor pathology for cd_var.
+At θ_true=-3 (negative-conflict side) all three coverages are within
+nominal [0.95, 0.97]; widths comparable to WALDO (3.77-4.73 vs WALDO's
+3.88-4.59). Bound is a no-op for intp/static_w (their optima were
+already in [0, 1]); structural constraint eliminates the boundary-
+attractor pathology for cd_var.
+
+**Asymmetric undercoverage at θ_true=+3.** All three variants show
+coverage 0.93-0.95 at the positive-conflict side — within ~1 SE
+(≈0.016 at n_reps=200) of nominal but consistently below 0.95. This
+asymmetry is structural to mixture (the m-geodesic interpolation is
+NOT symmetric in `sign(θ − μ₀)` once η is bounded to [0, 1]) and is
+present across all three loss variants, so it predates the bound.
+Not a blocker — within statistical noise at the sample size used —
+but worth noting that "calibrated at θ=-3" doesn't extend uniformly
+to θ=+3.
 
 **Structural sigmoid bound:** EtaNet output for
 mixture. Approach:

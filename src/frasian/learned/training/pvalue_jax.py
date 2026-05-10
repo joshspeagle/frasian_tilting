@@ -252,7 +252,15 @@ def mixture_tilted_pvalue_jax(
         # Compose:
         is_L_small = jnp.abs(L) <= _MIXTURE_QUADRATIC_LEADING_EPS
         is_M_small = jnp.abs(M) <= _MIXTURE_QUADRATIC_LEADING_EPS
-        is_disc_neg = disc_quarter < -_MIXTURE_DISCRIMINANT_EPS
+        # Branch test uses true sign. The sqrt floor (line ~225) uses
+        # ``_MIXTURE_DISCRIMINANT_EPS`` ONLY for gradient sanitization;
+        # mixing the two constants conflates a numerical decision
+        # (when is disc "essentially zero") with a gradient hygiene
+        # decision (sqrt floor) and creates a tiny inconsistency zone
+        # at ``0 < disc_quarter < eps`` where the branch picks the
+        # quadratic-roots formula but the roots are computed with a
+        # ``sqrt(eps)`` perturbation.
+        is_disc_neg = disc_quarter < 0.0
 
         # Linear case selection (within is_L_small).
         p_linear = jnp.where(

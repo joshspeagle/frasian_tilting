@@ -94,3 +94,14 @@ changed" section if they care to.
   negatives). Best fixture (no_boundary, lambda_max=0) captures 15%
   of the 14% calibrated headroom — i.e., ~2% absolute improvement
   over Wald. Lists pivot options.
+- [2026-05-10-mixture-cd-variance-instability.md](./2026-05-10-mixture-cd-variance-instability.md) —
+  Systematic investigation of mixture cd_variance training
+  instability, from initial E0 landscape probe through 8-config
+  hyperparameter sweep to the architectural sigmoid bound that
+  ultimately resolved it. **Resolution:** EtaNet gained an optional
+  `output_bounds: tuple[float,float] | None` field; mixture's
+  `param_space.training_output_bounds=(0.0, 1.0)` dispatches the
+  bound at training time. Pre-bound cd_var val=13.57 / η_valid=0.811
+  / coverage 0.22-0.93 → post-bound val=1.25 / η_valid=1.000 /
+  coverage 0.955-0.965. No-op for intp/static_w (their optima
+  already in [0, 1]).

@@ -1048,31 +1048,43 @@ class LearnedDynamicEtaSelector:
         """Runtime safety net for predicted η outside admissible range.
 
         For Normal-Normal experiments (``w`` is a finite float in
-        ``(0, 1)``) the admissible window is the closed-form
-        ``power_law`` bound ``(-w/(1-w) + buffer, 1/(1-w) - buffer)``
-        — a valid superset of ``ot``'s ``[0, 1]``.
+        ``(0, 1)``) the admissible window is scheme-specific:
+        - ``ot``     : ``[0, 1]``
+        - ``mixture``: ``[0, 1]`` (closed-form admissibility under the
+                       structural sigmoid bound; tighter than PL's window)
+        - other      : ``(-w/(1-w) + buffer, 1/(1-w) - buffer)`` (power_law)
 
         For non-Normal-Normal experiments (``w is None``, e.g.
         Bernoulli + Beta), the admissibility region is learned by
         ``ValidityNet`` during training; the closed-form clamp is
-        not applicable. We fall back to the eta-explore-box recorded
-        in the checkpoint metadata (``eta_explore_box``), with a
+        not applicable. We fall back to the ``eta_explore_box`` recorded
+        in the checkpoint's ``experiment_config`` metadata, with a
         small interior buffer.
         """
         del alpha  # bounds are α-independent
         if w is None:
             # Phase G non-NN: no closed-form admissibility window;
-            # ValidityNet learned the boundary. The wide aux-explore
-            # range used during training is the safe outer envelope.
+            # ValidityNet learned the boundary. Read the training-time
+            # eta_explore_box from the checkpoint metadata; this is the
+            # range Head B was trained on and so the only range its
+            # admissibility predictions cover.
             buffer = 1e-3
-            lo = -5.0 + buffer
-            hi = 5.0 - buffer
+            cfg = self.artifact.metadata.get("experiment_config") or {}
+            box = cfg.get("eta_explore_box")
+            if box is not None and len(box) == 2:
+                lo = float(box[0]) + buffer
+                hi = float(box[1]) - buffer
+            else:
+                # Pre-v4 metadata or malformed: fall back to the historic
+                # default ``[-5, 5]``.
+                lo = -5.0 + buffer
+                hi = 5.0 - buffer
         else:
             try:
                 if not (0.0 < w < 1.0):
                     raise ValueError(f"w must lie in (0, 1); got {w!r}")
                 buffer = 1e-3
-                if scheme.name == "ot":
+                if scheme.name == "ot" or scheme.name == "mixture":
                     lo, hi = 0.0 + buffer, 1.0 - buffer
                 else:
                     # power_law (and any other Normal-Normal scheme

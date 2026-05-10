@@ -90,3 +90,21 @@ class TestMixtureInvariants:
 
         with pytest.raises(ValueError, match=r"admissibl|negative|inadmiss"):
             MixtureTilting().tilt(post, prior, lik, -0.5)
+
+    def test_inadmissible_eta_above_eta_max_raises(self):
+        """eta > eta_max on Normal-Normal is inadmissible (negative pdf in tails).
+
+        Constructed regime where R_max > 1 so eta_max = R_max/(R_max-1) is
+        finite. At strong prior-data conflict (D far from mu0, w small)
+        R_max is large, so eta_max approaches 1 from above. Pick eta>>1 to
+        guarantee falling past it.
+        """
+        model = NormalNormalModel(sigma=1.0)
+        prior = NormalDistribution(loc=0.0, scale=1.0)
+        D = np.asarray([5.0])  # strong conflict
+        post = model.posterior(D, prior)
+        lik = model.likelihood(D)
+
+        with pytest.raises(ValueError, match=r"admissibl|inadmiss|eta_max"):
+            # eta = 10 is past eta_max for any reasonable R_max.
+            MixtureTilting().tilt(post, prior, lik, 10.0)
