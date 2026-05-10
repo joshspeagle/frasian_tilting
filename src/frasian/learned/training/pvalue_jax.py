@@ -216,7 +216,13 @@ def mixture_tilted_pvalue_jax(
             jnp.ones_like(L),
             L,
         )
-        sqrt_disc = jnp.sqrt(jnp.maximum(disc_quarter, 0.0))
+        # Clamp BELOW zero (not at zero) so the gradient of sqrt stays
+        # finite even when disc_quarter < 0. ``sqrt(max(x, 0))`` has a
+        # 0×∞ gradient at x=0 that produces NaN; ``sqrt(max(x, eps))``
+        # with eps > 0 gives finite gradient everywhere. The clamped
+        # branch is gated out by the ``is_disc_neg`` mask below, so
+        # the forward value is unchanged; only the gradient is sanitized.
+        sqrt_disc = jnp.sqrt(jnp.maximum(disc_quarter, _MIXTURE_DISCRIMINANT_EPS))
         x_root_a = (-M - sqrt_disc) / L_safe
         x_root_b = (-M + sqrt_disc) / L_safe
         x_minus = jnp.minimum(x_root_a, x_root_b)
