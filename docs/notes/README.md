@@ -94,6 +94,13 @@ changed" section if they care to.
   negatives). Best fixture (no_boundary, lambda_max=0) captures 15%
   of the 14% calibrated headroom — i.e., ~2% absolute improvement
   over Wald. Lists pivot options.
+- [2026-05-10-experimental-matrix-recap.md](./2026-05-10-experimental-matrix-recap.md) —
+  Headline numbers from the 11-flavor audit (2 baselines + 9
+  learned-η). Winner cell: OT × cd_variance (3.81 avg width vs
+  Wald 3.92 — ~2.8% narrower at calibrated coverage). All 11
+  flavors calibrated (0.94-0.97 across grid). PL ≈ OT > MX on
+  width; cd_variance > integrated_p > static_width as a loss.
+  Pin for future diagnostic baselines.
 - [2026-05-10-mixture-cd-variance-instability.md](./2026-05-10-mixture-cd-variance-instability.md) —
   Systematic investigation of mixture cd_variance training
   instability, from initial E0 landscape probe through 8-config
