@@ -18,13 +18,18 @@ values (using `integrated_pvalue_loss`).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 from numpy.typing import NDArray
 
 from .losses import integrated_pvalue_loss
 from .pvalue_jax import get_jax_tilted_pvalue
+
+if TYPE_CHECKING:
+    from .architecture import EtaNet
 
 
 @dataclass(frozen=True)
@@ -126,3 +131,95 @@ def build_probe_batch(
         theta=theta, D=D, prior_hp=prior_hp, lik_hp=lik_hp,
         argmin_eta=argmin_eta, w=w,
     )
+
+
+def compute_d1_output_stats(eta_net: "EtaNet", probe: ProbeBatch) -> dict[str, float]:
+    """D1: output statistics on the held-out probe batch.
+
+    Calls EtaNet on the probe batch, returns:
+      - eta_mean, eta_std, eta_range: distribution of trained η.
+      - corr_with_argmin: Pearson correlation between trained η and
+        per-slice argmin η.
+      - residual_mean: mean(trained_η - argmin_η).
+    """
+    eta_pred = np.asarray(eta_net(
+        jnp.asarray(probe.theta),
+        jnp.asarray(probe.prior_hp),
+        jnp.asarray(probe.lik_hp),
+    ), dtype=np.float64)
+    eta_mean = float(np.mean(eta_pred))
+    eta_std = float(np.std(eta_pred))
+    eta_range = float(np.ptp(eta_pred))
+    if np.std(probe.argmin_eta) < 1e-9 or np.std(eta_pred) < 1e-9:
+        corr = float("nan")
+    else:
+        corr = float(np.corrcoef(probe.argmin_eta, eta_pred)[0, 1])
+    residual_mean = float(np.mean(eta_pred - probe.argmin_eta))
+    return {
+        "eta_mean": eta_mean, "eta_std": eta_std, "eta_range": eta_range,
+        "corr_with_argmin": corr, "residual_mean": residual_mean,
+    }
+
+
+_DEAD_NEURON_THRESHOLD = 1e-3
+
+
+def compute_d3_activation_stats(
+    eta_net: "EtaNet", probe: ProbeBatch,
+) -> dict[str, float | int]:
+    """D3: penultimate-layer activation statistics on the probe batch.
+
+    Computes the EtaNet's penultimate-layer activations (post-activation
+    output of the last hidden layer, i.e. just before the final linear
+    head) for each probe sample, returns per-neuron std across the
+    batch, the min std, and a count of "dead" neurons (std < threshold).
+
+    A penultimate layer where most neurons have low std means the
+    network has collapsed to roughly constant output regardless of
+    input — the dead-input-pathway hypothesis.
+    """
+    # Replicate EtaNet.__call__'s input pipeline (concat + log/zscore
+    # normalization) so we hit the MLP with the same vector it sees
+    # in training. Then forward through all-but-the-final Linear,
+    # applying the MLP's activation between layers (eqx.nn.MLP stores
+    # only Linear layers; activations are applied by __call__).
+    theta_arr = jnp.asarray(probe.theta)
+    if eta_net.theta_dim == 1 and theta_arr.ndim == 1:
+        theta_2d = theta_arr[:, None]
+    else:
+        theta_2d = theta_arr
+    x = jnp.concatenate([
+        theta_2d,
+        jnp.asarray(probe.prior_hp),
+        jnp.asarray(probe.lik_hp),
+    ], axis=-1)
+    loc = jnp.asarray(eta_net.feature_loc)
+    scale = jnp.asarray(eta_net.feature_scale)
+    log_mask = jnp.asarray(eta_net.feature_log)
+    x_log = jnp.log(jnp.maximum(x, 1e-12))
+    x = jnp.where(log_mask, x_log, x)
+    x = (x - loc) / scale  # shape (n, in_features)
+
+    # Forward through the MLP up to (but not including) the final
+    # Linear head. eqx.nn.MLP.layers is a tuple of Linear-only layers;
+    # the canonical __call__ does (Linear -> activation) for each
+    # layer in layers[:-1], then a bare Linear for layers[-1]. The
+    # penultimate-layer activations we want are the post-activation
+    # output after the last layer in layers[:-1] runs.
+    activation = eta_net.mlp.activation
+
+    def forward_to_penult(xi: jax.Array) -> jax.Array:
+        h = xi
+        for layer in eta_net.mlp.layers[:-1]:
+            h = layer(h)
+            h = activation(h)
+        return h
+
+    h = jax.vmap(forward_to_penult)(x)
+    h_np = np.asarray(h, dtype=np.float64)  # (n, last_hidden_size)
+    per_neuron_std = h_np.std(axis=0)
+    return {
+        "penult_std_mean": float(np.mean(per_neuron_std)),
+        "penult_std_min": float(np.min(per_neuron_std)),
+        "n_dead_neurons": int(np.sum(per_neuron_std < _DEAD_NEURON_THRESHOLD)),
+    }

@@ -40,3 +40,65 @@ class TestProbeBatch:
         pb_b = build_probe_batch(scheme_name="power_law", n=32, rng=rng_b)
         np.testing.assert_array_equal(pb_a.theta, pb_b.theta)
         np.testing.assert_array_equal(pb_a.argmin_eta, pb_b.argmin_eta)
+
+
+@pytest.mark.L1
+@pytest.mark.properties
+class TestD1OutputStats:
+    def _make_random_eta_net(self):
+        import jax
+        from frasian.learned.training.architecture import EtaNet
+        return EtaNet(
+            theta_dim=1, prior_dim=2, lik_dim=1,
+            hidden_sizes=(16, 16), key=jax.random.PRNGKey(0),
+        )
+
+    def test_d1_output_stats_returns_expected_keys(self):
+        import numpy as np
+        from frasian.learned.training.diagnostics import (
+            build_probe_batch, compute_d1_output_stats,
+        )
+        rng = np.random.default_rng(0xCAFE)
+        pb = build_probe_batch(scheme_name="power_law", n=32, rng=rng)
+        net = self._make_random_eta_net()
+        stats = compute_d1_output_stats(net, pb)
+        for k in ("eta_mean", "eta_std", "eta_range",
+                  "corr_with_argmin", "residual_mean"):
+            assert k in stats, f"missing {k}"
+            assert np.isfinite(stats[k]), f"{k} = {stats[k]}"
+
+    def test_d1_corr_with_constant_argmin_is_nan_or_zero(self):
+        """If all argmin values are equal, correlation is undefined (NaN/0)."""
+        import numpy as np
+        from dataclasses import replace
+        from frasian.learned.training.diagnostics import (
+            build_probe_batch, compute_d1_output_stats,
+        )
+        rng = np.random.default_rng(0xCAFE)
+        pb = build_probe_batch(scheme_name="power_law", n=32, rng=rng)
+        # Force all argmins to be 0.5
+        pb_const = replace(pb, argmin_eta=np.full_like(pb.argmin_eta, 0.5))
+        net = self._make_random_eta_net()
+        stats = compute_d1_output_stats(net, pb_const)
+        assert np.isnan(stats["corr_with_argmin"]) or stats["corr_with_argmin"] == 0.0
+
+
+@pytest.mark.L1
+@pytest.mark.properties
+class TestD3ActivationStats:
+    def test_d3_returns_expected_keys(self):
+        import jax
+        import numpy as np
+        from frasian.learned.training.architecture import EtaNet
+        from frasian.learned.training.diagnostics import (
+            build_probe_batch, compute_d3_activation_stats,
+        )
+        rng = np.random.default_rng(0xCAFE)
+        pb = build_probe_batch(scheme_name="power_law", n=32, rng=rng)
+        net = EtaNet(theta_dim=1, prior_dim=2, lik_dim=1,
+                     hidden_sizes=(16, 16), key=jax.random.PRNGKey(0))
+        stats = compute_d3_activation_stats(net, pb)
+        for k in ("penult_std_mean", "penult_std_min", "n_dead_neurons"):
+            assert k in stats, f"missing {k}"
+        assert isinstance(stats["n_dead_neurons"], int)
+        assert stats["n_dead_neurons"] >= 0
