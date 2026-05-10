@@ -69,7 +69,7 @@ def _compute_argmin_constant_eta(
     mu0: float,
     sigma0: float,
     sigma: float,
-    eta_grid: NDArray[np.float64] = np.linspace(-1.5, 1.5, 121),
+    eta_grid: NDArray[np.float64] | None = None,
     K: float = 5.0,
 ) -> float:
     """Per-slice constant-η argmin of `integrated_pvalue_loss`.
@@ -77,7 +77,14 @@ def _compute_argmin_constant_eta(
     For each candidate eta_const, build the tilted p-curve on a
     σ-anchored θ-grid, integrate, find the η that minimizes.
     """
+    if eta_grid is None:
+        eta_grid = np.linspace(-1.5, 1.5, 121)
     pvalue_fn = get_jax_tilted_pvalue(scheme_name, "normal_normal")
+    # n_grid=401 here is hardcoded by design: the offline argmin is a
+    # 1D smooth integration over a σ-anchored window, so the grid
+    # only needs to be fine enough to resolve the integrand — it does
+    # NOT have to match the training-loop integration grid (which is
+    # the whole point of the offline reference target).
     theta_grid = np.linspace(mu0 - K * sigma0, mu0 + K * sigma0, 401)
     w = sigma0 ** 2 / (sigma ** 2 + sigma0 ** 2)
     losses = np.empty(eta_grid.size, dtype=np.float64)

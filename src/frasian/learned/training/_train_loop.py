@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 import equinox as eqx
 import jax
@@ -39,6 +39,9 @@ from ._validity_data import collect_validity_batch
 from .architecture import EtaNet, ValidityNet
 from .losses import anti_wald_penalty, eta_collapse_penalty
 from .sampling import ExperimentConfig, anchor_theta_to_prior
+
+if TYPE_CHECKING:
+    from .diagnostics import ProbeBatch
 
 _FORCE_X64 = _x64
 
@@ -147,7 +150,7 @@ class LoopArgs:
     # Optional held-out probe batch for per-epoch D1-D4 diagnostics.
     # When non-None, _epoch_iteration computes diagnostics after each
     # epoch's update and appends them to ``out.diagnostics``.
-    probe_batch: Any | None = None
+    probe_batch: "ProbeBatch | None" = None
 
 
 def evaluate_head_b_accuracy(

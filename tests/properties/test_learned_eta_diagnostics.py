@@ -85,7 +85,6 @@ class TestD1OutputStats:
         )
 
     def test_d1_output_stats_returns_expected_keys(self):
-        import numpy as np
         from frasian.learned.training.diagnostics import (
             build_probe_batch, compute_d1_output_stats,
         )
@@ -103,7 +102,6 @@ class TestD1OutputStats:
 
     def test_d1_corr_with_constant_argmin_is_nan_or_zero(self):
         """If all argmin values are equal, correlation is undefined (NaN/0)."""
-        import numpy as np
         from dataclasses import replace
         from frasian.learned.training.diagnostics import (
             build_probe_batch, compute_d1_output_stats,
@@ -125,7 +123,6 @@ class TestD1OutputStats:
 class TestD3ActivationStats:
     def test_d3_returns_expected_keys(self):
         import jax
-        import numpy as np
         from frasian.learned.training.architecture import EtaNet
         from frasian.learned.training.diagnostics import (
             build_probe_batch, compute_d3_activation_stats,
@@ -149,7 +146,6 @@ class TestD3ActivationStats:
 class TestD2GradientNorms:
     def test_d2_returns_expected_keys(self):
         import jax
-        import numpy as np
         from frasian.learned.training.architecture import EtaNet
         from frasian.learned.training.diagnostics import (
             build_probe_batch, compute_d2_gradient_norms,
@@ -179,7 +175,6 @@ class TestD2GradientNorms:
 class TestD4LossByBin:
     def test_d4_returns_expected_keys(self):
         import jax
-        import numpy as np
         from frasian.learned.training.architecture import EtaNet
         from frasian.learned.training.diagnostics import (
             build_probe_batch, compute_d4_loss_by_bin,
@@ -203,7 +198,6 @@ class TestD4LossByBin:
 @pytest.mark.properties
 class TestStratifiedBatch:
     def test_stratified_batches_span_w_bins(self):
-        import numpy as np
         from frasian.learned.training.hyperparam_distribution import (
             HyperparamDistribution,
             ScalarDist,
