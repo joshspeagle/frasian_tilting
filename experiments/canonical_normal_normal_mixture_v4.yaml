@@ -1,0 +1,47 @@
+# Phase G conditional learned-η for the Normal-Normal sandbox + mixture
+# (m-geodesic). Trained over a range of (μ₀, σ₀, σ); selector dispatches
+# on the prior + likelihood passed at inference time (within the trained
+# ranges).
+
+prior_class: normal
+model_class: normal_normal
+hyperparam_distribution:
+  prior:
+    loc:   { dist: uniform,    low: -2.0, high: 2.0 }
+    scale: { dist: loguniform, low: 0.2,  high: 5.0 }
+  lik:
+    sigma: { dist: loguniform, low: 0.5,  high: 2.0 }
+theta_distribution:
+  # σ₀-anchored (anchored to the PRIOR's σ₀, NOT the likelihood's σ):
+  # per batch element, θ ~ U(μ₀ − K·σ₀, μ₀ + K·σ₀).
+  # Frozen serialization identifier `sigma_anchored_uniform` (canonical
+  # class name `Sigma0AnchoredUniformThetaDistribution` since 2026-05-10).
+  type: sigma_anchored_uniform
+  K: 5.0
+# Absolute integration grid bounds (must cover μ₀ ± K·σ₀ across the
+# full hp range plus a buffer for integrated-p tails). Same as PL/OT v4.
+theta_grid_lo: -30.0
+theta_grid_hi:  30.0
+scheme: mixture
+statistic: waldo
+n_grid: 401
+n_lhs: 10000
+seed: 42
+n_data: 1
+# η-explore box for ValidityNet's offline aux samples. MixtureTilting's
+# admissible η window is [0, eta_max(D, prior, model)] — narrower than
+# power_law's. eta_max ≤ ~3 in the mild-conflict regime and can be much
+# smaller at extreme conflict; using [-1.0, 3.0] gives ValidityNet
+# enough negative-side and tail-side samples to learn the boundary.
+# See docs/methods/mixture.md §"Closed-form tilted-WALDO p-value" for
+# the η_max derivation.
+eta_explore_box: [-1.0, 3.0]
+name: canonical_normal_normal_mixture_v4
+description: |
+  Phase G conditional learned-η for MixtureTilting (m-geodesic). The
+  same hp distribution as the PL/OT v4 fixtures so per-cell behavior
+  on the audit suite is directly comparable. eta_explore_box widened
+  on the negative side ([-1.0, 3.0] vs PL's default [-5, 5]) because
+  mixture's admissibility window is narrower and concentrating the
+  ValidityNet's training mass near the boundary improves Head B's
+  accuracy at the η_max edge.
