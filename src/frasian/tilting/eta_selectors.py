@@ -526,7 +526,7 @@ class DynamicNumericalEtaSelector:
 #
 # The original Cluster G rationale (gate it at 20%) was correct only
 # under the assumption that out-of-admissible η meant "wrong checkpoint
-# / undertrained." Phase G + σ-anchored training surfaces a benign
+# / undertrained." Phase G + σ₀-anchored training surfaces a benign
 # extrapolation case: the audit's wide θ_grid at small σ₀ pushes the
 # dynamic CI scan to query θ outside the per-slice trained range, where
 # η extrapolation may drift out-of-admissible. Refusing here is overly
@@ -598,6 +598,16 @@ class LearnedDynamicEtaSelector:
     # Per-θ learned selector — η = MLP(θ), no D-conditioning. Calibrated
     # by construction (see learned_eta.md / dual-head training).
     is_post_selection: ClassVar[bool] = False
+    # Default ON: when θ falls outside the training θ-distribution box,
+    # override the network's prediction with `scheme.param_space.
+    # eta_likelihood_only` — the η value that makes the procedure
+    # reduce to a likelihood-only / data-only inference (e.g. η=1 in
+    # power_law gives standard Wald). The network's behavior outside
+    # its training distribution is unspecified; clamping to the
+    # likelihood-only value gives a calibrated fallback (any fixed η
+    # gives U[0,1] p-values under H0). Disable for diagnostic probes
+    # that explicitly want to see the network's extrapolation behavior.
+    clamp_outside_training: bool = True
     # Lazy-load latch for `artifact.load()`. Not part of equality —
     # two selectors with the same artifact are equal regardless of
     # whether either has loaded yet.
@@ -966,6 +976,10 @@ class LearnedDynamicEtaSelector:
         lik_hp = model.hyperparams()
         eta = self.artifact.predict_eta(theta_arr, prior_hp, lik_hp)
 
+        # OOD-θ clamp: θ outside the training distribution → likelihood-only η.
+        if self.clamp_outside_training:
+            eta = self._clamp_outside_training_box(eta, theta_arr, prior, scheme)
+
         # NN-specific admissibility window for clamping.
         from ..models._dispatch import is_normal_normal
         from ..models.distributions import NormalDistribution
@@ -976,6 +990,59 @@ class LearnedDynamicEtaSelector:
         else:
             w_eff = None
         return self._maybe_clamp_eta(eta, scheme=scheme, w=w_eff, alpha=alpha)
+
+    def _clamp_outside_training_box(self, eta, theta_arr, prior, scheme):
+        """Override η = scheme.param_space.eta_likelihood_only for θ
+        outside the training θ-distribution box.
+
+        Reads the training θ-distribution from the checkpoint metadata.
+        For ``sigma_anchored_uniform`` the box is ``[μ₀ − K·σ₀, μ₀ +
+        K·σ₀]`` (using the per-call prior's loc/scale). For ``uniform``
+        the box is ``[low, high]``. For unknown / unsupported types the
+        clamp is a no-op (with a warning). For schemes whose
+        ``param_space.eta_likelihood_only`` is None (e.g. identity,
+        fisher_rao stub) the clamp is also a no-op.
+
+        Calibration is preserved: any fixed η yields U[0,1] p-values
+        under H₀, so swapping the network's η for `eta_likelihood_only`
+        outside the training box keeps the dynamic-CI's 1-α coverage.
+        """
+        eta_lo_only = getattr(scheme.param_space, "eta_likelihood_only", None)
+        if eta_lo_only is None:
+            return eta
+
+        meta = self.artifact.metadata
+        cfg = meta.get("experiment_config") or {}
+        theta_dist_spec = cfg.get("theta_distribution") or {}
+        dist_type = theta_dist_spec.get("type")
+
+        if dist_type == "sigma_anchored_uniform":
+            K = float(theta_dist_spec.get("K", 5.0))
+            prior_names = list(prior.hyperparam_names())
+            if "loc" not in prior_names or "scale" not in prior_names:
+                return eta
+            prior_hp = np.asarray(prior.hyperparams(), dtype=np.float64)
+            mu0 = float(prior_hp[prior_names.index("loc")])
+            sigma0 = float(prior_hp[prior_names.index("scale")])
+            lo = mu0 - K * sigma0
+            hi = mu0 + K * sigma0
+        elif dist_type == "uniform":
+            lo = float(theta_dist_spec.get("low"))
+            hi = float(theta_dist_spec.get("high"))
+        else:
+            import warnings
+            warnings.warn(
+                f"{self.artifact.name}: unknown theta_distribution type "
+                f"{dist_type!r}; OOD-θ clamp is a no-op for this checkpoint.",
+                RuntimeWarning,
+                stacklevel=3,
+            )
+            return eta
+
+        out_of_box = (theta_arr < lo) | (theta_arr > hi)
+        if out_of_box.any():
+            return np.where(out_of_box, float(eta_lo_only), eta)
+        return eta
 
     def _maybe_clamp_eta(self, eta, *, scheme, w, alpha):
         """Runtime safety net for predicted η outside admissible range.

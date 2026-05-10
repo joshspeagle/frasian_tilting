@@ -832,6 +832,7 @@ class OTTilting:
             "the resulting distribution is well-defined (Gaussian path: "
             "sigma_t > 0; closed-form pvalue: s_t > 0 ⇔ eta > -w/(1-w))."
         ),
+        eta_likelihood_only=1.0,
     )
     selector: EtaSelector = field(default_factory=lambda: FixedEtaSelector(eta=0.0))
 

@@ -1122,6 +1122,7 @@ class PowerLawTilting:
         eta_default=0.0,
         eta_identity=0.0,
         description="eta=0 recovers WALDO; eta=1 recovers Wald.",
+        eta_likelihood_only=1.0,
     )
     selector: EtaSelector = field(default_factory=lambda: FixedEtaSelector(eta=0.0))
 

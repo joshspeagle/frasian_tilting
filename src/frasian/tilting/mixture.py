@@ -458,6 +458,7 @@ class MixtureTilting:
         eta_default=0.0,
         eta_identity=0.0,
         description="eta in [0, eta_max(D, prior, model)]; 0=posterior, 1=likelihood.",
+        eta_likelihood_only=1.0,
     )
 
     # ------ Tilt: NN closed-form path (returns GaussianMixtureDistribution) ------

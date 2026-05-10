@@ -36,6 +36,16 @@ class ParamSpec:
     eta_default: float
     eta_identity: float  # value of η for which `tilt` returns the input posterior
     description: str = ""
+    eta_likelihood_only: float | None = None
+    """Value of η that makes the tilted inference equivalent to a
+    likelihood-only (data-only) procedure — i.e. no contribution from
+    the prior. For schemes whose η interpolates posterior↔likelihood
+    (power_law, ot, mixture), this is 1.0. For schemes where η doesn't
+    parameterize a posterior↔likelihood mixing (identity, future
+    schemes), set None — callers that need this value (e.g.
+    LearnedDynamicEtaSelector's out-of-training-distribution clamp)
+    should treat None as "concept doesn't apply" and skip the clamp.
+    """
 
 
 @runtime_checkable
