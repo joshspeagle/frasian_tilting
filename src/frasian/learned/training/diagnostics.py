@@ -31,6 +31,7 @@ from .pvalue_jax import get_jax_tilted_pvalue
 
 if TYPE_CHECKING:
     from .architecture import EtaNet
+    from .hyperparam_distribution import HyperparamDistribution
 
 
 @dataclass(frozen=True)
@@ -101,19 +102,46 @@ def build_probe_batch(
     scheme_name: str,
     n: int,
     rng: np.random.Generator,
+    hyperparam_distribution: "HyperparamDistribution",
     *,
+    prior_names: tuple[str, ...] = ("loc", "scale"),
+    lik_names: tuple[str, ...] = ("sigma",),
     K: float = 5.0,
 ) -> ProbeBatch:
-    """Sample n (theta, D, prior_hp, lik_hp) tuples spanning the v4
-    hyperparam range, compute per-slice argmin eta offline.
+    """Sample n (theta, D, prior_hp, lik_hp) tuples spanning the
+    training hyperparam_distribution, compute per-slice argmin eta
+    offline.
 
-    Sampling matches the v4 YAML hyperparam_distribution exactly:
-    mu0 ~ U(-2, 2), sigma_0 ~ Loguniform(0.2, 5), sigma ~ Loguniform(0.5, 2).
-    theta ~ U(mu0 - K*sigma_0, mu0 + K*sigma_0). D ~ Normal(theta, sigma).
+    Hyperparams (μ₀, σ₀, σ) are drawn from
+    ``hyperparam_distribution.sample(...)`` so the probe matches
+    whatever ranges the training run actually used (rather than
+    silently hardcoding the v4 ranges). For the Normal-Normal case the
+    expected ``prior_names`` / ``lik_names`` are
+    ``("loc", "scale")`` / ``("sigma",)``; this function only supports
+    that schema (the offline argmin is Normal-Normal-specific).
+
+    θ is then σ-anchored: θ ~ U(μ₀ - K·σ₀, μ₀ + K·σ₀). D ~ N(θ, σ).
     """
-    mu0 = rng.uniform(-2.0, 2.0, size=n)
-    sigma0 = np.exp(rng.uniform(np.log(0.2), np.log(5.0), size=n))
-    sigma = np.exp(rng.uniform(np.log(0.5), np.log(2.0), size=n))
+    if "loc" not in prior_names or "scale" not in prior_names:
+        raise ValueError(
+            "build_probe_batch currently requires Normal-Normal prior schema "
+            f"with names ('loc', 'scale'); got {prior_names!r}."
+        )
+    if "sigma" not in lik_names:
+        raise ValueError(
+            "build_probe_batch currently requires Normal-Normal lik schema "
+            f"with names ('sigma',); got {lik_names!r}."
+        )
+    prior_hp_b, lik_hp_b = hyperparam_distribution.sample(
+        n, rng, prior_names=prior_names, lik_names=lik_names,
+    )
+    loc_idx = prior_names.index("loc")
+    scale_idx = prior_names.index("scale")
+    sigma_idx = lik_names.index("sigma")
+    mu0 = prior_hp_b[:, loc_idx]
+    sigma0 = prior_hp_b[:, scale_idx]
+    sigma = lik_hp_b[:, sigma_idx]
+
     theta = rng.uniform(mu0 - K * sigma0, mu0 + K * sigma0)
     D = rng.normal(loc=theta, scale=sigma)
     w = sigma0 ** 2 / (sigma ** 2 + sigma0 ** 2)
@@ -126,10 +154,8 @@ def build_probe_batch(
             K=K,
         )
 
-    prior_hp = np.stack([mu0, sigma0], axis=-1)  # (n, 2)
-    lik_hp = sigma[:, None]                       # (n, 1)
     return ProbeBatch(
-        theta=theta, D=D, prior_hp=prior_hp, lik_hp=lik_hp,
+        theta=theta, D=D, prior_hp=prior_hp_b, lik_hp=lik_hp_b,
         argmin_eta=argmin_eta, w=w,
     )
 

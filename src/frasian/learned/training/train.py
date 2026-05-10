@@ -280,6 +280,9 @@ def fit_eta_artifact(
             scheme_name=config.scheme_name,
             n=int(probe_batch_size),
             rng=probe_rng,
+            hyperparam_distribution=config.hyperparam_distribution,
+            prior_names=config.prior_cls.hyperparam_names(),
+            lik_names=config.model_cls.hyperparam_names(),
         )
 
     args = LoopArgs(

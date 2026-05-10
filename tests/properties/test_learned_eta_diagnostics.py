@@ -6,13 +6,36 @@ import numpy as np
 import pytest
 
 
+def _v4_hyperparam_distribution():
+    """The canonical v4 NormalNormal + power_law hyperparam distribution.
+
+    Mirrors `experiments/canonical_normal_normal_powerlaw_v4.yaml` so
+    probe-batch tests exercise the same ranges the training loop sees.
+    """
+    from frasian.learned.training.hyperparam_distribution import (
+        HyperparamDistribution, ScalarDist,
+    )
+    return HyperparamDistribution(
+        prior_specs={
+            "loc":   ScalarDist(kind="uniform",    low=-2.0, high=2.0),
+            "scale": ScalarDist(kind="loguniform", low=0.2,  high=5.0),
+        },
+        lik_specs={
+            "sigma": ScalarDist(kind="loguniform", low=0.5,  high=2.0),
+        },
+    )
+
+
 @pytest.mark.L1
 @pytest.mark.properties
 class TestProbeBatch:
     def test_probe_batch_size_and_shapes(self):
         from frasian.learned.training.diagnostics import build_probe_batch
         rng = np.random.default_rng(0xCAFE)
-        pb = build_probe_batch(scheme_name="power_law", n=64, rng=rng)
+        pb = build_probe_batch(
+            scheme_name="power_law", n=64, rng=rng,
+            hyperparam_distribution=_v4_hyperparam_distribution(),
+        )
         assert pb.theta.shape == (64,)
         assert pb.D.shape == (64,)
         assert pb.prior_hp.shape == (64, 2)  # NormalDistribution: (loc, scale)
@@ -27,7 +50,10 @@ class TestProbeBatch:
     def test_probe_batch_w_bins_assigned(self):
         from frasian.learned.training.diagnostics import build_probe_batch, w_bin
         rng = np.random.default_rng(0xCAFE)
-        pb = build_probe_batch(scheme_name="power_law", n=128, rng=rng)
+        pb = build_probe_batch(
+            scheme_name="power_law", n=128, rng=rng,
+            hyperparam_distribution=_v4_hyperparam_distribution(),
+        )
         bins = np.array([w_bin(float(w)) for w in pb.w])
         # All three bins should be represented in a sample of 128
         assert set(np.unique(bins).tolist()) == {"lowW", "midW", "highW"}
@@ -36,8 +62,13 @@ class TestProbeBatch:
         from frasian.learned.training.diagnostics import build_probe_batch
         rng_a = np.random.default_rng(42)
         rng_b = np.random.default_rng(42)
-        pb_a = build_probe_batch(scheme_name="power_law", n=32, rng=rng_a)
-        pb_b = build_probe_batch(scheme_name="power_law", n=32, rng=rng_b)
+        hd = _v4_hyperparam_distribution()
+        pb_a = build_probe_batch(
+            scheme_name="power_law", n=32, rng=rng_a, hyperparam_distribution=hd,
+        )
+        pb_b = build_probe_batch(
+            scheme_name="power_law", n=32, rng=rng_b, hyperparam_distribution=hd,
+        )
         np.testing.assert_array_equal(pb_a.theta, pb_b.theta)
         np.testing.assert_array_equal(pb_a.argmin_eta, pb_b.argmin_eta)
 
@@ -59,7 +90,10 @@ class TestD1OutputStats:
             build_probe_batch, compute_d1_output_stats,
         )
         rng = np.random.default_rng(0xCAFE)
-        pb = build_probe_batch(scheme_name="power_law", n=32, rng=rng)
+        pb = build_probe_batch(
+            scheme_name="power_law", n=32, rng=rng,
+            hyperparam_distribution=_v4_hyperparam_distribution(),
+        )
         net = self._make_random_eta_net()
         stats = compute_d1_output_stats(net, pb)
         for k in ("eta_mean", "eta_std", "eta_range",
@@ -75,7 +109,10 @@ class TestD1OutputStats:
             build_probe_batch, compute_d1_output_stats,
         )
         rng = np.random.default_rng(0xCAFE)
-        pb = build_probe_batch(scheme_name="power_law", n=32, rng=rng)
+        pb = build_probe_batch(
+            scheme_name="power_law", n=32, rng=rng,
+            hyperparam_distribution=_v4_hyperparam_distribution(),
+        )
         # Force all argmins to be 0.5
         pb_const = replace(pb, argmin_eta=np.full_like(pb.argmin_eta, 0.5))
         net = self._make_random_eta_net()
@@ -94,7 +131,10 @@ class TestD3ActivationStats:
             build_probe_batch, compute_d3_activation_stats,
         )
         rng = np.random.default_rng(0xCAFE)
-        pb = build_probe_batch(scheme_name="power_law", n=32, rng=rng)
+        pb = build_probe_batch(
+            scheme_name="power_law", n=32, rng=rng,
+            hyperparam_distribution=_v4_hyperparam_distribution(),
+        )
         net = EtaNet(theta_dim=1, prior_dim=2, lik_dim=1,
                      hidden_sizes=(16, 16), key=jax.random.PRNGKey(0))
         stats = compute_d3_activation_stats(net, pb)
@@ -115,7 +155,10 @@ class TestD2GradientNorms:
             build_probe_batch, compute_d2_gradient_norms,
         )
         rng = np.random.default_rng(0xCAFE)
-        pb = build_probe_batch(scheme_name="power_law", n=32, rng=rng)
+        pb = build_probe_batch(
+            scheme_name="power_law", n=32, rng=rng,
+            hyperparam_distribution=_v4_hyperparam_distribution(),
+        )
         net = EtaNet(theta_dim=1, prior_dim=2, lik_dim=1,
                      hidden_sizes=(16, 16), key=jax.random.PRNGKey(0))
         norms = compute_d2_gradient_norms(
@@ -142,7 +185,10 @@ class TestD4LossByBin:
             build_probe_batch, compute_d4_loss_by_bin,
         )
         rng = np.random.default_rng(0xCAFE)
-        pb = build_probe_batch(scheme_name="power_law", n=64, rng=rng)
+        pb = build_probe_batch(
+            scheme_name="power_law", n=64, rng=rng,
+            hyperparam_distribution=_v4_hyperparam_distribution(),
+        )
         net = EtaNet(theta_dim=1, prior_dim=2, lik_dim=1,
                      hidden_sizes=(16, 16), key=jax.random.PRNGKey(0))
         result = compute_d4_loss_by_bin(
