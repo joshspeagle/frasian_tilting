@@ -59,3 +59,11 @@ changed" section if they care to.
   v4 conditional learned-η selector (which initially collapsed to
   η ≈ 1 = Wald). Includes per-loss audit results and the
   `LearnedDynamicEtaSelector` clamp-instead-of-refuse change.
+- [2026-05-09-mixture-smoothness-and-learned-eta-tails.md](./2026-05-09-mixture-smoothness-and-learned-eta-tails.md) —
+  After implementing MixtureTilting, the bare-scheme smoothness
+  comparison shows mixture with `lipschitz_eta` ~1/3 of PL — but
+  most of that is a scope artifact of mixture's tighter admissible
+  η-range. Also flags the learned-η tail-decay puzzle (η drops at
+  large |θ| instead of approaching 1) and proposes loss-landscape
+  probes to disambiguate before Stage C training. Includes the
+  `_spectral_roughness` DC-bin bug-fix.
