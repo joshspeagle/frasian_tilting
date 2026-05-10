@@ -128,6 +128,19 @@ def build_probe_batch(
     that schema (the offline argmin is Normal-Normal-specific).
 
     θ is then σ-anchored: θ ~ U(μ₀ - K·σ₀, μ₀ + K·σ₀). D ~ N(θ, σ).
+
+    **Caveat on `argmin_eta` reference signal.** Each probe sample's
+    `argmin_eta[i]` is computed at that sample's specific drawn `D[i]`
+    (a single random draw from `N(θ[i], σ[i])`). The optimum is therefore
+    a noisy function of the per-sample D realization, not the structural
+    optimum averaged over the D distribution. The `d1_corr_with_argmin`
+    metric in D1 thus has an inherent noise floor — a network that
+    correctly tracks the structural mean of `argmin_eta(D)` will still
+    show correlation < 1 because the reference is itself stochastic.
+    The negative-correlation finding in the v4 fixtures is robust to
+    this (anti-correlation w.r.t. a noisy reference implies anti-
+    correlation w.r.t. the structural one) but absolute correlation
+    magnitudes should be interpreted with this caveat in mind.
     """
     if "loc" not in prior_names or "scale" not in prior_names:
         raise ValueError(
@@ -311,7 +324,12 @@ def _per_sample_loss_on_probe(
             mu0=mu0_i, sigma=sigma_i,
             eta=eta_arr, statistic_name=statistic_name,
         )
-        return jnp.trapezoid(p, theta_grid_i)
+        # Use integrated_pvalue_loss (with NaN-masking) instead of raw
+        # trapezoid so this matches the loss `_compute_argmin_constant_eta`
+        # uses to define `probe.argmin_eta`. Bug fix 2026-05-10: previously
+        # raw `jnp.trapezoid(p, theta_grid_i)` diverged from the masked-mean
+        # objective at the admissibility boundary where `p` can have NaN.
+        return integrated_pvalue_loss(p[None, :], theta_grid_i[None, :])
 
     return jax.vmap(per_sample_loss)(
         theta_grids, prior_hp_t, lik_hp_t, D_t, w_t, mu0_t, sigma_t,

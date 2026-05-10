@@ -58,7 +58,10 @@ W = SIGMA0 ** 2 / (SIGMA ** 2 + SIGMA0 ** 2)  # = 0.5
 THETA_TEST = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]
 
 # eta sweep, schemes & training admissibility.
-ETA_GRID = np.linspace(-1.0, 1.5, 251)
+# Bug fix 2026-05-10: previously [-1.0, 1.5]; aligned with
+# diagnostics._compute_argmin_constant_eta and trained_vs_optimal_sweep.py
+# so the per-slice argmin search range is consistent across probes.
+ETA_GRID = np.linspace(-1.5, 1.5, 251)
 
 
 def _scheme_pvalue_at_eta(scheme, theta_test, eta_arr):

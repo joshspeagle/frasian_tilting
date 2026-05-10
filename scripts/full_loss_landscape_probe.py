@@ -52,7 +52,10 @@ W = SIGMA0 ** 2 / (SIGMA ** 2 + SIGMA0 ** 2)  # = 0.5
 K_THETA = 5.0  # matches SigmaAnchoredUniformThetaDistribution
 ALPHA = 0.05  # for static_width
 
-ETA_GRID = np.linspace(-1.0, 1.5, 201)
+# Bug fix 2026-05-10: previously [-1.0, 1.5]; aligned with
+# diagnostics._compute_argmin_constant_eta and trained_vs_optimal_sweep.py
+# so the per-slice argmin search range is consistent across probes.
+ETA_GRID = np.linspace(-1.5, 1.5, 201)
 THETA_GRID = np.linspace(MU0 - K_THETA * SIGMA0, MU0 + K_THETA * SIGMA0, 401)
 
 

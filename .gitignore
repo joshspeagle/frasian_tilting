@@ -117,6 +117,10 @@ docs/superpowers/
 #         --config experiments/canonical_<scheme>_v4.yaml \
 #         --out artifacts/learned_eta_canonical_<scheme>_v4.eqx
 artifacts/learned_eta_*_v4.eqx
+# Probe / smoke / diagnostic checkpoints (gitignored — train locally)
+artifacts/probe_v4_*.eqx
+artifacts/probe_v4_*.diagnostics.json
+artifacts/probe_pl_*.eqx
 
 # Temporary files
 *.tmp
