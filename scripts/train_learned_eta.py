@@ -49,12 +49,33 @@ def main() -> None:
         help="aux samples for boundary probing (defaults to batch_size)",
     )
     parser.add_argument(
-        "--lr-a", type=float, default=1e-3, help="learning rate for EtaNet (Head A)"
+        "--lr-a", type=float, default=3e-4,
+        help=(
+            "learning rate for EtaNet (Head A). Default 3e-4 (lowered from 1e-3 "
+            "on 2026-05-10 after PL cd_variance training showed pathological "
+            "extreme-η explosions at the original lr; see "
+            "`docs/notes/2026-05-10-followup-todo.md`)."
+        ),
     )
     parser.add_argument(
-        "--lr-b", type=float, default=1e-3, help="learning rate for ValidityNet (Head B)"
+        "--lr-b", type=float, default=3e-4,
+        help="learning rate for ValidityNet (Head B). Default 3e-4 (matches lr_a).",
     )
     parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument(
+        "--grad-clip-max-norm",
+        type=float,
+        default=1.0,
+        help=(
+            "Global-norm gradient clipping threshold for both Adam optimizers. "
+            "Wraps `optax.adamw` with `optax.clip_by_global_norm`. Default 1.0 "
+            "catches gradient spikes (e.g. cd_variance loss explosions when η "
+            "drifts to extreme values; observed during 2026-05-10 diagnostic "
+            "trainings) while leaving healthy updates (~0.1-0.5 per-layer, "
+            "~0.5-1.0 full-tree) untouched. Set to a large value (e.g. 1e6) "
+            "to effectively disable."
+        ),
+    )
     parser.add_argument(
         "--lambda-max", type=float, default=10.0, help="boundary-penalty max weight"
     )
@@ -237,6 +258,7 @@ def main() -> None:
         lr_a=args.lr_a,
         lr_b=args.lr_b,
         weight_decay=args.weight_decay,
+        grad_clip_max_norm=args.grad_clip_max_norm,
         lambda_max=args.lambda_max,
         lambda_warmup_frac=args.lambda_warmup_frac,
         anti_wald_max=args.anti_wald_max,

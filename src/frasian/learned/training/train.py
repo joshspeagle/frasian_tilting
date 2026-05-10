@@ -78,9 +78,10 @@ def fit_eta_artifact(
     n_epochs: int = 30,
     batch_size: int = 256,
     n_aux: int = 64,
-    lr_a: float = 1e-3,
-    lr_b: float = 1e-3,
+    lr_a: float = 3e-4,
+    lr_b: float = 3e-4,
     weight_decay: float = 1e-4,
+    grad_clip_max_norm: float = 1.0,
     lambda_max: float = 10.0,
     lambda_warmup_frac: float = 0.3,
     anti_wald_max: float = 0.0,
@@ -222,8 +223,27 @@ def fit_eta_artifact(
         key=val_init_key,
     )
 
-    optimizer_a = optax.adamw(learning_rate=lr_a, weight_decay=weight_decay)
-    optimizer_b = optax.adamw(learning_rate=lr_b, weight_decay=weight_decay)
+    # Global-norm gradient clipping wraps Adam to bound extreme update
+    # steps from occasional gradient spikes (cd_variance loss in
+    # particular has heavy-tailed gradients when η drifts to extreme
+    # values; pinned by 2026-05-10 diagnostics, see
+    # `docs/notes/2026-05-10-followup-todo.md`). Default 1.0 catches
+    # obvious explosions (per-layer norms typically 0.05-0.50; full-tree
+    # norms ~0.5-1.0 healthy, >2 in explosions) while letting healthy
+    # updates through. Set to a large value (e.g. 1e6) to disable.
+    if grad_clip_max_norm <= 0 or not np.isfinite(grad_clip_max_norm):
+        raise ValueError(
+            f"grad_clip_max_norm must be a positive finite float; "
+            f"got {grad_clip_max_norm!r}."
+        )
+    optimizer_a = optax.chain(
+        optax.clip_by_global_norm(float(grad_clip_max_norm)),
+        optax.adamw(learning_rate=lr_a, weight_decay=weight_decay),
+    )
+    optimizer_b = optax.chain(
+        optax.clip_by_global_norm(float(grad_clip_max_norm)),
+        optax.adamw(learning_rate=lr_b, weight_decay=weight_decay),
+    )
     import equinox as eqx
     opt_state_a = optimizer_a.init(eqx.filter(eta_net, eqx.is_array))
     opt_state_b = optimizer_b.init(eqx.filter(val_net, eqx.is_array))
@@ -437,6 +457,7 @@ def fit_eta_artifact(
                     "lr_a": float(lr_a),
                     "lr_b": float(lr_b),
                     "weight_decay": float(weight_decay),
+                    "grad_clip_max_norm": float(grad_clip_max_norm),
                     # Penalty schedules
                     "lambda_max": float(lambda_max),
                     "lambda_warmup_frac": float(lambda_warmup_frac),
