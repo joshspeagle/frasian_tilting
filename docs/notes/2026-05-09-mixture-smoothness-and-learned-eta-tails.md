@@ -301,7 +301,7 @@ explains the visual "drift toward 0.5-0.65" at large |θ| in
 ### Full-loss probe at constant η (`scripts/full_loss_landscape_probe.py`)
 
 Evaluated `integrated_pvalue_loss(p)` for `p = p(θ_grid; D, η_const)`
-over the same θ-grid as training (`[-5, +5]`, K=5 σ-anchored). The
+over the same θ-grid as training (`[-5, +5]`, K=5 σ₀-anchored). The
 loss is **monotonically increasing in η_const over [-1, 1.5]**:
 
 ```
@@ -346,7 +346,7 @@ it's not strong enough to drag the network across η-space in the
 remaining training steps.
 
 This explains:
-- Why the σ-anchored fix from the prior note "beats v3" without
+- Why the σ₀-anchored fix from the prior note "beats v3" without
   reaching the analytic optimum: it moved the basin from +1 to
   +0.85, both still on the wrong side of where the width loss
   alone wants η.
@@ -366,7 +366,7 @@ This explains:
 `scripts/trained_vs_optimal_sweep.py` compute the constant-η argmin
 of `integrated_pvalue_loss` across (σ₀, σ, D) slices spanning the v4
 training range, and compare to the trained network's predicted η
-(averaged over the σ-anchored θ-grid).
+(averaged over the σ₀-anchored θ-grid).
 
 **Anti-correlation finding (universal across 3 losses × 2 schemes):**
 

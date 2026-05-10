@@ -124,7 +124,7 @@ def main():
                              squeeze=False)
 
     print(f"\n=== Full-loss probe at mu0={MU0}, sigma0={SIGMA0}, sigma={SIGMA}, D={D_OBS} ===")
-    print(f"Theta-grid: [-5, +5] (matches K=5 sigma-anchored training)")
+    print(f"Theta-grid: [-5, +5] (matches K=5 σ₀-anchored training)")
     print()
 
     for r, scheme in enumerate(schemes):

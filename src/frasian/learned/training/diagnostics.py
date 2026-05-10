@@ -75,13 +75,13 @@ def _compute_argmin_constant_eta(
     """Per-slice constant-η argmin of `integrated_pvalue_loss`.
 
     For each candidate eta_const, build the tilted p-curve on a
-    σ-anchored θ-grid, integrate, find the η that minimizes.
+    σ₀-anchored θ-grid, integrate, find the η that minimizes.
     """
     if eta_grid is None:
         eta_grid = np.linspace(-1.5, 1.5, 121)
     pvalue_fn = get_jax_tilted_pvalue(scheme_name, "normal_normal")
     # n_grid=401 here is hardcoded by design: the offline argmin is a
-    # 1D smooth integration over a σ-anchored window, so the grid
+    # 1D smooth integration over a σ₀-anchored window, so the grid
     # only needs to be fine enough to resolve the integrand — it does
     # NOT have to match the training-loop integration grid (which is
     # the whole point of the offline reference target).
@@ -127,7 +127,7 @@ def build_probe_batch(
     ``("loc", "scale")`` / ``("sigma",)``; this function only supports
     that schema (the offline argmin is Normal-Normal-specific).
 
-    θ is then σ-anchored: θ ~ U(μ₀ - K·σ₀, μ₀ + K·σ₀). D ~ N(θ, σ).
+    θ is then σ₀-anchored: θ ~ U(μ₀ - K·σ₀, μ₀ + K·σ₀). D ~ N(θ, σ).
 
     **Caveat on `argmin_eta` reference signal.** Each probe sample's
     `argmin_eta[i]` is computed at that sample's specific drawn `D[i]`
@@ -292,7 +292,7 @@ def _per_sample_loss_on_probe(
     Returns shape (n,) -- one loss value per probe sample.
 
     Vectorized via ``jax.vmap`` over the n probe samples. Per-sample
-    θ-grid bounds vary (σ-anchored window around μ₀), but the grid
+    θ-grid bounds vary (σ₀-anchored window around μ₀), but the grid
     width is constant (401), so the per-sample grids stack into a
     single (n, 401) array we vmap over axis 0. The ~25× compile-time
     speedup matters for Stage-2 sweeps that call this per epoch
@@ -307,7 +307,7 @@ def _per_sample_loss_on_probe(
     sigma_t = lik_hp_t[:, 0]                  # (n,)
     w_t = sigma0_t ** 2 / (sigma_t ** 2 + sigma0_t ** 2)  # (n,)
 
-    # Build (n, 401) σ-anchored θ-grids per sample.
+    # Build (n, 401) σ₀-anchored θ-grids per sample.
     grid_unit = jnp.linspace(0.0, 1.0, _N_GRID_PROBE)  # (n_grid,)
     los = (mu0_t - K * sigma0_t)[:, None]     # (n, 1)
     his = (mu0_t + K * sigma0_t)[:, None]     # (n, 1)

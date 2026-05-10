@@ -37,7 +37,7 @@ from frasian.learned.training.pvalue_jax import (
 
 def loss_at(scheme: str, eta_const: float, mu0: float, sigma0: float,
             sigma: float, D: float) -> float:
-    """integrated_p at constant eta on a sigma-anchored theta-grid."""
+    """integrated_p at constant eta on a sigma0-anchored (prior-anchored) theta-grid."""
     K = 5.0
     theta_grid = np.linspace(mu0 - K * sigma0, mu0 + K * sigma0, 401)
     w = sigma0 ** 2 / (sigma ** 2 + sigma0 ** 2)

@@ -4,7 +4,7 @@ hyperparam grid.
 For each (mu0=0, sigma_0, sigma, D) slice, computes:
   - argmin_eta: best constant eta for integrated_p loss on that slice
   - trained_eta_mean: trained EtaNet's predicted eta averaged over the
-    sigma-anchored theta-grid
+    sigma0-anchored (prior-anchored) theta-grid
 
 Plots:
   - left: argmin_eta vs (w, |Delta|) (the structured optimum)
@@ -68,7 +68,7 @@ def find_argmin(scheme, mu0, sigma0, sigma, D,
 
 
 def trained_eta_mean(art: EtaArtifact, mu0, sigma0, sigma):
-    """Mean of trained eta(theta) over a sigma-anchored theta grid."""
+    """Mean of trained eta(theta) over a sigma0-anchored (prior-anchored) theta grid."""
     K = 5.0
     theta_grid = np.linspace(mu0 - K * sigma0, mu0 + K * sigma0, 51)
     eta_curve = art.predict_eta(

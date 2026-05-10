@@ -1,4 +1,4 @@
-# Phase G v4 fix: σ-anchored θ training + input normalization
+# Phase G v4 fix: σ₀-anchored θ training + input normalization
 
 **Date:** 2026-05-09
 **Commits:** `3e12f08`, `8905ac6`, `accf141`, `b69cbeb`
@@ -12,7 +12,7 @@ The initial Phase G v4 conditional learned-η fixtures collapsed to
 η ≈ 1 (= Wald, prior dropped) — wider than Wald on average. Two
 architectural changes restored beats-Wald behavior:
 
-1. **σ-anchored θ training distribution** — per-batch-element
+1. **σ₀-anchored θ training distribution** — per-batch-element
    `θ_train ~ U(μ₀ − Kσ₀, μ₀ + Kσ₀)` with K=5, replacing
    `Uniform[-10, 10]`. Concentrates training mass where the prior
    is informative.
@@ -23,7 +23,7 @@ architectural changes restored beats-Wald behavior:
 Plus a runtime change: `LearnedDynamicEtaSelector` now clamps
 out-of-admissible η instead of refusing past a 20% threshold. The
 dynamic-CI calibration guarantee holds for any η, so clamping
-preserves coverage; refusing was overly conservative once σ-anchored
+preserves coverage; refusing was overly conservative once σ₀-anchored
 training surfaced benign extrapolation.
 
 After these fixes: 24/24 random hp triples beat Wald (mean Δ = −0.32
@@ -130,7 +130,7 @@ prior. With θ_train ~ N(μ₀, σ₀²):
 Mean loss(η=0) = 1.51 < mean loss(Wald) = 1.88 — η < 0 is now
 optimal for most samples.
 
-### 8. σ-anchored implementation
+### 8. σ₀-anchored implementation
 
 Rather than draw from the prior directly (which would lose audit
 coverage at θ far from μ₀), we settled on
@@ -150,7 +150,7 @@ Plumbing required:
 
 ### 9. Per-channel input normalization
 
-Independently of the σ-anchored fix, EtaNet's raw concat of
+Independently of the σ₀-anchored fix, EtaNet's raw concat of
 `[θ, μ₀, σ₀, σ]` had heterogeneous scales (θ range 20, σ₀ range
 ~5×, etc.). Added `feature_loc` / `feature_scale` / `feature_log`
 static fields to EtaNet/ValidityNet. `feature_log=True` for
@@ -158,14 +158,14 @@ loguniform-distributed features (σ₀, σ); the network sees
 `(log(x) − log_mean) / log_std` for those channels. Default ON;
 opt-out via `--no-normalize-inputs`.
 
-Without σ-anchored: normalization alone made the collapse *worse*
+Without σ₀-anchored: normalization alone made the collapse *worse*
 (narrow-hp test went from beating Wald slightly to losing). With
-σ-anchored: normalization is necessary to keep θ in the network at
+σ₀-anchored: normalization is necessary to keep θ in the network at
 the wider hp ranges.
 
 ### 10. Clamp-instead-of-refuse (commit `b69cbeb`)
 
-After the σ-anchored fix, the audit's `pl_learned_cd_var` and
+After the σ₀-anchored fix, the audit's `pl_learned_cd_var` and
 `pl_learned_static_w` flavors hit a *different* failure: at small
 σ₀ slices (e.g. w=0.2 → σ₀=0.5) the dynamic CI scan queries
 θ ≈ D ± 8σ, reaching θ ≈ ±13 — well outside the per-slice trained
@@ -206,7 +206,7 @@ generalizing across the full (μ₀, σ₀, σ) hyperparam range.
 |---|---|---|
 | (initial wide-θ) | +0.20 | 42% |
 | narrow-θ uniform + norm | -0.04 | 55% |
-| **σ-anchored U(-5,5) + norm** | **-0.32** | **100% (24/24)** |
+| **σ₀-anchored U(-5,5) + norm** | **-0.32** | **100% (24/24)** |
 
 ### Per-loss audit (commit `accf141` for OT plumbing,
 `b69cbeb` for clamp fix)
@@ -276,8 +276,8 @@ n_mc=2000.
 | `src/frasian/learned/training/hyperparam_distribution.py` | `feature_stats()` method on ScalarDist + HyperparamDistribution (for normalization stats). |
 | `src/frasian/learned/training/losses.py` | New `anti_wald_penalty`, `eta_collapse_penalty` (kept opt-in, default off). |
 | `src/frasian/learned/training/_losses_compose.py` | New `decay_schedule` (mirror of `lambda_schedule`, inverted). |
-| `src/frasian/learned/training/_train_loop.py` | Plumbed σ-anchored conversion + anti-* regularizers + normalization through head_a_step. |
-| `src/frasian/learned/training/_validity_data.py` | σ-anchored conversion at aux + held-out sampling sites; NN-vs-generic dispatch fix in `compute_pvalues_per_sample_with_hp` (Bernoulli was returning all-NaN). |
+| `src/frasian/learned/training/_train_loop.py` | Plumbed σ₀-anchored conversion + anti-* regularizers + normalization through head_a_step. |
+| `src/frasian/learned/training/_validity_data.py` | σ₀-anchored conversion at aux + held-out sampling sites; NN-vs-generic dispatch fix in `compute_pvalues_per_sample_with_hp` (Bernoulli was returning all-NaN). |
 | `src/frasian/learned/training/train.py` | `normalize_inputs=True` default; plumbed all the above. |
 | `src/frasian/tilting/eta_selectors.py` | `_CLAMP_FAIL_THRESHOLD = 1.0` (was 0.20); `_check_scheme` reads `meta["experiment_config"]["scheme"]` with fallback. |
 | `src/frasian/tilting/ot.py` | `_generic_tilted_pvalue_ot_vec`, `dynamic_tilted_confidence_interval_ot_generic`, `force_generic + dynamic + NN` dispatch. |
@@ -305,12 +305,12 @@ n_mc=2000.
    the canonical Bernoulli v4 fixture is in place, but no
    `bernoulli_learned_*` audit flavor exists. Worth adding when
    non-NN learned cells become a research priority.
-4. **σ-anchored extrapolation buffer.** Could either widen K (e.g.
+4. **σ₀-anchored extrapolation buffer.** Could either widen K (e.g.
    K=8 to cover more of the dynamic-CI search window) or train an
-   explicit "extrapolation tail" by mixing σ-anchored with a small
+   explicit "extrapolation tail" by mixing σ₀-anchored with a small
    fraction of uniform θ. Tradeoff: K=5 gives the cleanest in-range
    beats-Wald margin; wider K may dilute that.
 5. **Anti-Wald / anti-collapse regularizers.** Plumbed but unused.
    They didn't escape the pre-fix collapse, but they might help in
-   regimes where σ-anchored isn't a clean fix (e.g. non-conjugate
+   regimes where σ₀-anchored isn't a clean fix (e.g. non-conjugate
    models where there's no obvious "informative-prior" sampler).

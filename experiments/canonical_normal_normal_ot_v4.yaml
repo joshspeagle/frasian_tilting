@@ -10,7 +10,8 @@ hyperparam_distribution:
   lik:
     sigma: { dist: loguniform, low: 0.5,  high: 2.0 }
 theta_distribution:
-  # σ-anchored: per batch element, θ ~ U(μ₀ − K·σ₀, μ₀ + K·σ₀).
+  # σ₀-anchored (PRIOR's σ₀, not the likelihood's σ):
+  # per batch element, θ ~ U(μ₀ − K·σ₀, μ₀ + K·σ₀).
   # See canonical_normal_normal_powerlaw_v4.yaml for the rationale.
   type: sigma_anchored_uniform
   K: 5.0

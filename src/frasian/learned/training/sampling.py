@@ -76,8 +76,19 @@ class UniformThetaDistribution:
 
 
 @dataclass(frozen=True)
-class SigmaAnchoredUniformThetaDistribution:
-    """Per-batch-element uniform: θ ~ U(μ₀ - K·σ₀, μ₀ + K·σ₀).
+class Sigma0AnchoredUniformThetaDistribution:
+    """Per-batch-element uniform anchored to the **PRIOR's σ₀**:
+    θ ~ U(μ₀ − K·σ₀, μ₀ + K·σ₀).
+
+    Naming clarification (read this first):
+    The "Sigma" / "sigma" in this class refers to **σ₀ — the prior's
+    standard deviation**, NOT the likelihood's σ. The framework uses
+    both σ and σ₀ heavily; only σ₀ is used for anchoring θ_true here.
+    A formerly-confusing shorthand "σ-anchored" appears in older
+    docstrings/notes/comments — those mean σ₀-anchored. The frozen
+    serialization identifier remains ``sigma_anchored_uniform`` for
+    backwards compat with existing v4 checkpoints; the canonical
+    Python class name is ``Sigma0AnchoredUniformThetaDistribution``.
 
     The training loop sees a *relative* sample u ~ U(-K, K) from
     ``sample(n, rng)`` and reconstructs the actual θ per batch element
@@ -92,11 +103,26 @@ class SigmaAnchoredUniformThetaDistribution:
     same range used for typical prior coverage tests.
 
     The integrated-p loss's θ-grid stays in absolute units (sized to
-    cover the union of all per-element θ ranges).
+    cover the union of all per-element θ ranges; set explicitly via
+    ``ExperimentConfig.theta_grid_lo`` / ``theta_grid_hi``).
+
+    Implication for evaluation: the data marginal D under this
+    sampling is concentrated near μ₀ (within ~μ₀ ± K·σ₀ + σ). A
+    network trained against this distribution is calibrated and near-
+    optimal for inference whose data also comes from this same
+    distribution; under a broader (e.g. likelihood-σ-anchored) data
+    distribution the network's η values inside the prior support
+    box are no longer optimal. The OOD-θ clamp on
+    ``LearnedDynamicEtaSelector`` covers θ_test outside the σ₀ box;
+    the data-marginal mismatch is a separate failure mode (handle
+    by re-training on the target data distribution).
     """
 
     K: float = 5.0
 
+    # Frozen serialization identifier — DO NOT change without breaking
+    # backwards compat with checkpoints whose metadata records this
+    # string (and whose fingerprint pins it).
     name: ClassVar[str] = "sigma_anchored_uniform"
     is_anchored: ClassVar[bool] = True
 
@@ -122,8 +148,15 @@ class SigmaAnchoredUniformThetaDistribution:
 
 THETA_DISTRIBUTION_REGISTRY: dict[str, Any] = {
     "uniform": UniformThetaDistribution,
-    "sigma_anchored_uniform": SigmaAnchoredUniformThetaDistribution,
+    "sigma_anchored_uniform": Sigma0AnchoredUniformThetaDistribution,
 }
+
+# Backwards-compat alias for any external code that imported the
+# previously-confusing class name. The class itself was renamed
+# 2026-05-10 to make explicit that the "Sigma" is σ₀ (the prior's
+# scale), not σ (the likelihood's scale). New code should use the
+# canonical name.
+SigmaAnchoredUniformThetaDistribution = Sigma0AnchoredUniformThetaDistribution
 
 _THETA_DIST_ALLOWED_KWARGS: dict[str, frozenset[str]] = {
     "uniform": frozenset({"low", "high"}),
@@ -156,7 +189,7 @@ def anchor_theta_to_prior(
     """Convert relative θ samples to absolute given per-element prior_hp.
 
     When ``theta_distribution.is_anchored`` is True (e.g.
-    ``SigmaAnchoredUniformThetaDistribution``), the sampler emits values
+    ``Sigma0AnchoredUniformThetaDistribution``), the sampler emits values
     in σ₀-units (e.g. U(-K, K)). This helper converts each relative
     sample to absolute θ via ``μ₀_i + σ₀_i · u_i``, using the per-element
     prior hyperparams. Requires the prior class to have ``loc`` and
@@ -480,6 +513,8 @@ def lhs_1d(
 __all__ = [
     "ThetaDistribution",
     "UniformThetaDistribution",
+    "Sigma0AnchoredUniformThetaDistribution",
+    # Backwards-compat alias for the canonical name (renamed 2026-05-10).
     "SigmaAnchoredUniformThetaDistribution",
     "anchor_theta_to_prior",
     "ExperimentConfig",
