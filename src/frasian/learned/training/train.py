@@ -12,6 +12,7 @@ heavy lifting lives in:
 
 from __future__ import annotations
 
+import json
 import warnings as _warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -77,9 +78,10 @@ def fit_eta_artifact(
     n_epochs: int = 30,
     batch_size: int = 256,
     n_aux: int = 64,
-    lr_a: float = 1e-3,
-    lr_b: float = 1e-3,
+    lr_a: float = 3e-4,
+    lr_b: float = 3e-4,
     weight_decay: float = 1e-4,
+    grad_clip_max_norm: float = 1.0,
     lambda_max: float = 10.0,
     lambda_warmup_frac: float = 0.3,
     anti_wald_max: float = 0.0,
@@ -94,13 +96,34 @@ def fit_eta_artifact(
     version: str = "v0",
     antithetic: bool = False,
     verbose: bool = True,
+    diagnostics_out: Path | None = None,
+    probe_batch_size: int = 64,
+    stratified_batch: bool = False,
+    output_bias_init: float = 0.0,
+    pretrained_eta_path: Path | None = None,
 ) -> EtaTrainResult:
     """Train an EtaNet + ValidityNet pair end-to-end on ``config``.
 
     Phase G conditional architecture: per-batch (prior_hp, lik_hp)
     sampled from ``config.hyperparam_distribution``.
+
+    If ``stratified_batch=True``, wraps ``config.hyperparam_distribution``
+    in :class:`StratifiedBatchHyperparamDistribution` (n_buckets=4) so
+    each training batch is guaranteed to span the full σ₀ range
+    (low-w / mid-w / high-w).
     """
     _validate_loss_kind(loss_kind, alpha)
+    if stratified_batch:
+        from dataclasses import replace as _replace_dc
+        from .hyperparam_distribution import (
+            StratifiedBatchHyperparamDistribution,
+        )
+        config = _replace_dc(
+            config,
+            hyperparam_distribution=StratifiedBatchHyperparamDistribution(
+                base=config.hyperparam_distribution, n_buckets=4,
+            ),
+        )
     if antithetic:
         _warnings.warn(
             "antithetic=True is not supported in the Phase G conditional "
@@ -159,14 +182,48 @@ def fit_eta_artifact(
         val_feature_loc = val_feature_scale = val_feature_log = None
 
     eta_init_key, val_init_key = jax.random.split(root_key)
+    # Per-scheme structural output bound, read from the scheme's
+    # ``ParamSpec.training_output_bounds``. Mixture's cd_variance loss has
+    # a boundary-attractor pathology (saturated p≈1 past η>1 → variance
+    # ≈0 false minimum) that no soft penalty fixes; bounding the network
+    # output to the admissible window structurally is the only stable
+    # cure. See docs/notes/2026-05-10-mixture-cd-variance-instability.md.
+    # Other schemes (power_law, ot) train cleanly unbounded; their
+    # param_space sets ``training_output_bounds=None``.
+    output_bounds = getattr(scheme.param_space, "training_output_bounds", None)
     eta_net = EtaNet(
         theta_dim=theta_dim, prior_dim=prior_dim, lik_dim=lik_dim,
         hidden_sizes=eta_hidden_sizes,
         feature_loc=eta_feature_loc,
         feature_scale=eta_feature_scale,
         feature_log=eta_feature_log,
+        output_bounds=output_bounds,
         key=eta_init_key,
     )
+    # Optional: shift the EtaNet's final-layer bias so the network's
+    # default output (input-independent contribution) starts at
+    # output_bias_init rather than 0. Used for Basin-B initialization
+    # experiments (2026-05-10) — start the network in the negative-eta
+    # regime to test whether the calibrated-oracle solution is a stable
+    # local minimum of the training loss.
+    if output_bias_init != 0.0:
+        import equinox as eqx
+        new_bias = (
+            jnp.full_like(eta_net.mlp.layers[-1].bias, float(output_bias_init))
+            if eta_net.mlp.layers[-1].bias is not None else None
+        )
+        if new_bias is not None:
+            eta_net = eqx.tree_at(
+                lambda m: m.mlp.layers[-1].bias, eta_net, new_bias,
+            )
+
+    # Optional: load a pre-trained EtaNet from disk to use as the
+    # starting point. Phase 2 stability test (2026-05-10) — verify
+    # whether a structured pre-trained solution holds under width-loss-
+    # only training.
+    if pretrained_eta_path is not None:
+        import equinox as eqx
+        eta_net = eqx.tree_deserialise_leaves(str(pretrained_eta_path), eta_net)
     val_net = ValidityNet(
         theta_dim=theta_dim, prior_dim=prior_dim, lik_dim=lik_dim,
         hidden_sizes=validity_hidden_sizes,
@@ -176,8 +233,27 @@ def fit_eta_artifact(
         key=val_init_key,
     )
 
-    optimizer_a = optax.adamw(learning_rate=lr_a, weight_decay=weight_decay)
-    optimizer_b = optax.adamw(learning_rate=lr_b, weight_decay=weight_decay)
+    # Global-norm gradient clipping wraps Adam to bound extreme update
+    # steps from occasional gradient spikes (cd_variance loss in
+    # particular has heavy-tailed gradients when η drifts to extreme
+    # values; pinned by 2026-05-10 diagnostics, see
+    # `docs/notes/2026-05-10-followup-todo.md`). Default 1.0 catches
+    # obvious explosions (per-layer norms typically 0.05-0.50; full-tree
+    # norms ~0.5-1.0 healthy, >2 in explosions) while letting healthy
+    # updates through. Set to a large value (e.g. 1e6) to disable.
+    if grad_clip_max_norm <= 0 or not np.isfinite(grad_clip_max_norm):
+        raise ValueError(
+            f"grad_clip_max_norm must be a positive finite float; "
+            f"got {grad_clip_max_norm!r}."
+        )
+    optimizer_a = optax.chain(
+        optax.clip_by_global_norm(float(grad_clip_max_norm)),
+        optax.adamw(learning_rate=lr_a, weight_decay=weight_decay),
+    )
+    optimizer_b = optax.chain(
+        optax.clip_by_global_norm(float(grad_clip_max_norm)),
+        optax.adamw(learning_rate=lr_b, weight_decay=weight_decay),
+    )
     import equinox as eqx
     opt_state_a = optimizer_a.init(eqx.filter(eta_net, eqx.is_array))
     opt_state_b = optimizer_b.init(eqx.filter(val_net, eqx.is_array))
@@ -253,6 +329,25 @@ def fit_eta_artifact(
         )
         log_p_lik_val_t = jnp.asarray(log_p_lik_val_np)
 
+    probe = None
+    if diagnostics_out is not None:
+        from .diagnostics import build_probe_batch
+        # Derive the probe RNG via SeedSequence.spawn instead of XOR. XOR
+        # has aliasing risk: with seed=0xD1A6 the probe RNG would silently
+        # collide with seed-0 baselines elsewhere. Spawning yields N
+        # independent sub-streams — index 5 is reserved for the probe so
+        # spawn_rngs (4 streams in _setup.py) doesn't overlap with us.
+        _probe_seed_seq = np.random.SeedSequence(int(config.seed)).spawn(6)[5]
+        probe_rng = np.random.default_rng(_probe_seed_seq)
+        probe = build_probe_batch(
+            scheme_name=config.scheme_name,
+            n=int(probe_batch_size),
+            rng=probe_rng,
+            hyperparam_distribution=config.hyperparam_distribution,
+            prior_names=config.prior_cls.hyperparam_names(),
+            lik_names=config.model_cls.hyperparam_names(),
+        )
+
     args = LoopArgs(
         eta_net=eta_net,
         val_net=val_net,
@@ -290,6 +385,7 @@ def fit_eta_artifact(
         verbose=verbose,
         support_theta_grid_np=support_theta_grid_np,
         log_p_lik_val_t=log_p_lik_val_t,
+        probe_batch=probe,
     )
     out = run_epoch_loop(args)
 
@@ -349,6 +445,50 @@ def fit_eta_artifact(
             f"head_b_acc={final_head_b_acc:.3f}, "
             f"η_pred_valid_rate={final_eta_pred_valid_rate:.3f}"
         )
+
+    if diagnostics_out is not None:
+        diagnostics_out = Path(diagnostics_out)
+        diagnostics_out.parent.mkdir(parents=True, exist_ok=True)
+        with diagnostics_out.open("w") as f:
+            json.dump({
+                "config": {
+                    # Identity / scheme
+                    "scheme": config.scheme_name,
+                    "statistic": config.statistic_name,
+                    "prior_class": config.prior_cls.__name__,
+                    "model_class": config.model_cls.__name__,
+                    "version": str(version),
+                    # Schedule
+                    "n_epochs": int(n_epochs),
+                    "batch_size": int(batch_size),
+                    "loss_kind": loss_kind,
+                    "alpha": alpha,
+                    # Optimizer
+                    "lr_a": float(lr_a),
+                    "lr_b": float(lr_b),
+                    "weight_decay": float(weight_decay),
+                    "grad_clip_max_norm": float(grad_clip_max_norm),
+                    # Penalty schedules
+                    "lambda_max": float(lambda_max),
+                    "lambda_warmup_frac": float(lambda_warmup_frac),
+                    "anti_wald_max": float(anti_wald_max),
+                    "anti_collapse_max": float(anti_collapse_max),
+                    "anti_decay_frac": float(anti_decay_frac),
+                    # Architecture
+                    "eta_hidden_sizes": list(eta_hidden_sizes),
+                    "validity_hidden_sizes": list(validity_hidden_sizes),
+                    "normalize_inputs": bool(normalize_inputs),
+                    # Early stopping
+                    "patience": int(patience),
+                    "min_delta": float(min_delta),
+                    # Reproducibility
+                    "seed": int(config.seed),
+                    "probe_n": int(probe_batch_size),
+                },
+                "epochs": out.diagnostics,
+            }, f, indent=2)
+        if verbose:
+            print(f"[fit_eta_artifact] wrote diagnostics sidecar to {diagnostics_out}")
 
     return EtaTrainResult(
         artifact_path=out_path,

@@ -42,11 +42,13 @@ class TestIsStubHelper:
     """Pin `_is_stub` against the registry's declared status."""
 
     def test_stub_tiltings_recognised(self):
-        assert _is_stub(MixtureTilting(), "tilting") is True
+        # MixtureTilting promoted stub -> implemented in 2026-05-09 (Stage A
+        # of mixture-tilting plan). Only FisherRaoTilting remains a stub.
         assert _is_stub(FisherRaoTilting(), "tilting") is True
 
     def test_implemented_tiltings_not_stub(self):
         assert _is_stub(IdentityTilting(), "tilting") is False
+        assert _is_stub(MixtureTilting(), "tilting") is False
 
     def test_stub_statistics_recognised(self):
         assert _is_stub(LRTStatistic(), "statistic") is True
@@ -58,7 +60,7 @@ class TestIsStubHelper:
 
     def test_class_input_also_works(self):
         """Helper accepts both classes and instances (cell-runner symmetry)."""
-        assert _is_stub(MixtureTilting, "tilting") is True
+        assert _is_stub(FisherRaoTilting, "tilting") is True
         assert _is_stub(WaldoStatistic, "statistic") is False
 
 
@@ -78,13 +80,6 @@ class TestStubsRaiseCleanlyAtProtocolSurface:
         lik = GaussianLikelihood(D=1.0, sigma=1.0)
         post = model.posterior(np.asarray([1.0]), prior)
         return model, prior, lik, post
-
-    def test_mixture_confidence_interval_raises_notimplemented(self):
-        model, prior, _, _ = self._fixtures()
-        with pytest.raises(NotImplementedError):
-            MixtureTilting().confidence_interval(
-                0.05, np.asarray([1.0]), model, prior, WaldoStatistic()
-            )
 
     def test_fisher_rao_pvalue_raises_notimplemented(self):
         model, prior, _, _ = self._fixtures()

@@ -36,6 +36,26 @@ class ParamSpec:
     eta_default: float
     eta_identity: float  # value of η for which `tilt` returns the input posterior
     description: str = ""
+    eta_likelihood_only: float | None = None
+    """Value of η that makes the tilted inference equivalent to a
+    likelihood-only (data-only) procedure — i.e. no contribution from
+    the prior. For schemes whose η interpolates posterior↔likelihood
+    (power_law, ot, mixture), this is 1.0. For schemes where η doesn't
+    parameterize a posterior↔likelihood mixing (identity, future
+    schemes), set None — callers that need this value (e.g.
+    LearnedDynamicEtaSelector's out-of-training-distribution clamp)
+    should treat None as "concept doesn't apply" and skip the clamp.
+    """
+
+    training_output_bounds: tuple[float, float] | None = None
+    """Per-scheme structural bound on EtaNet's output during learned-η
+    training. When set, ``fit_eta_artifact`` constructs the EtaNet
+    with ``output_bounds=(lo, hi)``, applying a sigmoid squash to the
+    network output. For mixture this is ``(0.0, 1.0)`` (cures the
+    cd_variance boundary-attractor pathology — see
+    ``docs/notes/2026-05-10-mixture-cd-variance-instability.md``); for
+    PL/OT this is None (their losses are well-behaved unbounded).
+    """
 
 
 @runtime_checkable

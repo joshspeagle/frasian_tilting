@@ -68,6 +68,9 @@ def _ensure_v4_checkpoint(smoke: bool) -> Path:
             n_lhs=512,
             n_data=cfg.n_data,
             seed=cfg.seed,
+            eta_explore_box=cfg.eta_explore_box,
+            theta_grid_lo=cfg.theta_grid_lo,
+            theta_grid_hi=cfg.theta_grid_hi,
         )
     fit_eta_artifact(
         config=cfg,

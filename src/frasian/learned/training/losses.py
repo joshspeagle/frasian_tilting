@@ -182,20 +182,28 @@ def anti_wald_penalty(eta_pred: jax.Array) -> jax.Array:
 def eta_collapse_penalty(
     eta_pred: jax.Array,
     eps: float = 1e-3,
+    target_var: float | None = None,
 ) -> jax.Array:
-    """``1 / (Var_B[η_pred] + ε)`` — rewards η_pred spread across the batch.
+    """Anti-collapse penalty rewarding η_pred spread across the batch.
 
-    Phase G diagnostic regularizer. Value-agnostic counterpart to
-    ``anti_wald_penalty``: punishes the model for predicting the
-    same η across all (θ, prior_hp, lik_hp) batch elements regardless
-    of *what* value it picks. Targets the 'collapsed to a constant'
-    failure mode directly (η ≈ +1 *and* η ≈ +0 *and* any other
-    constant land in this penalty's crosshairs).
+    Two formulations available:
 
-    The ε floor (default 1e-3) caps the maximum penalty at ``1/ε``
-    so an early all-zero-gradient batch doesn't dominate the loss.
-    Decays alongside ``anti_wald_penalty`` via the same schedule
-    so the optimizer can ultimately settle anywhere it likes.
+    - ``target_var is None`` (legacy / default): ``1 / (Var_B[η_pred] + ε)``.
+      Rewards UNBOUNDED variance growth — pathological in practice
+      (drives η to ±15 to satisfy the penalty). Kept for backward
+      compatibility and ablation.
+
+    - ``target_var is not None`` (recommended, 2026-05-10): ReLU-clipped
+      quadratic ``relu(target_var − Var_B[η_pred])²``. Quadratic push
+      below target; zero penalty above target. Doesn't reward unbounded
+      variance. ``target_var=1.0`` matches the natural scale of the
+      per-slice argmin's spread (range ~3 → std ≈ 1).
+
+    Either form punishes the model for predicting the same η across all
+    (θ, prior_hp, lik_hp) batch elements regardless of *what* value it
+    picks. Targets the 'collapsed to a constant' failure mode directly.
+
+    Decays alongside ``anti_wald_penalty`` via the same schedule.
     """
     if eta_pred.ndim != 1:
         raise ValueError(
@@ -203,7 +211,11 @@ def eta_collapse_penalty(
             f"{tuple(eta_pred.shape)}."
         )
     var = jnp.var(eta_pred)
-    return 1.0 / (var + eps)
+    if target_var is None:
+        # Legacy formulation.
+        return 1.0 / (var + eps)
+    # Targeted-variance formulation.
+    return jax.nn.relu(target_var - var) ** 2
 
 
 def static_width_loss(

@@ -146,6 +146,280 @@ def ot_tilted_pvalue_jax(
     )
 
 
+_MIXTURE_QUADRATIC_LEADING_EPS = 1e-12
+_MIXTURE_DISCRIMINANT_EPS = 1e-12
+
+
+def mixture_tilted_pvalue_jax(
+    theta: jax.Array,
+    D: jax.Array,
+    w: jax.Array,
+    mu0: jax.Array,
+    sigma: jax.Array,
+    eta: jax.Array,
+    statistic_name: str,
+) -> jax.Array:
+    """JAX port of `MixtureTilting.tilted_pvalue` for (mixture, waldo|wald).
+
+    Mirror of ``_mixture_tilted_pvalue_numpy_scalar`` (see
+    ``frasian/tilting/mixture.py`` for the derivation in
+    ``docs/methods/mixture.md`` "Closed-form tilted-WALDO p-value").
+    The accept set is the solution of a quadratic-in-X inequality
+    Q(X) = L*X² + 2*M*X + N ≥ 0; the JAX implementation evaluates ALL
+    branches and selects with ``jnp.where`` to stay vmap+jit-compatible.
+
+    Endpoint shortcuts at eta=0 (bare WALDO) and eta=1 (bare 2-sided Wald)
+    are applied via ``jnp.where`` for numerical robustness, mirroring
+    the numpy reference; in the limit they would be reached by the
+    quadratic formulation as well.
+
+    Like ``power_law_tilted_pvalue_jax`` and ``ot_tilted_pvalue_jax``,
+    this kernel does NOT raise on invalid eta — the surface stays
+    smooth and gradient-bearing via ``jnp.maximum(..., eps)`` clamps on
+    the variance terms. Validity is enforced by the numpy
+    ``MixtureTilting.tilted_pvalue`` and the ``ValidityNet`` boundary
+    penalty during training.
+    """
+    if statistic_name == "wald":
+        # eta-independent: collapses to bare 2-sided Wald.
+        z = jnp.abs(D - theta) / sigma
+        return 2.0 * (1.0 - _phi(z))
+
+    if statistic_name == "waldo":
+        sigma_n_sq = w * sigma * sigma
+        alpha_lin = w + eta * (1.0 - w)
+        A = alpha_lin
+        B = (1.0 - alpha_lin) * mu0 - theta
+        C0 = (1.0 - eta) * sigma_n_sq + eta * sigma * sigma
+        C1 = (1.0 - eta) * eta * (1.0 - w) * (1.0 - w)
+
+        mu_til_D = alpha_lin * D + (1.0 - alpha_lin) * mu0
+        var_til_D = jnp.maximum(
+            C0 + C1 * (mu0 - D) * (mu0 - D),
+            _MIXTURE_QUADRATIC_LEADING_EPS,
+        )
+        t_obs = (mu_til_D - theta) * (mu_til_D - theta) / var_til_D
+
+        L = A * A - t_obs * C1
+        M = A * B + t_obs * C1 * mu0
+        N = B * B - t_obs * C0 - t_obs * C1 * mu0 * mu0
+        disc_quarter = M * M - L * N
+
+        # F(x) = Phi((x - theta) / sigma)
+        def F(x: jax.Array) -> jax.Array:
+            return _phi((x - theta) / sigma)
+
+        # Quadratic branch (L > 0 or L < 0, disc ≥ 0):
+        # roots clamped via L_safe to keep the gradient finite when L≈0.
+        L_safe = jnp.where(
+            jnp.abs(L) < _MIXTURE_QUADRATIC_LEADING_EPS,
+            jnp.ones_like(L),
+            L,
+        )
+        # Clamp BELOW zero (not at zero) so the gradient of sqrt stays
+        # finite even when disc_quarter < 0. ``sqrt(max(x, 0))`` has a
+        # 0×∞ gradient at x=0 that produces NaN; ``sqrt(max(x, eps))``
+        # with eps > 0 gives finite gradient everywhere. The clamped
+        # branch is gated out by the ``is_disc_neg`` mask below, so
+        # the forward value is unchanged; only the gradient is sanitized.
+        sqrt_disc = jnp.sqrt(jnp.maximum(disc_quarter, _MIXTURE_DISCRIMINANT_EPS))
+        x_root_a = (-M - sqrt_disc) / L_safe
+        x_root_b = (-M + sqrt_disc) / L_safe
+        x_minus = jnp.minimum(x_root_a, x_root_b)
+        x_plus = jnp.maximum(x_root_a, x_root_b)
+        F_minus = F(x_minus)
+        F_plus = F(x_plus)
+        p_quad_L_pos = F_minus + (1.0 - F_plus)
+        p_quad_L_neg = F_plus - F_minus
+
+        # Discriminant ≤ 0 branch: Q has constant sign.
+        p_disc_neg_L_pos = jnp.ones_like(L)
+        p_disc_neg_L_neg = jnp.zeros_like(L)
+
+        # Linear branch (|L| < eps): 2*M*X + N ≥ 0.
+        M_safe = jnp.where(
+            jnp.abs(M) < _MIXTURE_QUADRATIC_LEADING_EPS,
+            jnp.ones_like(M),
+            M,
+        )
+        x_lin = -N / (2.0 * M_safe)
+        F_lin = F(x_lin)
+        # If M > 0: X ≥ x_lin; p = 1 - F(x_lin). If M < 0: X ≤ x_lin; p = F(x_lin).
+        p_linear_M_pos = 1.0 - F_lin
+        p_linear_M_neg = F_lin
+        p_constant = jnp.where(N >= 0.0, jnp.ones_like(N), jnp.zeros_like(N))
+
+        # Compose:
+        is_L_small = jnp.abs(L) <= _MIXTURE_QUADRATIC_LEADING_EPS
+        is_M_small = jnp.abs(M) <= _MIXTURE_QUADRATIC_LEADING_EPS
+        # Branch test uses true sign. The sqrt floor (line ~225) uses
+        # ``_MIXTURE_DISCRIMINANT_EPS`` ONLY for gradient sanitization;
+        # mixing the two constants conflates a numerical decision
+        # (when is disc "essentially zero") with a gradient hygiene
+        # decision (sqrt floor) and creates a tiny inconsistency zone
+        # at ``0 < disc_quarter < eps`` where the branch picks the
+        # quadratic-roots formula but the roots are computed with a
+        # ``sqrt(eps)`` perturbation.
+        is_disc_neg = disc_quarter < 0.0
+
+        # Linear case selection (within is_L_small).
+        p_linear = jnp.where(
+            is_M_small,
+            p_constant,
+            jnp.where(M > 0.0, p_linear_M_pos, p_linear_M_neg),
+        )
+        # Discriminant-negative selection (L sign).
+        p_disc_neg = jnp.where(L > 0.0, p_disc_neg_L_pos, p_disc_neg_L_neg)
+        # Discriminant-non-negative selection (L sign).
+        p_disc_pos = jnp.where(L > 0.0, p_quad_L_pos, p_quad_L_neg)
+        # Compose disc branches.
+        p_quadratic = jnp.where(is_disc_neg, p_disc_neg, p_disc_pos)
+        # Compose linear vs quadratic.
+        p = jnp.where(is_L_small, p_linear, p_quadratic)
+
+        # Endpoint shortcuts (numerical robustness; mirror numpy reference).
+        # eta = 0 → bare WALDO closed form.
+        wsig = w * sigma
+        p_eta_zero_mu_n = w * D + (1.0 - w) * mu0
+        p_eta_zero_a = jnp.abs(p_eta_zero_mu_n - theta) / wsig
+        p_eta_zero_b = (1.0 - w) * (mu0 - theta) / wsig
+        p_eta_zero = _phi(p_eta_zero_b - p_eta_zero_a) + _phi(-p_eta_zero_a - p_eta_zero_b)
+        # eta = 1 → bare 2-sided Wald.
+        z_wald = jnp.abs(D - theta) / sigma
+        p_eta_one = 2.0 * (1.0 - _phi(z_wald))
+
+        p = jnp.where(eta == 0.0, p_eta_zero, p)
+        p = jnp.where(eta == 1.0, p_eta_one, p)
+        return p
+
+    raise NotImplementedError(
+        f"mixture_tilted_pvalue_jax: statistic={statistic_name!r} "
+        f"not supported (expected 'wald' or 'waldo')."
+    )
+
+
+def _mixture_grid_component_moments(
+    log_p_lik_grid: jax.Array,
+    log_p_prior_grid: jax.Array,
+    theta_grid: jax.Array,
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+    """Compute (μ, σ²) of the posterior and (μ, σ²) of the
+    likelihood-as-distribution on the θ-grid.
+
+    The two pdf's are formed via:
+      posterior(θ)             ∝ exp(log L(θ; D) + log π(θ))
+      likelihood-as-dist(θ)    ∝ exp(log L(θ; D))
+
+    Each is max-subtracted then trapezoidal-Z-normalized; moments come
+    from straightforward trapezoidal integration of θ·pdf and θ²·pdf.
+
+    Shapes:
+    - `log_p_lik_grid`:   (B, N_grid)
+    - `log_p_prior_grid`: (N_grid,)
+    - `theta_grid`:       (N_grid,)
+    - Returns: ((B,), (B,), (B,), (B,)) — (μ_post, σ²_post, μ_lik, σ²_lik).
+    """
+    # Posterior pdf on grid: log q_post = log L + log π.
+    log_post = log_p_lik_grid + log_p_prior_grid[None, :]
+    log_post_max = jnp.max(log_post, axis=-1, keepdims=True)
+    post_pdf_un = jnp.exp(log_post - log_post_max)
+    Z_post = jnp.trapezoid(post_pdf_un, theta_grid, axis=-1)
+    post_pdf = post_pdf_un / Z_post[..., None]
+    mu_post = jnp.trapezoid(theta_grid[None, :] * post_pdf, theta_grid, axis=-1)
+    m2_post = jnp.trapezoid(
+        theta_grid[None, :] * theta_grid[None, :] * post_pdf, theta_grid, axis=-1
+    )
+    var_post = jnp.maximum(m2_post - mu_post * mu_post, 1e-12)
+
+    # Likelihood-as-distribution pdf on grid: log q_lik = log L.
+    log_lik_max = jnp.max(log_p_lik_grid, axis=-1, keepdims=True)
+    lik_pdf_un = jnp.exp(log_p_lik_grid - log_lik_max)
+    Z_lik = jnp.trapezoid(lik_pdf_un, theta_grid, axis=-1)
+    lik_pdf = lik_pdf_un / Z_lik[..., None]
+    mu_lik = jnp.trapezoid(theta_grid[None, :] * lik_pdf, theta_grid, axis=-1)
+    m2_lik = jnp.trapezoid(
+        theta_grid[None, :] * theta_grid[None, :] * lik_pdf, theta_grid, axis=-1
+    )
+    var_lik = jnp.maximum(m2_lik - mu_lik * mu_lik, 1e-12)
+
+    return mu_post, var_post, mu_lik, var_lik
+
+
+def mixture_grid_tilted_pvalue(
+    theta_test: jax.Array,
+    eta: jax.Array,
+    log_p_lik_grid: jax.Array,
+    log_p_prior_grid: jax.Array,
+    theta_grid: jax.Array,
+    statistic_name: str,
+) -> jax.Array:
+    """Model-agnostic JAX tilted p-value for **MixtureTilting** (m-geodesic).
+
+    Companion to `generic_grid_tilted_pvalue` (which is the **e-geodesic**
+    for power_law). Where the e-geodesic uses
+    `log q = log L + (1−η) log π` (log-space affine combination), the
+    m-geodesic uses **density-space** mixture
+    `q(θ) = (1−η)·posterior(θ) + η·likelihood-as-dist(θ)`.
+
+    Implementation:
+    1. Compute (μ_post, σ²_post) and (μ_lik, σ²_lik) once per batch
+       element via trapezoid integration on the shared θ-grid (calls
+       ``_mixture_grid_component_moments``).
+    2. Combine to mixture moments at each (B, G_test) via the standard
+       mixture formula:
+         μ_mix    = (1−η)·μ_post + η·μ_lik
+         E[θ²]_mix = (1−η)·(σ²_post + μ_post²) + η·(σ²_lik + μ_lik²)
+         σ²_mix    = E[θ²]_mix − μ_mix²
+    3. Apply the same WALDO normal-approximation surrogate as
+       ``generic_grid_tilted_pvalue``: ``p = 2(1−Φ(|μ_mix−θ_test|/σ_mix))``.
+
+    Same calibration caveat as the PL generic kernel: this is a moment-
+    matching surrogate intended for differentiable training only.
+    Inference-time generic on Bernoulli + mixture uses
+    ``MixtureTilting._generic_tilted_pvalue`` (numpy MC) for exact
+    calibration.
+
+    Endpoint sanity:
+    - η=0 → mixture moments collapse to (μ_post, σ²_post) → bare WALDO surrogate.
+    - η=1 → mixture moments collapse to (μ_lik, σ²_lik) → likelihood-only surrogate.
+
+    Shapes (mirror ``generic_grid_tilted_pvalue``):
+    - `theta_test`: (B, G_test) — points where p is evaluated.
+    - `eta`: (B, G_test) or scalar — η at each (sample, θ_test).
+    - `log_p_lik_grid`: (B, N_grid).
+    - `log_p_prior_grid`: (N_grid,).
+    - `theta_grid`: (N_grid,).
+    - Returns: (B, G_test).
+
+    Memory: intermediate cube is the (B, N_grid) component-pdf grids
+    (smaller than PL generic's (B, G_test, N_grid) cube — mixture
+    component moments are scalar per-batch and broadcast against eta(B,
+    G_test) only at the final combination step).
+    """
+    mu_post, var_post, mu_lik, var_lik = _mixture_grid_component_moments(
+        log_p_lik_grid, log_p_prior_grid, theta_grid
+    )
+    # Broadcast component moments against (B, G_test) via the eta axis.
+    one_minus_eta = 1.0 - eta
+    mu_mix = one_minus_eta * mu_post[:, None] + eta * mu_lik[:, None]
+    m2_post = var_post + mu_post * mu_post
+    m2_lik = var_lik + mu_lik * mu_lik
+    m2_mix = one_minus_eta * m2_post[:, None] + eta * m2_lik[:, None]
+    var_mix = jnp.maximum(m2_mix - mu_mix * mu_mix, 1e-12)
+
+    if statistic_name == "waldo":
+        z = jnp.abs(mu_mix - theta_test) / jnp.sqrt(var_mix)
+        return 2.0 * (1.0 - _phi(z))
+    # Wald: same rationale as generic_grid_tilted_pvalue — Wald only
+    # accepts identity tilting; this branch is unreachable through the
+    # runner. Raise rather than ship a moment-of-likelihood approximation.
+    raise NotImplementedError(
+        f"mixture_grid_tilted_pvalue: statistic={statistic_name!r} "
+        f"not supported (expected 'waldo'). Wald only accepts identity "
+        f"tilting; use `statistics/wald.py::_generic_pvalue` directly."
+    )
+
+
 def _generic_grid_tilted_moments(
     eta: jax.Array,
     log_p_lik_grid: jax.Array,
@@ -304,7 +578,9 @@ def generic_grid_tilted_pvalue(
 JAX_TILTED_PVALUE: dict[tuple[str, str], Callable[..., jax.Array]] = {
     ("power_law", "normal_normal"): power_law_tilted_pvalue_jax,
     ("ot", "normal_normal"): ot_tilted_pvalue_jax,
+    ("mixture", "normal_normal"): mixture_tilted_pvalue_jax,
     ("power_law", "generic"): generic_grid_tilted_pvalue,
+    ("mixture", "generic"): mixture_grid_tilted_pvalue,
     # ("ot", "generic") is deferred — QuantileMixturePath has no
     # closed-form log-density on a fixed grid; would need a separate
     # quantile-pushforward kernel.

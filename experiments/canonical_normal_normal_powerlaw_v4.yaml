@@ -11,7 +11,11 @@ hyperparam_distribution:
   lik:
     sigma: { dist: loguniform, low: 0.5,  high: 2.0 }
 theta_distribution:
-  # σ-anchored: per batch element, θ ~ U(μ₀ − K·σ₀, μ₀ + K·σ₀).
+  # σ₀-anchored (anchored to the PRIOR's σ₀, NOT the likelihood's σ):
+  # per batch element, θ ~ U(μ₀ − K·σ₀, μ₀ + K·σ₀).
+  # The serialization identifier `sigma_anchored_uniform` is frozen for
+  # backwards compat with existing v4 fixtures; canonical class name
+  # is `Sigma0AnchoredUniformThetaDistribution`.
   # Concentrates training mass where the prior is informative.
   # Replaces the previous Uniform[-10, 10] which caused the model
   # to collapse to η ≈ 1 (Wald) — high-conflict samples (D far

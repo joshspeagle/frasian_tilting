@@ -49,12 +49,33 @@ def main() -> None:
         help="aux samples for boundary probing (defaults to batch_size)",
     )
     parser.add_argument(
-        "--lr-a", type=float, default=1e-3, help="learning rate for EtaNet (Head A)"
+        "--lr-a", type=float, default=3e-4,
+        help=(
+            "learning rate for EtaNet (Head A). Default 3e-4 (lowered from 1e-3 "
+            "on 2026-05-10 after PL cd_variance training showed pathological "
+            "extreme-η explosions at the original lr; see "
+            "`docs/notes/2026-05-10-followup-todo.md`)."
+        ),
     )
     parser.add_argument(
-        "--lr-b", type=float, default=1e-3, help="learning rate for ValidityNet (Head B)"
+        "--lr-b", type=float, default=3e-4,
+        help="learning rate for ValidityNet (Head B). Default 3e-4 (matches lr_a).",
     )
     parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument(
+        "--grad-clip-max-norm",
+        type=float,
+        default=1.0,
+        help=(
+            "Global-norm gradient clipping threshold for both Adam optimizers. "
+            "Wraps `optax.adamw` with `optax.clip_by_global_norm`. Default 1.0 "
+            "catches gradient spikes (e.g. cd_variance loss explosions when η "
+            "drifts to extreme values; observed during 2026-05-10 diagnostic "
+            "trainings) while leaving healthy updates (~0.1-0.5 per-layer, "
+            "~0.5-1.0 full-tree) untouched. Set to a large value (e.g. 1e6) "
+            "to effectively disable."
+        ),
+    )
     parser.add_argument(
         "--lambda-max", type=float, default=10.0, help="boundary-penalty max weight"
     )
@@ -127,6 +148,43 @@ def main() -> None:
         help="Override config.n_grid (e.g. for smoke training).",
     )
     parser.add_argument("--quiet", action="store_true")
+    parser.add_argument(
+        "--diagnostics-out", type=Path, default=None,
+        help=(
+            "If set, compute per-epoch D1-D4 diagnostics on a held-out probe "
+            "batch and write a JSON sidecar to this path."
+        ),
+    )
+    parser.add_argument(
+        "--probe-batch-size", type=int, default=64,
+        help="Size of held-out probe batch for diagnostics. Default 64.",
+    )
+    parser.add_argument(
+        "--stratified-batch", action="store_true", default=False,
+        help=(
+            "Use StratifiedBatchHyperparamDistribution for batch sampling. "
+            "Each batch's σ₀ values are drawn from quantile-stratified "
+            "buckets of the loguniform σ₀ range, guaranteeing low-w, "
+            "mid-w, and high-w samples in every batch."
+        ),
+    )
+    parser.add_argument(
+        "--output-bias-init", type=float, default=0.0,
+        help=(
+            "Initialize the EtaNet's final-layer bias to this value "
+            "(default 0.0 = standard zero-init). Use negative values "
+            "(e.g. -1.0) to start the network with default-eta in "
+            "Basin B for stability tests (2026-05-10)."
+        ),
+    )
+    parser.add_argument(
+        "--pretrained-eta-path", type=Path, default=None,
+        help=(
+            "If set, load EtaNet weights from this .eqx file as the "
+            "starting point (rather than fresh Xavier init). Used for "
+            "Phase 2 teacher-forcing stability tests (2026-05-10)."
+        ),
+    )
     args = parser.parse_args()
 
     # Audit P0-15: refuse to silently overwrite an existing checkpoint.
@@ -200,6 +258,7 @@ def main() -> None:
         lr_a=args.lr_a,
         lr_b=args.lr_b,
         weight_decay=args.weight_decay,
+        grad_clip_max_norm=args.grad_clip_max_norm,
         lambda_max=args.lambda_max,
         lambda_warmup_frac=args.lambda_warmup_frac,
         anti_wald_max=args.anti_wald_max,
@@ -213,6 +272,11 @@ def main() -> None:
         device=args.device,
         version=args.version,
         verbose=not args.quiet,
+        diagnostics_out=args.diagnostics_out,
+        probe_batch_size=args.probe_batch_size,
+        stratified_batch=args.stratified_batch,
+        output_bias_init=args.output_bias_init,
+        pretrained_eta_path=args.pretrained_eta_path,
     )
 
     print(f"[done] final val width  = {result.final_val_loss:.4f}")

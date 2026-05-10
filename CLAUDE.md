@@ -177,9 +177,15 @@ trained `prior_class` / `model_class`, or when the observed
 hyperparams fall outside the trained range.
 
 Two architectural ingredients are essential and ON by default:
-**σ-anchored θ training** (`SigmaAnchoredUniformThetaDistribution`
-in `sampling.py`) and **per-channel input z-score normalization**
-on EtaNet/ValidityNet. Without σ-anchored training the model
+**σ₀-anchored θ training** (`Sigma0AnchoredUniformThetaDistribution`
+in `sampling.py`; canonical class name as of 2026-05-10, with
+backwards-compat alias `SigmaAnchoredUniformThetaDistribution`. The
+"σ₀" specifically means the **prior's σ₀**, NOT the likelihood's σ —
+this distinction caused real confusion during the 2026-05-10
+investigation; see
+[`docs/notes/2026-05-10-eta-conventions-and-loss-derivation.md`](docs/notes/2026-05-10-eta-conventions-and-loss-derivation.md).)
+and **per-channel input z-score normalization** on EtaNet/ValidityNet.
+Without σ₀-anchored training the model
 collapses to η ≈ 1 (= Wald); see
 [`docs/notes/2026-05-09-phase-g-v4-fix.md`](docs/notes/2026-05-09-phase-g-v4-fix.md)
 for the diagnosis and the per-loss audit results.
@@ -512,7 +518,37 @@ edit a checkpoint file in place — replace atomically. Pinned by
 | 9    | done   | Geodesic taxonomy refactor: `ot_normal`→`ot` (general 1D W2 + Gaussian fast path implemented); `geodesic_normal`→`fisher_rao` (renamed stub); `exp_family` dropped (redundant with `power_law` on conjugate exp-families); `mixture` reframed as m-geodesic / dual partner of `power_law`'s e-geodesic |
 | 10   | done   | Phase E learned-η rewrite: model-agnostic dual-head selector (`EtaNet` + `ValidityNet`) trained per-experiment; replaces Phase D `MonotonicEtaNet` (deleted). `EtaNet`: smooth GELU-MLP from raw θ → η, no monotonicity prior, no bounded sigmoid. `ValidityNet`: learns `P(valid \| θ, η)` from observed `(θ, η, valid)` triples; provides `-log P(valid)` boundary penalty for Head A. Per-experiment fingerprints (`Prior.fingerprint()`/`Model.fingerprint()`) + strict cross-experiment refusal. New `ExperimentConfig` YAML schema. Smoke fixtures `learned_eta_canonical_normal_normal_<scheme>_v0_smoke.eqx` committed for `power_law` and `ot` (Equinox `.eqx` format after the Phase F JAX port; `.pt` torch checkpoints are gone). |
 | 11   | done   | Phase G conditional learned-η: `EtaNet` and `ValidityNet` now take `(θ, prior_hp, lik_hp)` / `(θ, prior_hp, lik_hp, η)` instead of θ / (θ, η). Each checkpoint is trained over a *range* of `(prior_hp, lik_hp)` (the `hyperparam_distribution` block in the v4 YAML); the selector dispatches per-inference and refuses out-of-range hyperparams. Checkpoint format bumped 3 → 4. v3 YAMLs / fixtures / 14 v3-bound tests deleted; v4 YAMLs added; v4 fixtures gitignored (re-train via `scripts.train_learned_eta`). `eta_explore_box` restored to ExperimentConfig (per-config; defaults to `[-5, 5]`). Headline numbers in this file updated to the v4 fixture. |
-| 12   | done   | Phase G v4 fix: σ-anchored θ training + input normalization (default ON) + clamp-instead-of-refuse on out-of-admissible η. See [`docs/notes/2026-05-09-phase-g-v4-fix.md`](docs/notes/2026-05-09-phase-g-v4-fix.md). |
+| 12   | done   | Phase G v4 fix: σ₀-anchored θ training + input normalization (default ON) + clamp-instead-of-refuse on out-of-admissible η. See [`docs/notes/2026-05-09-phase-g-v4-fix.md`](docs/notes/2026-05-09-phase-g-v4-fix.md). |
+| 13a  | done   | MixtureTilting (m-geodesic) Stage A+B: closed-form NN tilt + WALDO p-value via quadratic-roots branching + GaussianMixtureDistribution / MixtureDistribution + generic-MC path + 4 selectors + 9 mx_* audit flavors. Briefs + tests + minimal illustration. See `docs/methods/mixture.md` and `docs/notes/2026-05-09-mixture-smoothness-and-learned-eta-tails.md`. |
+| 13b  | known limitation | Phase G v4 learned-η training has fundamental input-insensitivity: trained networks output range is ~10% of the per-slice optimum range across the hyperparam grid, with negative correlation to the analytical optimum on PL/OT. Boundary penalty / input-norm / anti-wald don't fix it. Stage C (mixture learned-η training) deferred until input-sensitivity-aware training is implemented. See [`docs/notes/2026-05-09-mixture-smoothness-and-learned-eta-tails.md`](docs/notes/2026-05-09-mixture-smoothness-and-learned-eta-tails.md) for the diagnosis. |
+| 13c  | done   | Mixture EtaNet structural sigmoid bound. EtaNet supports `output_bounds: tuple[float, float] \| None`; `train.py` dispatches `(0.0, 1.0)` for `scheme=="mixture"`, `None` otherwise (no-op for PL/OT). Fixes the cd_variance boundary-attractor pathology: pre-bound mx_learned_cd_var had coverage 0.22-0.93 (catastrophic), post-bound 0.955-0.965 (calibrated). cd_var val 13.57 → 1.25, η_valid 0.811 → 1.000. Bound is no-op for mx intp/static_w (their optima already in [0, 1]). See [`docs/notes/2026-05-10-mixture-cd-variance-instability.md`](docs/notes/2026-05-10-mixture-cd-variance-instability.md). |
+
+## Easily-Conflated Distinctions (read before diagnostic work)
+
+When investigating learned-η or tilting losses, four distinctions are
+easy to get wrong and produce reversed conclusions. Full discussion in
+[`docs/notes/2026-05-10-eta-conventions-and-loss-derivation.md`](docs/notes/2026-05-10-eta-conventions-and-loss-derivation.md).
+Headlines:
+
+- **η = 0 is WALDO, η = 1 is Wald** in `power_law_tilted_pvalue_jax`.
+  At η=1 the prior cancels (`mu_eta = D`, `b = 0`, `p = 2Φ(−|D−θ|/σ)`);
+  at η=0 the full prior is in. The naming feels backwards. Always
+  verify which η value you mean when comparing to "Wald".
+- **`integrated_p` loss = average CI width across all α-levels**:
+  `∫ p(θ) dθ = ∫₀¹ W(α) dα` by Fubini. The framework's σ₀-anchored
+  truncation makes "Wald loss" appear σ₀-dependent (purely an
+  integration-domain artifact — the Wald CI width 2zσ does not change).
+- **Per-θ_test argmin η ≠ per-θ_true argmin η**. The integrated_p
+  loss decomposes as `∫ G(θ_test, η(θ_test)) dθ_test`, so the
+  function-constrained optimum is the per-θ_test argmin (independent
+  at each integration point), NOT the per-θ_true argmin.
+- **The framework's hypothesis is η(θ_test) U-shaped**: small near μ₀
+  (use prior to tighten CI), → 1 far from μ₀ (Wald fallback when prior
+  is uninformative). v4 fixtures train on σ₀-anchored θ_test (entirely
+  inside prior support) and so cannot have learned the
+  far-from-μ₀ behavior. Evaluating v4 on a likelihood-anchored grid
+  is an extrapolation test, not a framework-correctness test. Out-of-
+  distribution behavior should ideally clamp to η=1.
 
 ## Key Anti-Patterns to Avoid
 

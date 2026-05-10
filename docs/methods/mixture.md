@@ -1,6 +1,6 @@
 # mixture
 
-> Status: `stub`
+> Status: `implemented`
 
 ## Summary
 
@@ -71,31 +71,271 @@ not Gaussian itself. The framework needs a `Distribution`
 implementation for two-component Gaussian mixtures (mean, var, cdf,
 quantile) — this is the principal piece of plumbing required.
 
+
+### Admissibility on Normal-Normal
+
+For Gaussian endpoints (`p = N(mu_n, sigma_n^2)`, `q = N(D, sigma^2)`)
+the linear mixture
+
+```
+q(theta; eta) = (1 - eta) * phi(theta; mu_n, sigma_n^2)
+              +     eta   * phi(theta; D,    sigma^2)
+```
+
+extends naturally to `eta` outside `[0, 1]` so long as the result
+remains non-negative everywhere. Three cases (derived in **D1** below):
+
+- **`eta in [0, 1]`** — convex combination of densities; always
+  admissible.
+- **`eta > 1`** — admissible iff `eta / (eta - 1) >= R_max` where
+  `R_max := sup_theta p_post(theta) / L_tilde(theta)` is attained at
+  `theta* = mu_0`:
+
+  ```
+  R_max  = (1 / sqrt(w)) * exp( Delta^2 / (2 (1 - w)) )
+  eta_max = R_max / (R_max - 1)   (when R_max > 1; +inf otherwise)
+  ```
+
+- **`eta < 0`** — never admissible: the prior tail decays faster than
+  the likelihood tail (`p_post / L_tilde -> 0` as `|theta| -> inf`),
+  so `inf_theta p_post / L_tilde = 0` and any negative-prior mass
+  drives the density negative in the tails.
+
+Numerical `eta_max` at representative `(w, |Delta|)` (verified below):
+
+| `|Delta|` \ `w` |   0.3   |   0.5   |   0.7   |   0.9   |
+|------------------|---------|---------|---------|---------|
+| 0.0              |  2.211  |  3.414  |  6.122  | 19.487  |
+| 0.5              |  1.846  |  2.226  |  2.230  |  1.373  |
+| 1.0              |  1.366  |  1.352  |  1.188  |  1.006  |
+| 2.0              |  1.032  |  1.013  |  1.001  |  1.000  |
+
+`eta_max` collapses to ~1 in the strong-conflict regime: extrapolation
+beyond the likelihood is essentially forbidden once `|Delta|` exceeds
+the prior–likelihood overlap scale.
+
 ## Derivation
 
 The m-connection on a statistical manifold is the affine connection
 whose geodesics are linear in the *expectation* parameters
 (`m-coordinates`); equivalently, on a mixture family the geodesic is
 the linear interpolation of densities (Amari 1982 §3; Amari & Nagaoka
-2000 Theorem 3.4). For the mixture family `{(1-eta)p + eta·q : eta in
-[0, 1]}` the m-coordinates are exactly the mixing weights, so the
-m-geodesic is `(1-eta)p + eta·q`.
-
-The dually-flat duality with `power_law` is via the Legendre transform
-between e-coordinates (natural parameters; log-linear interpolation =
-e-geodesic) and m-coordinates (expectation parameters; linear-density
-interpolation = m-geodesic). On a conjugate exponential family these
-two coordinate systems are related by the cumulant function; under
+2000 Theorem 3.4). The dually-flat duality with `power_law` is via
+the Legendre transform between e-coordinates and m-coordinates; under
 the Fisher metric, e- and m-geodesics are mutually orthogonal in the
 Pythagorean sense (Amari 1982 Theorem 1; Amari & Nagaoka 2000
-Theorem 3.8).
+Theorem 3.8). Neal (2001) is the standard reference contrasting the
+geometric (e-geodesic) and linear (m-geodesic) annealing paths; the
+latter is what this scheme implements.
 
-Note: this is the natural-coordinate framing of Bayesian
-**tempering** (`q^t = q^t / Z(t)` with `q = post^(1-t) · L^t`) as the
-e-geodesic. The corresponding m-geodesic is exactly the linear
-mixture above. Neal (2001) introduces the geometric (e-geodesic) path
-in annealed importance sampling and explicitly contrasts it with the
-linear/m-geodesic path; the latter is what this scheme implements.
+The remainder of this section establishes the closed-form admissibility
+bounds and tilted-WALDO p-value on the Normal-Normal sandbox.
+
+### Setup
+
+Let
+
+```
+mu_n      = w D + (1 - w) mu_0
+sigma_n^2 = w sigma^2
+Delta     = (1 - w) (mu_0 - D) / sigma
+```
+
+(framework primitives in `frasian.models.normal_normal`). Write the
+posterior density `p_post(theta) = phi(theta; mu_n, sigma_n^2)` and
+the likelihood-as-Gaussian density `L_tilde(theta) = phi(theta; D,
+sigma^2)`. The mixture-tilted density is
+
+```
+q(theta; eta) = (1 - eta) p_post(theta) + eta L_tilde(theta).
+```
+
+### D1. Admissibility
+
+**Claim.** `q(.; eta) >= 0` everywhere iff one of:
+(a) `eta in [0, 1]`, or
+(b) `eta > 1` and `eta / (eta - 1) >= R_max`, where
+`R_max = sup_theta p_post(theta) / L_tilde(theta) = (1 / sqrt(w)) * exp(Delta^2 / (2 (1 - w)))`.
+
+Case `eta < 0` is never admissible.
+
+**Step 1 (rewrite as ratio condition).** For `eta > 1`, write
+`eta = 1 + s` with `s > 0`. Then `q = -s p_post + (1 + s) L_tilde`,
+so `q >= 0` iff `(1 + s) L_tilde >= s p_post` iff
+`p_post / L_tilde <= (1 + s) / s = eta / (eta - 1)`. The tightest
+constraint is at the supremum of the ratio; hence `q >= 0` everywhere
+iff `eta / (eta - 1) >= R_max`. For `eta < 0`, write `eta = -t` with
+`t > 0`; `q = (1 + t) p_post - t L_tilde >= 0` iff
+`p_post / L_tilde >= t / (1 + t)`, which fails at the tails since
+`p_post / L_tilde -> 0` (the posterior is more concentrated than the
+likelihood: `sigma_n^2 = w sigma^2 < sigma^2`).
+
+**Step 2 (locate the supremum).** With `mu_n = w D + (1 - w) mu_0`
+and `sigma_n^2 = w sigma^2`,
+
+```
+log[p_post(theta) / L_tilde(theta)]
+   = -(1/2) log(w) + (theta - D)^2 / (2 sigma^2)
+                   - (theta - mu_n)^2 / (2 w sigma^2)
+```
+
+*Verification (sympy):* `simplify(diff(logR, theta))` reduces to
+`(theta - mu_0) (1 - w) / (w sigma^2)` (with sign), vanishing at
+`theta = mu_0`. The leading `theta^2` coefficient of `logR` is
+`1 / (2 sigma^2) - 1 / (2 w sigma^2) = (w - 1) / (2 w sigma^2) < 0`,
+so `logR` is concave and `theta = mu_0` is the *maximum*; hence
+`R_max = p_post(mu_0) / L_tilde(mu_0)`.
+
+**Step 3 (closed form).** Substitute `theta = mu_0`:
+
+```
+log R_max = -(1/2) log(w) + (mu_0 - D)^2 / (2 sigma^2)
+                          - (mu_0 - mu_n)^2 / (2 w sigma^2)
+          = -(1/2) log(w) + (1 - w) (mu_0 - D)^2 / (2 sigma^2)
+          = -(1/2) log(w) + Delta^2 / (2 (1 - w))
+```
+
+using `mu_0 - mu_n = w (mu_0 - D)` and `Delta^2 = (1 - w)^2 (mu_0 -
+D)^2 / sigma^2`. Hence `R_max = (1 / sqrt(w)) * exp(Delta^2 / (2 (1
+- w)))`.
+
+*Verification (sympy):* `simplify(logR.subs(theta, mu_0) -
+((1 - w) (mu_0 - D)^2 / (2 sigma^2) - log(w) / 2)) == 0`.
+
+**Step 4 (boundary).** `eta_max = R_max / (R_max - 1)` solves
+`eta / (eta - 1) = R_max` for `R_max > 1`. Since `R_max >= 1 /
+sqrt(w) > 1` whenever `w < 1`, `eta_max` is finite on the
+non-degenerate interior of the sandbox.
+
+### D2. Closed-form tilted-WALDO p-value
+
+**Test statistic.** Following the framework's WALDO convention (see
+`docs/methods/waldo.md` and `power_law.py:1190+`), the tilted-WALDO
+statistic is
+
+```
+t(theta; X) = (mu_tilted(X) - theta)^2 / sigma^2_tilted(X),
+```
+
+where `mu_tilted(X)`, `sigma^2_tilted(X)` are the mean and variance
+of `q(.; eta)` with the data-dependent components evaluated at
+hypothetical replicate `X`.
+
+**Step 1 (tilted moments).** The mixture mean is
+`(1 - eta) mu_n(X) + eta X = alpha X + (1 - alpha) mu_0` with
+`alpha := w + eta (1 - w)`. By the law of total variance,
+
+```
+sigma^2_tilted(X) = (1 - eta) sigma_n^2 + eta sigma^2
+                  + (1 - eta) eta (1 - w)^2 (mu_0 - X)^2
+                  =: C_0 + C_1 (mu_0 - X)^2,
+```
+
+with `C_0 = (1 - eta) sigma_n^2 + eta sigma^2` and `C_1 = (1 - eta)
+eta (1 - w)^2`.
+
+*Verification (sympy):* `simplify(mu_tilted - (alpha X + (1 - alpha)
+mu_0)) == 0` and `simplify(sigma^2_tilted - (C_0 + C_1 (mu_0 - X)^2))
+== 0`.
+
+**Step 2 (quadratic in X).** Let `c = t_obs(theta) := t(theta; D)`,
+`A = alpha`, `B = (1 - alpha) mu_0 - theta`. Under `H_0: X ~ N(theta,
+sigma^2)`, the event `{t(theta; X) >= c}` is `{(A X + B)^2 >= c (C_0
++ C_1 (mu_0 - X)^2)}`, equivalently `Q(X) >= 0` with
+
+```
+Q(X) = L X^2 + 2 M_1 X + M_0,
+L    = A^2 - c C_1,
+M_1  = A B + c C_1 mu_0,
+M_0  = B^2 - c (C_0 + C_1 mu_0^2).
+```
+
+*Verification (sympy):* expanding `(A X + B)^2 - c (C_0 + C_1 (mu_0
+- X)^2)` and matching coefficients of `X^2, X^1, X^0` gives `[0, 0,
+0]` differences from `[L, 2 M_1, M_0]`.
+
+**Step 3 (branch on `(L, disc)`).** Discriminant `disc := 4 (M_1^2 -
+L M_0)`. The accept set in `X` and the resulting p-value
+`p(theta) = P_{X ~ N(theta, sigma^2)}(Q(X) >= 0)` are:
+
+| Case  | `L`   | `disc` | accept set in `X`            | `p(theta)`                                                  |
+|-------|-------|--------|------------------------------|-------------------------------------------------------------|
+| (i)   | `> 0` | `> 0`  | `X <= X_-` or `X >= X_+`     | `Phi((X_- - theta)/sigma) + 1 - Phi((X_+ - theta)/sigma)`   |
+| (ii)  | `> 0` | `<= 0` | all of R                     | `1`                                                         |
+| (iii) | `< 0` | `> 0`  | `X_- <= X <= X_+`            | `Phi((X_+ - theta)/sigma) - Phi((X_- - theta)/sigma)`       |
+| (iv)  | `< 0` | `<= 0` | empty                        | `0`                                                         |
+| (v)   | `= 0` | —      | half-line `2 M_1 X + M_0 >= 0` | one `Phi` term (sign of `M_1`)                            |
+
+with roots `X_pm = (-2 M_1 +/- sqrt(disc)) / (2 L)` (ordered so
+`X_- <= X_+`) in cases (i), (iii) and root `X_* = -M_0 / (2 M_1)` in
+case (v).
+
+The five cases exhaust the sign chart of a real quadratic; case (v)
+is the codimension-1 limit of (i)/(iii) at `L -> 0`. Implementations
+should branch on a tolerance `|L| < eps` to avoid instability in the
+quadratic-formula limit.
+
+### D3. Endpoint reductions
+
+**At `eta = 0`.** `alpha = w`, `A = w`, `B = (1 - w) mu_0 - theta`,
+`C_1 = 0`, `C_0 = sigma_n^2`. Case (i) applies (`L = w^2 > 0`,
+`disc = 4 w^2 c sigma_n^2 > 0`); roots
+`X_pm = (theta - (1 - w) mu_0) / w +/- sqrt(c) sigma_n / w`. Using
+`c = (mu_n(D) - theta)^2 / sigma_n^2`, define
+`a = |mu_n - theta| / (w sigma)` and `b = (1 - w) (mu_0 - theta) /
+(w sigma)`. Then `(X_- - theta) / sigma = -a - b` and
+`(X_+ - theta) / sigma = a - b`, so
+
+```
+p(theta) = Phi(-a - b) + Phi(b - a),
+```
+
+which is the bare WALDO closed form (`docs/methods/waldo.md`).
+
+**At `eta = 1`.** `alpha = 1`, `A = 1`, `B = -theta`, `C_1 = 0`,
+`C_0 = sigma^2`. With `c = (D - theta)^2 / sigma^2`, roots are `X_pm
+= theta +/- |D - theta|`, giving `(X_- - theta) / sigma = -|D -
+theta|/sigma` and `(X_+ - theta) / sigma = |D - theta| / sigma`.
+Thus
+
+```
+p(theta) = Phi(-|D - theta|/sigma) + 1 - Phi(|D - theta|/sigma)
+         = 2 Phi(-|D - theta|/sigma),
+```
+
+i.e. the bare two-sided Wald p-value (`docs/methods/wald.md`).
+
+### Verification
+
+Three Monte-Carlo cross-checks, `n_mc = 2 x 10^6`, comparing
+`p(theta)` from the closed form above against direct MC sampling of
+`X ~ N(theta, sigma^2)` with the polynomial-inequality acceptance
+rule `Q(X) >= 0`:
+
+| probe                                                    | `R_max` | `eta_max` | closed-form `p` | MC `p` (1 SE)    | z-score |
+|----------------------------------------------------------|---------|-----------|------------------|-------------------|---------|
+| `eta=0.5, w=0.5, mu_0=0, D=0.5, sigma=1, theta=0.3`      | 1.505   |   2.979   | `0.921001`       | `0.920880(191)`   | 0.63    |
+| `eta=0.5, w=0.5, mu_0=0, D=3.0, sigma=1, theta=1.5`      | 13.418  |   1.081   | `0.448896`       | `0.448423(352)`   | 1.35    |
+| `eta=2.0, w=0.7, mu_0=0, D=0.0, sigma=1, theta=0.4`      | 1.195   |   6.122   | `0.762418`       | `0.762153(301)`   | 0.88    |
+
+All three within 1.4 SE. All three probes land in case (i) (`L > 0,
+disc > 0`, two-root union accept set). The second probe (`|Delta| =
+1.5`) is just past Behboodian's unimodality threshold `2 sqrt(w) =
+1.414` — the bimodal regime; the third sits in the extrapolation
+regime `eta in (1, eta_max)` with `C_1 < 0`.
+
+**Caveat on `eta > 1`.** Even when `eta < eta_max` (so `q(.; eta) >=
+0` everywhere as a density), the formal tilted variance
+`sigma^2_tilted(X) = C_0 + C_1 (mu_0 - X)^2` can be **negative** for
+large `|X|` because `C_1 < 0` when `eta > 1`. The set
+`{X : sigma^2_tilted(X) <= 0}` is where the WALDO test statistic
+formally diverges; the closed-form p-value above remains correct
+(the polynomial inequality `Q(X) >= 0` is what is actually being
+inverted, regardless of the sign of `sigma^2_tilted`), but the
+*interpretation* of `t(theta; X)` as a squared standardised distance
+breaks down. This is a separate "WALDO-vs-mixture" misspecification,
+not a `q`-admissibility violation; downstream consumers should be
+aware.
 
 ## Predicted behavior
 
@@ -132,13 +372,28 @@ linear/m-geodesic path; the latter is what this scheme implements.
 
 ## Invariants
 
+(Mirrored as property tests in
+`tests/properties/test_mixture_invariants.py`.)
+
 - `tilt(eta=0)` returns the input posterior exactly.
 - `tilt(eta=1)` returns `N(D, sigma^2)` (likelihood-as-Gaussian).
 - `tilt` is continuous in `eta` (linear in density space).
-- For every `eta in [0, 1]`, the output integrates to 1.
+- For every admissible `eta`, the output density integrates to 1.
+- Admissibility check **refuses** `eta < 0` on Normal-Normal.
+- Admissibility check **refuses** `eta > eta_max` on Normal-Normal,
+  where `eta_max = R_max / (R_max - 1)` and `R_max = (1 / sqrt(w))
+  * exp(Delta^2 / (2 (1 - w)))` (D1).
+- Closed-form tilted-WALDO p-value at `eta = 0` reduces to bare
+  WALDO `Phi(b - a) + Phi(-a - b)` at `atol = 1e-12` (D3).
+- Closed-form tilted-WALDO p-value at `eta = 1` reduces to bare
+  two-sided Wald `2 Phi(-|D - theta| / sigma)` at `atol = 1e-12` (D3).
+- Closed-form p-value matches direct MC (`X ~ N(theta, sigma^2)`,
+  acceptance rule `Q(X) >= 0`) at 3-sigma bounds across at least
+  three `(eta, theta, |Delta|)` probe points (D2 verification table).
 - Wald-statistic CI is well-defined (Wald ignores prior); WALDO CI
-  may be undefined when the mixture is bimodal — record NaN /
-  metadata flag rather than crash.
+  may be undefined / multi-region when the mixture is bimodal —
+  record NaN or use the union semantics from
+  `TiltingScheme.confidence_regions`.
 
 ## Literature
 
@@ -207,18 +462,29 @@ linear/m-geodesic path; the latter is what this scheme implements.
 
 ## Links
 
-- Implementation: `src/frasian/tilting/mixture.py` (stub)
-- Property tests: `tests/properties/test_mixture_invariants.py` (skipped)
-- Illustration:   TBD
+- Implementation: `src/frasian/tilting/mixture.py`
+- Distribution wrapper: `src/frasian/models/distributions.py`
+  (`GaussianMixtureDistribution`, `MixtureDistribution`)
+- Property tests: `tests/properties/test_mixture_invariants.py`,
+  `tests/properties/test_gaussian_mixture_distribution.py`
+- Regression tests: `tests/regression/test_mixture_pvalue.py`
+- Illustration:   `src/frasian/experiments/illustrations/mixture_demo.py`
 
 ## Status notes
 
-Stub — implementation requires (a) a two-component mixture
-`Distribution` wrapper, (b) the bimodal-quantile branch in WALDO
-acceptance-region inversion (or the explicit fall-back to NaN), and
-(c) registration of the `Distribution` protocol for non-unimodal
-outputs. The framework's `(mixture, waldo)` cell will produce
-genuinely novel behaviour: the m-geodesic counterpart to `power_law`'s
-Dynamic-WALDO. Coverage is expected to drop in the bimodal regime
-even with `DynamicNumericalEtaSelector`, since WALDO is misspecified
-against a non-Gaussian sampling distribution.
+Stage A complete: closed-form NN tilt (returns
+`GaussianMixtureDistribution`), closed-form tilted-WALDO p-value via
+the quadratic-roots branching derived in §"Derivation",
+selector-aware `pvalue` / `confidence_interval` / `confidence_regions`,
+`dynamic_tilted_confidence_interval` via the shared
+`tilting._dynamic.dynamic_ci_scan` helper.
+
+The framework's `(mixture, waldo)` cell produces genuinely novel
+behaviour: the m-geodesic counterpart to `power_law`'s Dynamic-WALDO.
+Coverage is expected to depart from nominal in the bimodal regime
+`|Δ| > 2√w` (Behboodian 1970) even with `DynamicNumericalEtaSelector`,
+since the tilted reference is non-Gaussian and the WALDO test
+statistic interpretation as a squared standardised distance breaks
+down in a sub-region of X-space when `η > 1`. The closed-form
+p-value remains correct because it inverts the polynomial inequality
+`Q(X) ≥ 0` directly. See §"Caveat on `eta > 1`" in Derivation.

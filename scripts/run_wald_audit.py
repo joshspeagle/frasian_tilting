@@ -36,6 +36,7 @@ from frasian.tilting.eta_selectors import (
     NumericalEtaSelector,
 )
 from frasian.tilting.identity import IdentityTilting
+from frasian.tilting.mixture import MixtureTilting
 from frasian.tilting.ot import OTTilting
 from frasian.tilting.power_law import PowerLawTilting
 
@@ -119,9 +120,16 @@ def _build_cell(flavor: str):
     if flavor == "pl_learned_intp_generic":
         return (PowerLawTilting(selector=_learned_selector("integrated_p")),
                 WaldoStatistic(force_generic=True), pl_bare)
-    # OT learned-η variants (no `*_generic` flavor — OT + dynamic +
-    # force_generic explicitly raises, see `tilting/ot.py:1157-1161`).
+    # OT non-learned dynamic variants (added 2026-05-09 for smoothness
+    # comparison alongside pl_dyn_numerical and mx_dyn_numerical).
     ot_bare = OTTilting()
+    if flavor == "ot_dyn_numerical":
+        return (OTTilting(selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)),
+                WaldoStatistic(force_generic=False), ot_bare)
+    if flavor == "ot_dyn_numerical_generic":
+        return (OTTilting(selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)),
+                WaldoStatistic(force_generic=True), ot_bare)
+    # OT learned-eta variants
     if flavor == "ot_learned_intp":
         return (OTTilting(selector=_learned_selector("integrated_p", scheme="ot")),
                 WaldoStatistic(force_generic=False), ot_bare)
@@ -137,6 +145,46 @@ def _build_cell(flavor: str):
     if flavor == "pl_learned_static_w":
         return (PowerLawTilting(selector=_learned_selector("static_width")),
                 WaldoStatistic(force_generic=False), pl_bare)
+    # Mixture (m-geodesic) variants — non-learned. Learned-eta variants
+    # land in Stage D after Stage C trains the checkpoints.
+    mx_bare = MixtureTilting()
+    if flavor == "mx_fixed0":
+        return (MixtureTilting(selector=FixedEtaSelector(eta=0.0)),
+                WaldoStatistic(force_generic=False), mx_bare)
+    if flavor == "mx_fixed05":
+        return (MixtureTilting(selector=FixedEtaSelector(eta=0.5)),
+                WaldoStatistic(force_generic=False), mx_bare)
+    if flavor == "mx_fixed0_generic":
+        return (MixtureTilting(selector=FixedEtaSelector(eta=0.0)),
+                WaldoStatistic(force_generic=True), mx_bare)
+    if flavor == "mx_fixed05_generic":
+        return (MixtureTilting(selector=FixedEtaSelector(eta=0.5)),
+                WaldoStatistic(force_generic=True), mx_bare)
+    if flavor == "mx_numerical":
+        return (MixtureTilting(selector=NumericalEtaSelector()),
+                WaldoStatistic(force_generic=False), mx_bare)
+    if flavor == "mx_numerical_intp":
+        return (MixtureTilting(selector=NumericalEtaSelector(objective="integrated_p")),
+                WaldoStatistic(force_generic=False), mx_bare)
+    if flavor == "mx_numerical_generic":
+        return (MixtureTilting(selector=NumericalEtaSelector()),
+                WaldoStatistic(force_generic=True), mx_bare)
+    if flavor == "mx_dyn_numerical":
+        return (MixtureTilting(selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)),
+                WaldoStatistic(force_generic=False), mx_bare)
+    if flavor == "mx_dyn_numerical_generic":
+        return (MixtureTilting(selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)),
+                WaldoStatistic(force_generic=True), mx_bare)
+    # Mixture learned-η variants (added 2026-05-10).
+    if flavor == "mx_learned_intp":
+        return (MixtureTilting(selector=_learned_selector("integrated_p", scheme="mixture")),
+                WaldoStatistic(force_generic=False), mx_bare)
+    if flavor == "mx_learned_cd_var":
+        return (MixtureTilting(selector=_learned_selector("cd_variance", scheme="mixture")),
+                WaldoStatistic(force_generic=False), mx_bare)
+    if flavor == "mx_learned_static_w":
+        return (MixtureTilting(selector=_learned_selector("static_width", scheme="mixture")),
+                WaldoStatistic(force_generic=False), mx_bare)
     raise ValueError(f"unknown flavor {flavor!r}")
 
 
@@ -148,7 +196,16 @@ _FLAVORS = [
     "pl_dyn_numerical", "pl_dyn_numerical_generic",
     "pl_learned_intp", "pl_learned_cd_var", "pl_learned_static_w",
     "pl_learned_intp_generic",
+    "ot_dyn_numerical", "ot_dyn_numerical_generic",
     "ot_learned_intp", "ot_learned_cd_var", "ot_learned_static_w",
+    "mx_fixed0", "mx_fixed05",
+    "mx_fixed0_generic", "mx_fixed05_generic",
+    "mx_numerical", "mx_numerical_intp", "mx_numerical_generic",
+    "mx_dyn_numerical", "mx_dyn_numerical_generic",
+    # Learned-η variants. All three calibrated post-bound (sigmoid
+    # squash on EtaNet output, mixture-only via train.py dispatch).
+    # See `docs/notes/2026-05-10-mixture-cd-variance-instability.md`.
+    "mx_learned_intp", "mx_learned_cd_var", "mx_learned_static_w",
 ]
 
 

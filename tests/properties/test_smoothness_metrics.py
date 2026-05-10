@@ -57,6 +57,20 @@ class TestSmoothnessMetricHelpers:
         y = rng.normal(size=100)  # white noise: high HF power
         assert _spectral_roughness(y) > 1.0
 
+    def test_spectral_roughness_finite_on_small_grid(self):
+        """Regression: bug-fix 2026-05-09. Audit-config 11-point eta-grids
+        previously hit the DC-bin-included branch and returned ~1e31.
+        Now should return an O(1) value.
+        """
+        # Small monotonic-ish curve typical of eta*(|Delta|).
+        y = np.array([
+            0.4, 0.18, 0.81, 0.92, 0.96,
+            0.98, 0.984, 0.988, 0.991, 0.993, 0.995,
+        ])
+        val = _spectral_roughness(y)
+        assert np.isfinite(val), f"got non-finite {val}"
+        assert val < 100.0, f"got runaway {val} (DC-bin bug regression)"
+
     def test_metrics_handle_nan(self):
         y = np.array([0.0, np.nan, 1.0, 1.0, 1.0])
         assert _total_variation(y) == 1.0  # ignores NaN

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 import equinox as eqx
 import jax
@@ -39,6 +39,9 @@ from ._validity_data import collect_validity_batch
 from .architecture import EtaNet, ValidityNet
 from .losses import anti_wald_penalty, eta_collapse_penalty
 from .sampling import ExperimentConfig, anchor_theta_to_prior
+
+if TYPE_CHECKING:
+    from .diagnostics import ProbeBatch
 
 _FORCE_X64 = _x64
 
@@ -90,6 +93,8 @@ class EpochLoopOutputs:
     best_val_net: Any = None
     epochs_run: int = 0
     stopped_early: bool = False
+    # Diagnostic fields (populated when probe_batch is passed in):
+    diagnostics: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -142,6 +147,10 @@ class LoopArgs:
     anti_wald_max: float = 0.0
     anti_collapse_max: float = 0.0
     anti_decay_frac: float = 0.5
+    # Optional held-out probe batch for per-epoch D1-D4 diagnostics.
+    # When non-None, _epoch_iteration computes diagnostics after each
+    # epoch's update and appends them to ``out.diagnostics``.
+    probe_batch: "ProbeBatch | None" = None
 
 
 def evaluate_head_b_accuracy(
@@ -285,6 +294,7 @@ def _make_step_fns(
                 log_p_lik_grid_t=log_p_lik_grid_t,
                 support_theta_grid_t=support_theta_grid_t,
                 log_p_prior_grid_t=log_p_prior_grid_t,
+                val_net=val_net,
             )
             eta_pred = en(theta_batch_t, prior_hp_batch_t, lik_hp_batch_t)
             penalty = compose_boundary_penalty(
@@ -344,6 +354,7 @@ def _make_eval_fn(
     @eqx.filter_jit
     def eval_loss(
         eta_net: EtaNet,
+        val_net: ValidityNet,
         theta_grid_t: jax.Array,
         D_val_t: jax.Array,
         prior_hp_val_t: jax.Array,
@@ -365,6 +376,7 @@ def _make_eval_fn(
             log_p_lik_grid_t=log_p_lik_grid_t,
             support_theta_grid_t=support_theta_grid_t,
             log_p_prior_grid_t=log_p_prior_grid_t,
+            val_net=val_net,
         )
 
     return eval_loss
@@ -538,6 +550,7 @@ def _evaluate_epoch(
         v_loss = float(
             eval_fn(
                 args.eta_net,
+                args.val_net,
                 args.theta_grid_t,
                 args.D_val_t,
                 args.prior_hp_val_t,
@@ -651,6 +664,21 @@ def _epoch_iteration(
     v_loss, head_b_acc = _evaluate_epoch(args, eval_fn, beta)
     out.val_losses.append(v_loss)
     out.head_b_accuracies.append(head_b_acc)
+
+    # Diagnostic computation (only when probe_batch supplied).
+    # args.eta_net here reflects the POST-update state for this epoch:
+    # _training_step assigns args.eta_net = eqx.apply_updates(...) after
+    # each minibatch.
+    if args.probe_batch is not None:
+        from .diagnostics import compute_epoch_diagnostics
+        out.diagnostics.append(compute_epoch_diagnostics(
+            args.eta_net, args.probe_batch,
+            scheme_name=args.config.scheme_name,
+            statistic_name=args.config.statistic_name,
+            epoch=epoch + 1,
+            train_loss=out.train_losses[-1],
+            val_loss=v_loss,
+        ))
 
     improved = v_loss < out.best_val - args.min_delta
     if improved:
