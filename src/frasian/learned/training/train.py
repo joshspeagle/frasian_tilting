@@ -96,13 +96,30 @@ def fit_eta_artifact(
     verbose: bool = True,
     diagnostics_out: Path | None = None,
     probe_batch_size: int = 64,
+    stratified_batch: bool = False,
 ) -> EtaTrainResult:
     """Train an EtaNet + ValidityNet pair end-to-end on ``config``.
 
     Phase G conditional architecture: per-batch (prior_hp, lik_hp)
     sampled from ``config.hyperparam_distribution``.
+
+    If ``stratified_batch=True``, wraps ``config.hyperparam_distribution``
+    in :class:`StratifiedBatchHyperparamDistribution` (n_buckets=4) so
+    each training batch is guaranteed to span the full σ₀ range
+    (low-w / mid-w / high-w).
     """
     _validate_loss_kind(loss_kind, alpha)
+    if stratified_batch:
+        from dataclasses import replace as _replace_dc
+        from .hyperparam_distribution import (
+            StratifiedBatchHyperparamDistribution,
+        )
+        config = _replace_dc(
+            config,
+            hyperparam_distribution=StratifiedBatchHyperparamDistribution(
+                base=config.hyperparam_distribution, n_buckets=4,
+            ),
+        )
     if antithetic:
         _warnings.warn(
             "antithetic=True is not supported in the Phase G conditional "

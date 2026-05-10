@@ -138,6 +138,15 @@ def main() -> None:
         "--probe-batch-size", type=int, default=64,
         help="Size of held-out probe batch for diagnostics. Default 64.",
     )
+    parser.add_argument(
+        "--stratified-batch", action="store_true", default=False,
+        help=(
+            "Use StratifiedBatchHyperparamDistribution for batch sampling. "
+            "Each batch's σ₀ values are drawn from quantile-stratified "
+            "buckets of the loguniform σ₀ range, guaranteeing low-w, "
+            "mid-w, and high-w samples in every batch."
+        ),
+    )
     args = parser.parse_args()
 
     # Audit P0-15: refuse to silently overwrite an existing checkpoint.
@@ -226,6 +235,7 @@ def main() -> None:
         verbose=not args.quiet,
         diagnostics_out=args.diagnostics_out,
         probe_batch_size=args.probe_batch_size,
+        stratified_batch=args.stratified_batch,
     )
 
     print(f"[done] final val width  = {result.final_val_loss:.4f}")

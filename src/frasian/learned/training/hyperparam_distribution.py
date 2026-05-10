@@ -247,4 +247,150 @@ class HyperparamDistribution:
             )
 
 
-__all__ = ["ScalarDist", "ScalarOutOfRange", "HyperparamDistribution"]
+@dataclass(frozen=True)
+class StratifiedBatchHyperparamDistribution:
+    """Wrapper that stratifies σ₀ sampling across ``n_buckets`` quantile bins.
+
+    For each batch of size ``n``, divides the σ₀ loguniform range into
+    ``n_buckets`` equal-quantile bins (in log-space, since σ₀'s spec is
+    loguniform), samples ``ceil(n / n_buckets)`` elements from each
+    bin, then concatenates and shuffles. Guarantees every batch
+    contains low-w, mid-w, and high-w samples.
+
+    Other hyperparams (μ₀, σ, ...) are sampled IID from the base
+    distribution as usual; only σ₀'s draw is stratified.
+
+    Used to test whether per-batch hyperparam diversity affects
+    training convergence (the diagnostic-instrumentation plan's
+    "stratified-batch" config, 2026-05-09).
+
+    Falls back to the base distribution's IID sampling if:
+      * ``"scale"`` is not in ``prior_names`` (no σ₀ to stratify), or
+      * ``prior_specs["scale"]`` is not loguniform (the stratification
+        scheme assumes log-space binning).
+
+    Surfaces the same public interface as ``HyperparamDistribution``
+    so it can be plugged into ``ExperimentConfig.hyperparam_distribution``
+    without further changes downstream (training loop only calls
+    ``sample`` on the distribution).
+    """
+
+    base: "HyperparamDistribution"
+    n_buckets: int = 4
+
+    @property
+    def prior_specs(self) -> Mapping[str, ScalarDist]:
+        return self.base.prior_specs
+
+    @property
+    def lik_specs(self) -> Mapping[str, ScalarDist]:
+        return self.base.lik_specs
+
+    def sample(
+        self,
+        n: int,
+        rng: Generator,
+        *,
+        prior_names: tuple[str, ...],
+        lik_names: tuple[str, ...],
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        if "scale" not in prior_names:
+            # No σ₀ → fall back to base IID sampling.
+            return self.base.sample(
+                n, rng, prior_names=prior_names, lik_names=lik_names,
+            )
+        scale_spec = self.base.prior_specs["scale"]
+        if scale_spec.kind != "loguniform":
+            # Stratification scheme assumes log-space binning.
+            return self.base.sample(
+                n, rng, prior_names=prior_names, lik_names=lik_names,
+            )
+
+        from dataclasses import replace
+        # Build n_buckets equal-quantile bins in log-space of σ₀.
+        log_lo = float(np.log(scale_spec.low))
+        log_hi = float(np.log(scale_spec.high))
+        edges = np.linspace(log_lo, log_hi, int(self.n_buckets) + 1)
+
+        per_bucket = int(np.ceil(int(n) / int(self.n_buckets)))
+        prior_chunks: list[NDArray[np.float64]] = []
+        lik_chunks: list[NDArray[np.float64]] = []
+        for k in range(int(self.n_buckets)):
+            sub_lo = float(np.exp(edges[k]))
+            sub_hi = float(np.exp(edges[k + 1]))
+            sub_specs = dict(self.base.prior_specs)
+            sub_specs["scale"] = replace(scale_spec, low=sub_lo, high=sub_hi)
+            sub_base = replace(self.base, prior_specs=sub_specs)
+            ph, lh = sub_base.sample(
+                per_bucket, rng,
+                prior_names=prior_names, lik_names=lik_names,
+            )
+            prior_chunks.append(ph)
+            lik_chunks.append(lh)
+        prior_all = np.concatenate(prior_chunks, axis=0)[:int(n)]
+        lik_all = np.concatenate(lik_chunks, axis=0)[:int(n)]
+        # Shuffle so stratification doesn't leak into batch order.
+        idx = rng.permutation(int(n))
+        return prior_all[idx], lik_all[idx]
+
+    # Delegate the rest of the HyperparamDistribution surface so this
+    # wrapper can stand in for `config.hyperparam_distribution`.
+    def support(self) -> tuple[
+        dict[str, tuple[float, float]],
+        dict[str, tuple[float, float]],
+    ]:
+        return self.base.support()
+
+    def feature_stats(
+        self,
+        prior_names: tuple[str, ...],
+        lik_names: tuple[str, ...],
+    ) -> tuple[list[float], list[float], list[bool]]:
+        return self.base.feature_stats(prior_names, lik_names)
+
+    def in_range(
+        self,
+        prior_hp: NDArray[np.float64],
+        lik_hp: NDArray[np.float64],
+        prior_names: tuple[str, ...],
+        lik_names: tuple[str, ...],
+    ) -> bool:
+        return self.base.in_range(prior_hp, lik_hp, prior_names, lik_names)
+
+    def first_out_of_range(
+        self,
+        prior_hp: NDArray[np.float64],
+        lik_hp: NDArray[np.float64],
+        prior_names: tuple[str, ...],
+        lik_names: tuple[str, ...],
+    ) -> ScalarOutOfRange | None:
+        return self.base.first_out_of_range(
+            prior_hp, lik_hp, prior_names, lik_names,
+        )
+
+    def fingerprint(self) -> str:
+        # Distinguish the stratified wrapper from its base in cache keys.
+        payload = json.dumps(
+            {
+                "kind": "stratified_batch",
+                "n_buckets": int(self.n_buckets),
+                "base": self.base.to_dict(),
+            },
+            sort_keys=True,
+        ).encode("utf-8")
+        return hashlib.blake2b(payload, digest_size=8).hexdigest()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": "stratified_batch",
+            "n_buckets": int(self.n_buckets),
+            **self.base.to_dict(),
+        }
+
+
+__all__ = [
+    "ScalarDist",
+    "ScalarOutOfRange",
+    "HyperparamDistribution",
+    "StratifiedBatchHyperparamDistribution",
+]

@@ -151,3 +151,42 @@ class TestD4LossByBin:
         for k in ("loss_lowW", "loss_midW", "loss_highW"):
             assert k in result, f"missing {k}"
             assert np.isfinite(result[k]) and result[k] >= 0.0
+
+
+@pytest.mark.L1
+@pytest.mark.properties
+class TestStratifiedBatch:
+    def test_stratified_batches_span_w_bins(self):
+        import numpy as np
+        from frasian.learned.training.hyperparam_distribution import (
+            HyperparamDistribution,
+            ScalarDist,
+            StratifiedBatchHyperparamDistribution,
+        )
+        from frasian.learned.training.diagnostics import w_bin
+        base = HyperparamDistribution(
+            prior_specs={
+                "loc":   ScalarDist(kind="uniform",    low=-2.0, high=2.0),
+                "scale": ScalarDist(kind="loguniform", low=0.2,  high=5.0),
+            },
+            lik_specs={
+                "sigma": ScalarDist(kind="loguniform", low=0.5,  high=2.0),
+            },
+        )
+        strat = StratifiedBatchHyperparamDistribution(base=base, n_buckets=4)
+        rng = np.random.default_rng(0xCAFE)
+        # Sample a batch of 32. Should have all 3 w-bins represented.
+        prior_names = ("loc", "scale")
+        lik_names = ("sigma",)
+        prior_hp, lik_hp = strat.sample(
+            32, rng, prior_names=prior_names, lik_names=lik_names,
+        )
+        assert prior_hp.shape == (32, 2)
+        assert lik_hp.shape == (32, 1)
+        sigma0 = prior_hp[:, 1]
+        sigma = lik_hp[:, 0]
+        w = sigma0 ** 2 / (sigma ** 2 + sigma0 ** 2)
+        bins = np.array([w_bin(float(wi)) for wi in w])
+        assert set(np.unique(bins).tolist()) == {"lowW", "midW", "highW"}, (
+            f"expected all 3 bins, got {np.unique(bins)}"
+        )
