@@ -360,21 +360,98 @@ This explains:
   all three drift smoothly toward whatever the central value
   is.
 
+### Per-slice optimum sweep across the hyperparam grid
+
+`scripts/per_slice_optimum_sweep.py` and
+`scripts/trained_vs_optimal_sweep.py` compute the constant-η argmin
+of `integrated_pvalue_loss` across (σ₀, σ, D) slices spanning the v4
+training range, and compare to the trained network's predicted η
+(averaged over the σ-anchored θ-grid).
+
+**Anti-correlation finding (universal across 3 losses × 2 schemes):**
+
+| | argmin range | trained range | residual mean | correlation |
+|---|---|---|---|---|
+| PL integrated_p | [-1.50, +1.50] | [+0.67, +0.97] | +1.68 | **-0.39** |
+| PL cd_variance  | [-1.50, +1.50] | [+0.50, +0.92] | +1.49 | **-0.47** |
+| PL static_width | [-1.50, +1.50] | [+0.87, +0.97] | +1.76 | **-0.19** |
+| OT integrated_p | [-1.50, +1.50] | [+0.45, +0.90] | +1.18 | **-0.61** |
+| OT cd_variance  | [-1.50, +1.50] | [+0.70, +0.94] | +1.27 | **-0.52** |
+| OT static_width | [-1.50, +1.50] | [+0.43, +0.90] | +1.17 | **-0.61** |
+
+The trained networks predict in the **wrong direction** across the
+hyperparam grid. The per-slice optima vary widely (mean ≈ -0.5 to
+-0.8), but the trained outputs are stuck in a narrow band around
++0.7 to +0.9, with negative correlation (i.e. higher trained η
+where the optimum is lower, and vice versa).
+
+### Disambiguation experiments (not from sparse data, not from validity head)
+
+Trained two PL probe fixtures with modified config to isolate the
+cause:
+
+| fixture | eta range | mean | residual | correlation |
+|---|---|---|---|---|
+| original (`λ_max=10`, `aw=0`) | [+0.67, +0.97] | +0.875 | +1.68 | -0.393 |
+| `λ_max=0` (no boundary) | [+0.65, +0.98] | +0.825 | +1.63 | -0.415 |
+| `aw_max=10` (strong anti-wald) | [-0.19, +0.96] | +0.755 | +1.56 | **-0.035** |
+
+**Removing the boundary penalty does almost nothing** — the network
+ends in essentially the same place. So the validity-head boundary
+penalty is NOT what's pinning the optimizer at +0.85.
+
+**Strong anti-wald lets the network output negative η** for some
+slices (range expands from [+0.65, +0.98] to [-0.19, +0.96]), and
+the anti-correlation breaks down to near-zero. But the network
+**still doesn't track the per-slice optimum structure** — it's a
+wider, less-correlated, but still-not-right output.
+
+### What this means
+
+The conditional EtaNet has **dramatically reduced sensitivity to
+(μ₀, σ₀, σ) inputs** during training. The output range across the
+hyperparam grid (0.3 in eta-units for the original integrated_p
+fixture) is **10% of the per-slice optimum's range** (3.0
+eta-units). The network has converged to a "near-constant-η, weakly
+hyperparam-dependent" local minimum of the full-batch loss, which
+is far from the structured per-slice optimum we'd hope for.
+
+The cause is **NOT** the boundary penalty (ruled out experimentally),
+**NOT** anti-wald decay (anti-wald=0 by default), and **NOT** sparse
+data at the tails. It's something in the
+training-optimization-architecture interaction — possibly:
+- Gradient asymmetry across the hyperparam range (high-w slices
+  with broad p-curves have larger gradients than low-w slices,
+  pulling the optimizer toward high-w optima).
+- Adam's adaptive LR damping the gradient signal where the loss
+  is small (low-w region).
+- Mode-collapse-like dynamics where the network finds a "safe"
+  near-constant output and stops moving.
+
 ### Implication for Stage C (mixture training)
 
-Mixture's admissible η-range is `[0, η_max]` — so **the width-loss
-optimum at η=-1 is inadmissible**. The network can't be "stuck on
-the wrong side of the optimum" the way PL/OT are; the optimum is
-**inside** mixture's admissible range or at its boundary.
+Mixture's admissible η-range is `[0, η_max]` (width 1) versus
+PL/OT's [-1.5, +1.5] effective range (width 3). On mixture the
+per-slice optima are bounded inside [0, ~3] for typical configs
+(see `docs/methods/mixture.md` admissibility table).
 
-The trained mixture η-curves will likely settle at η-values
-similar in absolute terms (~0.7 to ~+1) to PL/OT — but for mixture
-this might actually be **near-optimal** rather than 1.5× off. We'll
-need to verify this with a similar full-loss probe on the trained
-mixture fixtures after Stage C.
+If the same training infrastructure produces a near-constant
+output of width 0.3 in η-units regardless of scheme, then
+**mixture's trained network will land somewhere in [0, 1] with
+~30% range** — proportionally a much larger fraction of mixture's
+admissible interval than for PL/OT. So the visible "the network
+isn't reaching the per-slice optimum" pathology will be
+**less dramatic for mixture in absolute terms** but the
+hyperparam-input sensitivity issue is the same.
 
-The tail-decay (loss-flat region) will probably appear in mixture
-too, for the same reasons. That's universal across schemes.
+Whether this matters depends on what we want from mixture's
+learned-eta:
+- If we want it to demonstrate "the m-geodesic learned-η tracks
+  its analytical optimum across the hyperparam range" — it
+  WON'T, for the same reason PL/OT don't.
+- If we just want a learned-η variant that's slightly better than
+  bare WALDO/Wald in the audit — it will be (the existing PL/OT
+  fixtures meet this bar despite the pathology).
 
 ## What changed in the codebase (probe scripts)
 
