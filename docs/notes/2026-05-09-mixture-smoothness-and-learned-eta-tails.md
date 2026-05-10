@@ -510,3 +510,124 @@ learned-eta:
 
 5. **Fix the η-curve plot script** to also show training-θ-range
    shading.
+
+## Stage-2 diagnostic instrumentation findings (2026-05-10)
+
+**Headline.** None of the 5 training-config ablations (baseline,
+no_boundary, no_norm, anti_wald_10, stratified) achieves robustly
+positive correlation between trained η(θ) and the per-slice
+analytical optimum. The pathology persists across removing the
+boundary penalty, removing input normalization, applying an
+anti-wald nudge, and stratified-batch reweighting. The optimizer
+finds a near-constant η solution in every case.
+
+### Final-epoch numerical summary
+
+| config         | η_mean | corr_with_argmin | penult_std | n_dead | gN(input_w) | gN(output_b) |
+|----------------|-------:|-----------------:|-----------:|-------:|------------:|-------------:|
+| baseline       | +0.871 |           +0.043 |     0.0233 |      0 |      0.0541 |       0.1107 |
+| no_boundary    | +0.855 |           +0.079 |     0.0295 |      0 |      0.0652 |       0.1923 |
+| no_norm        | +0.956 |           −0.215 |     0.0746 |      0 |      0.4003 |       0.0844 |
+| anti_wald_10   | +0.860 |           +0.031 |     0.0345 |      0 |      0.9531 |       0.4229 |
+| stratified     | +0.800 |           +0.002 |     0.0387 |      0 |      0.0564 |       0.1112 |
+
+Diagnostic figure: `output/illustrations/training_diagnostics.png`.
+Per-config JSONs: `output/diagnostics/training_diagnostics_<config>.json`.
+
+### Mechanism diagnosis
+
+- **Dead-input-pathway hypothesis: RULED OUT.** D3's
+  `n_dead_neurons` is 0 across all configs throughout training, and
+  penultimate-layer activations have non-zero std (0.023-0.075) for
+  every config. The input pathway is alive — the network *can* see
+  θ and the hyperparams. It just chooses not to act on them.
+
+- **Pure gradient asymmetry hypothesis: NOT THE DOMINANT CAUSE.**
+  D2 shows the output-bias gradient exceeds the input-weight
+  gradient by a factor of 1-10× across most configs, which is
+  consistent with the optimizer preferring to move the bias.
+  However, anti_wald_10's input_w gradient is ~10× baseline (0.95
+  vs 0.054) — the optimizer *does* respond to the gradient signal
+  there — and yet the resulting η output still doesn't track the
+  per-slice optima (corr +0.031). Gradient asymmetry alone doesn't
+  explain why input-sensitivity stays weak.
+
+- **Loss-magnitude asymmetry across w-bins: PRESENT but not driving
+  the issue.** D4 shows loss_lowW elevated relative to loss_highW
+  for most configs (highW collapses aggressively from ~1.8 to
+  ~1.0); stratified-batch reweighting flattens this somewhat
+  (loss_lowW stays ~1.3) but doesn't recover correlation. Per-bin
+  gradient norms are similar magnitude between lowW and highW —
+  no extreme asymmetry that would let one regime dominate.
+
+- **The dominant mechanism appears to be MODE COLLAPSE in η-output
+  space.** All 5 configs settle at near-constant η ≈ 0.85 (mean),
+  with η_range across the slice grid in the 1-3 unit range vs the
+  per-slice optimum's range of ~3. The collapse is robust to:
+  - Removing the boundary penalty (no_boundary: η_mean +0.855)
+  - Removing input normalization (no_norm: η_mean +0.956, even
+    drifts further into Wald territory and *negative* correlation)
+  - Forcing η ≤ 0 via anti-wald (anti_wald_10: η_mean +0.860 —
+    moves only ~1% lower than baseline despite the explicit
+    pressure)
+  - Stratified batching across w-bins (stratified: η_mean +0.800,
+    the only config that meaningfully moves the mean, but
+    correlation still ≈ 0)
+
+  This rules out simple training-config interventions as the fix
+  and points toward deeper causes: (1) the loss landscape's
+  *average* structure across the hyperparam distribution genuinely
+  has a near-constant local minimum that's deep enough to trap
+  gradient descent regardless of regularization perturbations, or
+  (2) the smooth-MLP architecture has an inductive bias that
+  prevents the high-Lipschitz, structured-in-input solution from
+  being found by gradient methods even when it would lower the
+  loss.
+
+### Suggestions for the next round
+
+The diagnostic data argues that gradient descent on the existing
+loss cannot escape the constant-η basin, regardless of which
+single training-config knob we turn. Recommended follow-up plan:
+
+- **A3 (supervised target) + C1 (pre-train MSE warm-start),
+  combined.** Train against the per-slice argmin η as an MSE
+  target first (warm-start), then fine-tune with the integrated_p
+  + boundary-penalty objective. This bypasses the optimization-
+  landscape problem entirely: supervised teaching forces the
+  network to learn the input→η mapping before the main loss has
+  a chance to collapse it. The diagnostic data — non-dead
+  neurons, non-trivial penultimate activations, but flat
+  correlation — is exactly the signature you'd expect when the
+  *capacity* exists but the *gradient signal* doesn't push toward
+  the structured solution.
+
+Secondary candidates if A3+C1 doesn't work:
+
+- **B1 (baseline + delta architecture)**: parameterize η =
+  baseline + δ(inputs) with an explicit penalty on Var(δ) → 0,
+  forcing the input pathway to carry signal.
+- **A5 (curriculum learning)**: start with a narrow hyperparam
+  range where the optimum is closer to a constant, then expand —
+  hopes the network has a head-start before the
+  hyperparam-distribution averaging kicks in.
+- **A6 (multi-objective)**: integrated_p + λ · MSE-to-argmin as a
+  joint loss (less aggressive than A3-pure-supervised, but
+  preserves the original objective).
+- **B5 (lookup table + interpolation, no NN)**: deterministic
+  fallback if all NN approaches fail. Costs interpretability of
+  the smoothness story but eliminates training pathologies.
+
+### Pointers
+
+- Diagnostic instrumentation files added in earlier tasks of this
+  plan: `src/frasian/learned/training/_diagnostics.py`,
+  `src/frasian/learned/training/_train_loop.py` (instrumented),
+  `scripts/run_training_ablations.py`,
+  `scripts/plot_training_diagnostics.py`.
+- Per-config diagnostic JSONs:
+  `output/diagnostics/training_diagnostics_<config>.json` for each
+  of the 5 configs.
+- Combined figure: `output/illustrations/training_diagnostics.png`.
+- Plan + spec: see the learned-eta diagnostic-instrumentation
+  plan / brainstorm referenced in earlier sections of this note.
