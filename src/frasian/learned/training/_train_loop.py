@@ -666,34 +666,15 @@ def _epoch_iteration(
     # _training_step assigns args.eta_net = eqx.apply_updates(...) after
     # each minibatch.
     if args.probe_batch is not None:
-        from .diagnostics import (
-            compute_d1_output_stats,
-            compute_d2_gradient_norms,
-            compute_d3_activation_stats,
-            compute_d4_loss_by_bin,
-        )
-        eta_net_now = args.eta_net
-        d1 = compute_d1_output_stats(eta_net_now, args.probe_batch)
-        d2 = compute_d2_gradient_norms(
-            eta_net_now, args.probe_batch,
+        from .diagnostics import compute_epoch_diagnostics
+        out.diagnostics.append(compute_epoch_diagnostics(
+            args.eta_net, args.probe_batch,
             scheme_name=args.config.scheme_name,
             statistic_name=args.config.statistic_name,
-        )
-        d3 = compute_d3_activation_stats(eta_net_now, args.probe_batch)
-        d4 = compute_d4_loss_by_bin(
-            eta_net_now, args.probe_batch,
-            scheme_name=args.config.scheme_name,
-            statistic_name=args.config.statistic_name,
-        )
-        out.diagnostics.append({
-            "epoch": epoch + 1,
-            "loss_a": float(out.train_losses[-1]),
-            "val_width": float(v_loss),
-            **{f"d1_{k}": v for k, v in d1.items()},
-            **{f"d2_{k}": v for k, v in d2.items()},
-            **{f"d3_{k}": v for k, v in d3.items()},
-            **{f"d4_{k}": v for k, v in d4.items()},
-        })
+            epoch=epoch + 1,
+            train_loss=out.train_losses[-1],
+            val_loss=v_loss,
+        ))
 
     improved = v_loss < out.best_val - args.min_delta
     if improved:

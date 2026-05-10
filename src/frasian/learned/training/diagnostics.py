@@ -217,6 +217,11 @@ def compute_d3_activation_stats(
     # in training. Then forward through all-but-the-final Linear,
     # applying the MLP's activation between layers (eqx.nn.MLP stores
     # only Linear layers; activations are applied by __call__).
+    #
+    # NOTE: this normalization block duplicates EtaNet.__call__
+    # (architecture.py around lines 229-265). If the order, log floor,
+    # or feature ordering ever changes there, mirror the change here
+    # so D3 keeps measuring the same activations the network sees.
     theta_arr = jnp.asarray(probe.theta)
     if eta_net.theta_dim == 1 and theta_arr.ndim == 1:
         theta_2d = theta_arr[:, None]
@@ -259,6 +264,9 @@ def compute_d3_activation_stats(
     }
 
 
+_N_GRID_PROBE = 401
+
+
 def _per_sample_loss_on_probe(
     eta_net: "EtaNet",
     probe: ProbeBatch,
@@ -269,30 +277,45 @@ def _per_sample_loss_on_probe(
     """Per-sample integrated-p loss on the probe batch.
 
     Returns shape (n,) -- one loss value per probe sample.
+
+    Vectorized via ``jax.vmap`` over the n probe samples. Per-sample
+    θ-grid bounds vary (σ-anchored window around μ₀), but the grid
+    width is constant (401), so the per-sample grids stack into a
+    single (n, 401) array we vmap over axis 0. The ~25× compile-time
+    speedup matters for Stage-2 sweeps that call this per epoch
+    across many fixtures.
     """
     pvalue_fn = get_jax_tilted_pvalue(scheme_name, "normal_normal")
-    n = probe.theta.size
-    losses = []
-    for i in range(n):
-        mu0_i = float(probe.prior_hp[i, 0])
-        sigma0_i = float(probe.prior_hp[i, 1])
-        sigma_i = float(probe.lik_hp[i, 0])
-        D_i = float(probe.D[i])
-        w_i = sigma0_i ** 2 / (sigma_i ** 2 + sigma0_i ** 2)
-        theta_grid = jnp.asarray(np.linspace(
-            mu0_i - K * sigma0_i, mu0_i + K * sigma0_i, 401,
-        ))
-        prior_hp_b = jnp.broadcast_to(jnp.asarray(probe.prior_hp[i]), (401, 2))
-        lik_hp_b = jnp.broadcast_to(jnp.asarray(probe.lik_hp[i]), (401, 1))
-        eta_arr = eta_net(theta_grid, prior_hp_b, lik_hp_b)  # (401,)
+    prior_hp_t = jnp.asarray(probe.prior_hp)  # (n, 2): (mu0, sigma0)
+    lik_hp_t = jnp.asarray(probe.lik_hp)      # (n, 1): (sigma,)
+    D_t = jnp.asarray(probe.D)                # (n,)
+    mu0_t = prior_hp_t[:, 0]                  # (n,)
+    sigma0_t = prior_hp_t[:, 1]               # (n,)
+    sigma_t = lik_hp_t[:, 0]                  # (n,)
+    w_t = sigma0_t ** 2 / (sigma_t ** 2 + sigma0_t ** 2)  # (n,)
+
+    # Build (n, 401) σ-anchored θ-grids per sample.
+    grid_unit = jnp.linspace(0.0, 1.0, _N_GRID_PROBE)  # (n_grid,)
+    los = (mu0_t - K * sigma0_t)[:, None]     # (n, 1)
+    his = (mu0_t + K * sigma0_t)[:, None]     # (n, 1)
+    theta_grids = los + (his - los) * grid_unit[None, :]  # (n, n_grid)
+
+    def per_sample_loss(theta_grid_i, prior_hp_i, lik_hp_i,
+                        D_i, w_i, mu0_i, sigma_i):
+        # Broadcast per-sample (prior_hp, lik_hp) across the grid.
+        prior_hp_b = jnp.broadcast_to(prior_hp_i, (_N_GRID_PROBE, prior_hp_i.shape[0]))
+        lik_hp_b = jnp.broadcast_to(lik_hp_i, (_N_GRID_PROBE, lik_hp_i.shape[0]))
+        eta_arr = eta_net(theta_grid_i, prior_hp_b, lik_hp_b)  # (n_grid,)
         p = pvalue_fn(
-            theta=theta_grid, D=jnp.asarray(D_i), w=jnp.asarray(w_i),
-            mu0=jnp.asarray(mu0_i), sigma=jnp.asarray(sigma_i),
+            theta=theta_grid_i, D=D_i, w=w_i,
+            mu0=mu0_i, sigma=sigma_i,
             eta=eta_arr, statistic_name=statistic_name,
         )
-        loss_i = jnp.trapezoid(p, theta_grid)
-        losses.append(loss_i)
-    return jnp.stack(losses)  # (n,)
+        return jnp.trapezoid(p, theta_grid_i)
+
+    return jax.vmap(per_sample_loss)(
+        theta_grids, prior_hp_t, lik_hp_t, D_t, w_t, mu0_t, sigma_t,
+    )
 
 
 def compute_d2_gradient_norms(
@@ -365,6 +388,44 @@ def compute_d2_gradient_norms(
             total += float(np.sum(arr * arr))
         norms[f"grad_norm_{bin_name}"] = float(np.sqrt(total))
     return norms
+
+
+def compute_epoch_diagnostics(
+    eta_net: "EtaNet",
+    probe: ProbeBatch,
+    *,
+    scheme_name: str,
+    statistic_name: str,
+    epoch: int,
+    train_loss: float,
+    val_loss: float,
+) -> dict[str, float | int]:
+    """Run all four diagnostic families for one epoch.
+
+    Composes D1 + D2 + D3 + D4 into a single per-epoch record with
+    keys prefixed ``d1_``/``d2_``/``d3_``/``d4_`` plus the epoch
+    metadata (epoch number, loss values). The training loop appends
+    one of these per epoch to ``EpochLoopOutputs.diagnostics``.
+    """
+    d1 = compute_d1_output_stats(eta_net, probe)
+    d2 = compute_d2_gradient_norms(
+        eta_net, probe,
+        scheme_name=scheme_name, statistic_name=statistic_name,
+    )
+    d3 = compute_d3_activation_stats(eta_net, probe)
+    d4 = compute_d4_loss_by_bin(
+        eta_net, probe,
+        scheme_name=scheme_name, statistic_name=statistic_name,
+    )
+    return {
+        "epoch": int(epoch),
+        "loss_a": float(train_loss),
+        "val_width": float(val_loss),
+        **{f"d1_{k}": v for k, v in d1.items()},
+        **{f"d2_{k}": v for k, v in d2.items()},
+        **{f"d3_{k}": v for k, v in d3.items()},
+        **{f"d4_{k}": v for k, v in d4.items()},
+    }
 
 
 def compute_d4_loss_by_bin(

@@ -381,6 +381,15 @@ class StratifiedBatchHyperparamDistribution:
         return hashlib.blake2b(payload, digest_size=8).hexdigest()
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize the wrapper for fingerprints / config display.
+
+        Note: ``HyperparamDistribution.from_dict(strat.to_dict())``
+        returns a plain ``HyperparamDistribution`` — stratification is
+        intentionally training-only and not preserved through
+        serialization. The ``"kind": "stratified_batch"`` and
+        ``"n_buckets"`` fields are advisory metadata; the canonical
+        fingerprint lives in ``fingerprint()`` (which keys on both).
+        """
         return {
             "kind": "stratified_batch",
             "n_buckets": int(self.n_buckets),
