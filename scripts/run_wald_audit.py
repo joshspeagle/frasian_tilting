@@ -120,9 +120,16 @@ def _build_cell(flavor: str):
     if flavor == "pl_learned_intp_generic":
         return (PowerLawTilting(selector=_learned_selector("integrated_p")),
                 WaldoStatistic(force_generic=True), pl_bare)
-    # OT learned-η variants (no `*_generic` flavor — OT + dynamic +
-    # force_generic explicitly raises, see `tilting/ot.py:1157-1161`).
+    # OT non-learned dynamic variants (added 2026-05-09 for smoothness
+    # comparison alongside pl_dyn_numerical and mx_dyn_numerical).
     ot_bare = OTTilting()
+    if flavor == "ot_dyn_numerical":
+        return (OTTilting(selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)),
+                WaldoStatistic(force_generic=False), ot_bare)
+    if flavor == "ot_dyn_numerical_generic":
+        return (OTTilting(selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)),
+                WaldoStatistic(force_generic=True), ot_bare)
+    # OT learned-eta variants
     if flavor == "ot_learned_intp":
         return (OTTilting(selector=_learned_selector("integrated_p", scheme="ot")),
                 WaldoStatistic(force_generic=False), ot_bare)
@@ -179,6 +186,7 @@ _FLAVORS = [
     "pl_dyn_numerical", "pl_dyn_numerical_generic",
     "pl_learned_intp", "pl_learned_cd_var", "pl_learned_static_w",
     "pl_learned_intp_generic",
+    "ot_dyn_numerical", "ot_dyn_numerical_generic",
     "ot_learned_intp", "ot_learned_cd_var", "ot_learned_static_w",
     "mx_fixed0", "mx_fixed05",
     "mx_fixed0_generic", "mx_fixed05_generic",

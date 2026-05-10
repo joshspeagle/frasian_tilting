@@ -64,19 +64,31 @@ def _spectral_roughness(y: np.ndarray) -> float:
     """High-frequency / low-frequency FFT power ratio.
 
     Larger values indicate jagged behaviour over smooth trends.
+
+    Bug-fix 2026-05-09: previously partitioned the rfft spectrum as
+    ``low = spectrum[:cutoff]`` / ``high = spectrum[cutoff:]``. Because
+    the input is mean-detrended, ``spectrum[0]`` (the DC bin) is
+    identically zero by construction. On small grids where
+    ``cutoff = max(1, n // 4) == 1``, ``low`` consisted of only the DC
+    bin and was numerically ~1e-31 (float noise); the ratio diverged to
+    ~1e31 even on perfectly smooth inputs. The audit-config 11-point
+    eta grid hits exactly this regime. The fix excludes DC from both
+    bands.
     """
     finite = y[np.isfinite(y)]
     if finite.size < 8:
         return float("nan")
-    # Detrend mean.
+    # Detrend mean -- spectrum[0] becomes ~0, so we must exclude it
+    # from the low-frequency band.
     y_c = finite - finite.mean()
     spectrum = np.abs(np.fft.rfft(y_c))
-    n = spectrum.size
-    if n < 4:
+    non_dc = spectrum[1:]
+    n_nd = non_dc.size
+    if n_nd < 4:
         return float("nan")
-    cutoff = max(1, n // 4)
-    low = float(np.sum(spectrum[:cutoff] ** 2))
-    high = float(np.sum(spectrum[cutoff:] ** 2))
+    cutoff = max(1, n_nd // 4)
+    low = float(np.sum(non_dc[:cutoff] ** 2))
+    high = float(np.sum(non_dc[cutoff:] ** 2))
     if low <= 0:
         return float("inf") if high > 0 else float("nan")
     return high / low
