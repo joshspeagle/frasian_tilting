@@ -98,6 +98,8 @@ def fit_eta_artifact(
     diagnostics_out: Path | None = None,
     probe_batch_size: int = 64,
     stratified_batch: bool = False,
+    output_bias_init: float = 0.0,
+    pretrained_eta_path: Path | None = None,
 ) -> EtaTrainResult:
     """Train an EtaNet + ValidityNet pair end-to-end on ``config``.
 
@@ -187,6 +189,30 @@ def fit_eta_artifact(
         feature_log=eta_feature_log,
         key=eta_init_key,
     )
+    # Optional: shift the EtaNet's final-layer bias so the network's
+    # default output (input-independent contribution) starts at
+    # output_bias_init rather than 0. Used for Basin-B initialization
+    # experiments (2026-05-10) — start the network in the negative-eta
+    # regime to test whether the calibrated-oracle solution is a stable
+    # local minimum of the training loss.
+    if output_bias_init != 0.0:
+        import equinox as eqx
+        new_bias = (
+            jnp.full_like(eta_net.mlp.layers[-1].bias, float(output_bias_init))
+            if eta_net.mlp.layers[-1].bias is not None else None
+        )
+        if new_bias is not None:
+            eta_net = eqx.tree_at(
+                lambda m: m.mlp.layers[-1].bias, eta_net, new_bias,
+            )
+
+    # Optional: load a pre-trained EtaNet from disk to use as the
+    # starting point. Phase 2 stability test (2026-05-10) — verify
+    # whether a structured pre-trained solution holds under width-loss-
+    # only training.
+    if pretrained_eta_path is not None:
+        import equinox as eqx
+        eta_net = eqx.tree_deserialise_leaves(str(pretrained_eta_path), eta_net)
     val_net = ValidityNet(
         theta_dim=theta_dim, prior_dim=prior_dim, lik_dim=lik_dim,
         hidden_sizes=validity_hidden_sizes,

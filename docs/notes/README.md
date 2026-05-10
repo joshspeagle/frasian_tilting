@@ -67,3 +67,15 @@ changed" section if they care to.
   large |θ| instead of approaching 1) and proposes loss-landscape
   probes to disambiguate before Stage C training. Includes the
   `_spectral_roughness` DC-bin bug-fix.
+- [2026-05-10-learned-eta-intervention-design.md](./2026-05-10-learned-eta-intervention-design.md) —
+  Deep investigation into the learned-η training failures. Computes
+  calibrated benchmarks (real headroom is 14%, not 30% as
+  post-selection oracle suggested), systematic eval of all 14 trained
+  fixtures, multiple Phase-1/Phase-2 stability tests. **Key finding:**
+  the integrated_p loss and the framework's `DynamicNumericalEtaSelector`
+  optimize different objectives — the v4 fixtures train against
+  integrated_p (Basin A attractor) while the framework's "calibrated
+  default" minimizes static_width (which can drive η to extreme
+  negatives). Best fixture (no_boundary, lambda_max=0) captures 15%
+  of the 14% calibrated headroom — i.e., ~2% absolute improvement
+  over Wald. Lists pivot options.

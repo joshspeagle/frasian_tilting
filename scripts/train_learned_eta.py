@@ -147,6 +147,23 @@ def main() -> None:
             "mid-w, and high-w samples in every batch."
         ),
     )
+    parser.add_argument(
+        "--output-bias-init", type=float, default=0.0,
+        help=(
+            "Initialize the EtaNet's final-layer bias to this value "
+            "(default 0.0 = standard zero-init). Use negative values "
+            "(e.g. -1.0) to start the network with default-eta in "
+            "Basin B for stability tests (2026-05-10)."
+        ),
+    )
+    parser.add_argument(
+        "--pretrained-eta-path", type=Path, default=None,
+        help=(
+            "If set, load EtaNet weights from this .eqx file as the "
+            "starting point (rather than fresh Xavier init). Used for "
+            "Phase 2 teacher-forcing stability tests (2026-05-10)."
+        ),
+    )
     args = parser.parse_args()
 
     # Audit P0-15: refuse to silently overwrite an existing checkpoint.
@@ -236,6 +253,8 @@ def main() -> None:
         diagnostics_out=args.diagnostics_out,
         probe_batch_size=args.probe_batch_size,
         stratified_batch=args.stratified_batch,
+        output_bias_init=args.output_bias_init,
+        pretrained_eta_path=args.pretrained_eta_path,
     )
 
     print(f"[done] final val width  = {result.final_val_loss:.4f}")
