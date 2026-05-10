@@ -385,26 +385,30 @@ hyperparam grid. The per-slice optima vary widely (mean ≈ -0.5 to
 +0.7 to +0.9, with negative correlation (i.e. higher trained η
 where the optimum is lower, and vice versa).
 
-### Disambiguation experiments (not from sparse data, not from validity head)
+### Disambiguation experiments
 
-Trained two PL probe fixtures with modified config to isolate the
-cause:
+Trained four PL probe fixtures with modified configs to isolate
+the cause:
 
 | fixture | eta range | mean | residual | correlation |
 |---|---|---|---|---|
-| original (`λ_max=10`, `aw=0`) | [+0.67, +0.97] | +0.875 | +1.68 | -0.393 |
+| original (`λ_max=10`, `aw=0`, norm=ON) | [+0.67, +0.97] | +0.875 | +1.68 | -0.393 |
 | `λ_max=0` (no boundary) | [+0.65, +0.98] | +0.825 | +1.63 | -0.415 |
-| `aw_max=10` (strong anti-wald) | [-0.19, +0.96] | +0.755 | +1.56 | **-0.035** |
+| `aw_max=10` (strong anti-wald) | [-0.19, +0.96] | +0.755 | +1.56 | -0.035 |
+| `--no-normalize-inputs` | [+0.63, +0.97] | +0.844 | +1.65 | -0.352 |
 
-**Removing the boundary penalty does almost nothing** — the network
-ends in essentially the same place. So the validity-head boundary
-penalty is NOT what's pinning the optimizer at +0.85.
+**Findings:**
+- Removing the boundary penalty does almost nothing.
+- Removing input normalization does almost nothing.
+- Strong anti-wald lets the network output some negative η, breaks
+  the anti-correlation to near-zero, but **does not recover
+  per-slice structure** (correlation goes to ~0, not strongly
+  positive).
 
-**Strong anti-wald lets the network output negative η** for some
-slices (range expands from [+0.65, +0.98] to [-0.19, +0.96]), and
-the anti-correlation breaks down to near-zero. But the network
-**still doesn't track the per-slice optimum structure** — it's a
-wider, less-correlated, but still-not-right output.
+In all four cases, the **trained η range stays within ~0.3 in
+η-units** (versus the per-slice optimum's range of 3.0 in
+η-units). The network has dramatically suppressed input-sensitivity
+regardless of training-config variations.
 
 ### What this means
 
@@ -413,20 +417,36 @@ The conditional EtaNet has **dramatically reduced sensitivity to
 hyperparam grid (0.3 in eta-units for the original integrated_p
 fixture) is **10% of the per-slice optimum's range** (3.0
 eta-units). The network has converged to a "near-constant-η, weakly
-hyperparam-dependent" local minimum of the full-batch loss, which
-is far from the structured per-slice optimum we'd hope for.
+hyperparam-dependent" local minimum that's the same regardless of
+whether boundary penalty, anti-wald, or input normalization are
+active.
 
-The cause is **NOT** the boundary penalty (ruled out experimentally),
-**NOT** anti-wald decay (anti-wald=0 by default), and **NOT** sparse
-data at the tails. It's something in the
-training-optimization-architecture interaction — possibly:
-- Gradient asymmetry across the hyperparam range (high-w slices
-  with broad p-curves have larger gradients than low-w slices,
-  pulling the optimizer toward high-w optima).
-- Adam's adaptive LR damping the gradient signal where the loss
-  is small (low-w region).
-- Mode-collapse-like dynamics where the network finds a "safe"
-  near-constant output and stops moving.
+**Synthesis: this is a classic MLP-training attractor.** Adam +
+GELU MLP, trained on a hyperparam-averaged loss, converges to
+solutions that are **smooth and flat in input** — i.e. low-Lipschitz
+functions of (μ₀, σ₀, σ). The structured per-slice optimum requires
+specific weight configurations corresponding to a high-Lipschitz
+function; those live in higher-loss-curvature regions of parameter
+space that the optimizer doesn't naturally find. None of the
+existing regularizers (boundary, anti-wald, input-norm) push toward
+input-sensitivity directly — they bias the *value* of η but not the
+*responsiveness* to inputs.
+
+**Fixing this is a real research problem.** Candidate approaches:
+- A loss term that explicitly rewards input-sensitivity (e.g.
+  variance of trained η across the hyperparam range, or
+  correlation with the per-slice optimum).
+- Different optimizer (SGD with momentum, longer training).
+- Architectural changes: explicit input-conditioning blocks, or
+  parametrize η = baseline + delta(inputs) with separate optimization
+  pressure on each.
+- A different parametrization of the conditional output (e.g. low-
+  rank decomposition of the output as a function of inputs).
+
+**The headline framework claim "learned-η can adapt to per-slice
+optimal selection" is empirically not supported by the current v4
+training infrastructure** — the trained networks adapt only ~10%
+of the way and in many cases in the wrong direction.
 
 ### Implication for Stage C (mixture training)
 
