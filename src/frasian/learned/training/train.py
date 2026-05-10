@@ -94,6 +94,8 @@ def fit_eta_artifact(
     version: str = "v0",
     antithetic: bool = False,
     verbose: bool = True,
+    diagnostics_out: Path | None = None,
+    probe_batch_size: int = 64,
 ) -> EtaTrainResult:
     """Train an EtaNet + ValidityNet pair end-to-end on ``config``.
 
@@ -253,6 +255,16 @@ def fit_eta_artifact(
         )
         log_p_lik_val_t = jnp.asarray(log_p_lik_val_np)
 
+    probe = None
+    if diagnostics_out is not None:
+        from .diagnostics import build_probe_batch
+        probe_rng = np.random.default_rng(int(config.seed) ^ 0xD1A6)
+        probe = build_probe_batch(
+            scheme_name=config.scheme_name,
+            n=int(probe_batch_size),
+            rng=probe_rng,
+        )
+
     args = LoopArgs(
         eta_net=eta_net,
         val_net=val_net,
@@ -290,6 +302,7 @@ def fit_eta_artifact(
         verbose=verbose,
         support_theta_grid_np=support_theta_grid_np,
         log_p_lik_val_t=log_p_lik_val_t,
+        probe_batch=probe,
     )
     out = run_epoch_loop(args)
 
@@ -349,6 +362,30 @@ def fit_eta_artifact(
             f"head_b_acc={final_head_b_acc:.3f}, "
             f"η_pred_valid_rate={final_eta_pred_valid_rate:.3f}"
         )
+
+    if diagnostics_out is not None:
+        import json
+        diagnostics_out = Path(diagnostics_out)
+        diagnostics_out.parent.mkdir(parents=True, exist_ok=True)
+        with diagnostics_out.open("w") as f:
+            json.dump({
+                "config": {
+                    "scheme": config.scheme_name,
+                    "statistic": config.statistic_name,
+                    "n_epochs": n_epochs,
+                    "batch_size": batch_size,
+                    "loss_kind": loss_kind,
+                    "alpha": alpha,
+                    "lambda_max": lambda_max,
+                    "anti_wald_max": anti_wald_max,
+                    "normalize_inputs": bool(normalize_inputs),
+                    "probe_seed": int(config.seed) ^ 0xD1A6,
+                    "probe_n": int(probe_batch_size),
+                },
+                "epochs": out.diagnostics,
+            }, f, indent=2)
+        if verbose:
+            print(f"[fit_eta_artifact] wrote diagnostics sidecar to {diagnostics_out}")
 
     return EtaTrainResult(
         artifact_path=out_path,

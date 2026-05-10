@@ -90,6 +90,8 @@ class EpochLoopOutputs:
     best_val_net: Any = None
     epochs_run: int = 0
     stopped_early: bool = False
+    # Diagnostic fields (populated when probe_batch is passed in):
+    diagnostics: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -142,6 +144,10 @@ class LoopArgs:
     anti_wald_max: float = 0.0
     anti_collapse_max: float = 0.0
     anti_decay_frac: float = 0.5
+    # Optional held-out probe batch for per-epoch D1-D4 diagnostics.
+    # When non-None, _epoch_iteration computes diagnostics after each
+    # epoch's update and appends them to ``out.diagnostics``.
+    probe_batch: Any | None = None
 
 
 def evaluate_head_b_accuracy(
@@ -651,6 +657,40 @@ def _epoch_iteration(
     v_loss, head_b_acc = _evaluate_epoch(args, eval_fn, beta)
     out.val_losses.append(v_loss)
     out.head_b_accuracies.append(head_b_acc)
+
+    # Diagnostic computation (only when probe_batch supplied).
+    # args.eta_net here reflects the POST-update state for this epoch:
+    # _training_step assigns args.eta_net = eqx.apply_updates(...) after
+    # each minibatch.
+    if args.probe_batch is not None:
+        from .diagnostics import (
+            compute_d1_output_stats,
+            compute_d2_gradient_norms,
+            compute_d3_activation_stats,
+            compute_d4_loss_by_bin,
+        )
+        eta_net_now = args.eta_net
+        d1 = compute_d1_output_stats(eta_net_now, args.probe_batch)
+        d2 = compute_d2_gradient_norms(
+            eta_net_now, args.probe_batch,
+            scheme_name=args.config.scheme_name,
+            statistic_name=args.config.statistic_name,
+        )
+        d3 = compute_d3_activation_stats(eta_net_now, args.probe_batch)
+        d4 = compute_d4_loss_by_bin(
+            eta_net_now, args.probe_batch,
+            scheme_name=args.config.scheme_name,
+            statistic_name=args.config.statistic_name,
+        )
+        out.diagnostics.append({
+            "epoch": epoch + 1,
+            "loss_a": float(out.train_losses[-1]),
+            "val_width": float(v_loss),
+            **{f"d1_{k}": v for k, v in d1.items()},
+            **{f"d2_{k}": v for k, v in d2.items()},
+            **{f"d3_{k}": v for k, v in d3.items()},
+            **{f"d4_{k}": v for k, v in d4.items()},
+        })
 
     improved = v_loss < out.best_val - args.min_delta
     if improved:

@@ -127,6 +127,17 @@ def main() -> None:
         help="Override config.n_grid (e.g. for smoke training).",
     )
     parser.add_argument("--quiet", action="store_true")
+    parser.add_argument(
+        "--diagnostics-out", type=Path, default=None,
+        help=(
+            "If set, compute per-epoch D1-D4 diagnostics on a held-out probe "
+            "batch and write a JSON sidecar to this path."
+        ),
+    )
+    parser.add_argument(
+        "--probe-batch-size", type=int, default=64,
+        help="Size of held-out probe batch for diagnostics. Default 64.",
+    )
     args = parser.parse_args()
 
     # Audit P0-15: refuse to silently overwrite an existing checkpoint.
@@ -213,6 +224,8 @@ def main() -> None:
         device=args.device,
         version=args.version,
         verbose=not args.quiet,
+        diagnostics_out=args.diagnostics_out,
+        probe_batch_size=args.probe_batch_size,
     )
 
     print(f"[done] final val width  = {result.final_val_loss:.4f}")
