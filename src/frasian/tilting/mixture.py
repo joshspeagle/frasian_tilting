@@ -51,9 +51,17 @@ from .._registry import register_tilting
 from ..models._dispatch import is_normal_normal
 from ..models.base import Likelihood, Model, Posterior, Prior
 from ..models.distributions import (
+    BernoulliLikelihood,
     GaussianLikelihood,
     GaussianMixtureDistribution,
+    MixtureDistribution,
     NormalDistribution,
+)
+from ._generic_pvalue import (
+    _GENERIC_TILTED_PVALUE_BASE_SEED,
+    _resolve_support,
+    _stable_tilted_pvalue_seed,
+    likelihood_as_distribution,
 )
 from ..statistics.base import TestStatistic
 from ._dynamic import dynamic_ci_scan
@@ -68,6 +76,10 @@ if TYPE_CHECKING:
 # Coefficient guards -- same scale as PL/OT denom guards.
 _QUADRATIC_LEADING_EPS = 1e-12
 _DISCRIMINANT_EPS = 1e-12
+
+# Generic numerical path knobs (mirror PL / OT).
+_GENERIC_TILT_N_GRID: int = 1024
+_GENERIC_TILTED_PVALUE_N_MC: int = 200
 
 
 def _admissibility_normal_normal(
@@ -232,6 +244,199 @@ def _mixture_tilted_pvalue_array(
             D, w, mu0, sigma, statistic_name,
         )
     return out
+
+
+# ----- Generic numerical path (any model + any prior) -----
+
+
+def _generic_tilt_mixture(
+    posterior: Posterior,
+    likelihood: Likelihood,
+    eta: float,
+    *,
+    model: object,
+    data: NDArray[np.float64],
+    support: tuple[float, float],
+    n_grid: int = _GENERIC_TILT_N_GRID,
+) -> MixtureDistribution:
+    """Generic mixture tilt: weights (1-eta, eta) on (posterior, likelihood-as-dist).
+
+    For eta in [0, 1] the result is a probability density. For eta outside
+    [0, 1] the density may be negative on some theta-region; we probe a
+    coarse theta-grid and raise ValueError when min(pdf) < -tol so callers
+    in the CI inversion convert to NaN.
+    """
+    eta_f = float(eta)
+    if not np.isfinite(eta_f):
+        raise TiltingDomainError(
+            f"MixtureTilting requires finite eta, got {eta!r}."
+        )
+    q = likelihood_as_distribution(model, data, support, n_grid=n_grid)
+    mixture = MixtureDistribution(
+        weights=(1.0 - eta_f, eta_f), components=(posterior, q),
+    )
+    if eta_f < 0.0 or eta_f > 1.0:
+        # Validity probe: density must be >= 0 on a wide theta grid.
+        theta_lo, theta_hi = support
+        if not (np.isfinite(theta_lo) and np.isfinite(theta_hi)):
+            mu_p = float(posterior.mean())
+            v_p = float(posterior.var())
+            theta_lo = mu_p - 12.0 * float(np.sqrt(max(v_p, 1e-12)))
+            theta_hi = mu_p + 12.0 * float(np.sqrt(max(v_p, 1e-12)))
+        theta_probe = np.linspace(theta_lo, theta_hi, 257)
+        pdf = np.asarray(mixture.pdf(theta_probe), dtype=np.float64)
+        if np.any(pdf < -1e-10):
+            raise ValueError(
+                f"MixtureTilting: eta={eta_f!r} produces negative density "
+                f"on this (model, prior, data); inadmissible. Min pdf on "
+                f"probe = {float(np.min(pdf)):.4g}."
+            )
+    return mixture
+
+
+def _generic_tilted_moments_mixture(
+    posterior: Posterior,
+    likelihood: Likelihood,
+    eta: float,
+    *,
+    model: object,
+    data: NDArray[np.float64],
+    support: tuple[float, float],
+    n_grid: int = _GENERIC_TILT_N_GRID,
+) -> tuple[float, float]:
+    """(mean, var) of the tilted mixture distribution at the observed data."""
+    md = _generic_tilt_mixture(
+        posterior, likelihood, eta,
+        model=model, data=data, support=support, n_grid=n_grid,
+    )
+    return float(md.mean()), float(md.var())
+
+
+def _generic_tilted_t_statistic_mixture(
+    theta_f: float,
+    data: NDArray[np.float64],
+    model: object,
+    prior: Prior,
+    eta: float,
+    *,
+    support: tuple[float, float],
+    n_grid: int = _GENERIC_TILT_N_GRID,
+) -> float:
+    """t = (mu_tilted - theta)^2 / sigma_tilted^2 at the observed data.
+
+    Mirrors `power_law._generic_tilted_t_statistic` and
+    `ot._generic_tilted_t_statistic_ot`; only the tilt class differs.
+    """
+    posterior = model.posterior(data, prior)
+    likelihood = model.likelihood(data)
+    mu, var = _generic_tilted_moments_mixture(
+        posterior, likelihood, eta,
+        model=model, data=data, support=support, n_grid=n_grid,
+    )
+    var_safe = max(var, 1e-300)
+    diff = mu - theta_f
+    return diff * diff / var_safe
+
+
+def _generic_tilted_pvalue_mixture(
+    theta_f: float,
+    eta_f: float,
+    data: NDArray[np.float64],
+    model: object,
+    prior: Prior,
+    statistic_name: str,
+    *,
+    support: tuple[float, float],
+    n_mc: int = _GENERIC_TILTED_PVALUE_N_MC,
+    n_grid: int = _GENERIC_TILT_N_GRID,
+    alpha: float = 0.05,
+) -> float:
+    """Generic-MC tilted-WALDO p-value for any (model, prior).
+
+    Mirrors `power_law._generic_tilted_pvalue` but with the mixture tilt's
+    moment formula. Wald reduces to bare 2-sided Wald regardless of eta
+    (Wald ignores prior).
+    """
+    if statistic_name == "wald":
+        D_arr = np.atleast_1d(np.asarray(data, dtype=np.float64))
+        D_f = float(D_arr.item()) if D_arr.size == 1 else float(np.mean(D_arr))
+        sigma = float(getattr(model, "sigma", 1.0))
+        z = abs(D_f - theta_f) / sigma
+        return float(2.0 * _scalar_scipy_stats.norm.sf(z))
+
+    if statistic_name != "waldo":
+        raise NotImplementedError(
+            f"_generic_tilted_pvalue_mixture: unsupported statistic={statistic_name!r}"
+        )
+
+    derived_seed = _stable_tilted_pvalue_seed(
+        np.atleast_1d(np.asarray(data, dtype=np.float64)),
+        model, prior, eta_f, alpha, _GENERIC_TILTED_PVALUE_BASE_SEED,
+    )
+    rng = np.random.default_rng(derived_seed)
+    try:
+        t_obs = _generic_tilted_t_statistic_mixture(
+            theta_f, data, model, prior, eta_f,
+            support=support, n_grid=n_grid,
+        )
+    except (ValueError, TiltingDomainError):
+        return float("nan")
+
+    n_obs = int(np.asarray(data, dtype=np.float64).size)
+    t_arr = np.empty(int(n_mc), dtype=np.float64)
+    n_collapsed = 0
+    for i in range(int(n_mc)):
+        D_i = model.sample_data(theta_f, rng, n_obs)
+        try:
+            t_arr[i] = _generic_tilted_t_statistic_mixture(
+                theta_f, D_i, model, prior, eta_f,
+                support=support, n_grid=n_grid,
+            )
+        except (ValueError, TiltingDomainError):
+            t_arr[i] = 0.0  # conservative: not-more-extreme
+            n_collapsed += 1
+
+    # (k+1)/(n+1) continuity correction (matches WaldoStatistic generic path).
+    return (1.0 + float(np.sum(t_arr >= t_obs))) / (n_mc + 1.0)
+
+
+def _generic_tilted_confidence_interval_mixture(
+    alpha: float,
+    data: NDArray[np.float64],
+    model: object,
+    prior: Prior,
+    eta: float,
+    statistic_name: str,
+) -> tuple[float, float]:
+    """CI inversion of the generic-MC tilted-pvalue via brentq_with_doubling.
+
+    Mirrors `power_law._generic_tilted_confidence_interval`. The MC seed
+    is θ-independent (CRN), so brentq sees a deterministic p(θ) curve.
+    """
+    support = _resolve_support(model, np.asarray(data, dtype=np.float64))
+    posterior = model.posterior(data, prior)
+    mu_p = float(posterior.mean())
+    sigma_p = float(np.sqrt(max(posterior.var(), 1e-12)))
+
+    def f(theta_val: float) -> float:
+        return (
+            _generic_tilted_pvalue_mixture(
+                float(theta_val), float(eta),
+                np.asarray(data, dtype=np.float64),
+                model, prior, statistic_name,
+                support=support, alpha=float(alpha),
+            )
+            - alpha
+        )
+
+    half = 4.0 * sigma_p
+    lo = brentq_with_doubling(
+        f, midpoint=mu_p, initial_half_width=half, direction=-1,
+    )
+    hi = brentq_with_doubling(
+        f, midpoint=mu_p, initial_half_width=half, direction=+1,
+    )
+    return (lo, hi)
 
 
 @register_tilting(name="mixture", brief="docs/methods/mixture.md")
@@ -517,19 +722,49 @@ class MixtureTilting:
         Static selector: resolve a single eta via `selector.select(...)`.
         Dynamic selector: precompute coarse eta*(theta) lookup, interpolate.
         """
-        if not (is_normal_normal(model) and isinstance(prior, NormalDistribution)):
-            raise NotImplementedError(
-                "MixtureTilting.pvalue: generic path implemented in Stage B."
-            )
         from ..config import Config
         from .eta_selectors import _NamedStatistic
 
         alpha = float(Config.default().alpha)
+        theta_arr = np.atleast_1d(np.asarray(theta, dtype=np.float64))
+
+        # Generic path: route when statistic.force_generic OR the (model, prior)
+        # is not NormalNormal + NormalDistribution. Dynamic selectors on the
+        # generic path are not yet supported (the dynamic scanner is NN-only).
+        force_generic = bool(getattr(statistic, "force_generic", False))
+        is_nn = is_normal_normal(model) and isinstance(prior, NormalDistribution)
+        route_generic = force_generic or not is_nn
+        if route_generic:
+            if getattr(self.selector, "is_dynamic", False):
+                raise NotImplementedError(
+                    "MixtureTilting.pvalue + dynamic-eta selector + "
+                    "(force_generic=True or non-NN model) is not supported "
+                    "(dynamic scanner is NN-flavoured). Use a static selector."
+                )
+            eta = float(
+                self.selector.select(
+                    self,
+                    data=data,
+                    model=model,
+                    prior=prior,
+                    alpha=alpha,
+                    statistic=statistic,
+                )
+            )
+            support = _resolve_support(model, np.asarray(data, dtype=np.float64))
+            data_arr = np.atleast_1d(np.asarray(data, dtype=np.float64))
+            out = np.empty_like(theta_arr)
+            for i, theta_f in enumerate(theta_arr):
+                out[i] = _generic_tilted_pvalue_mixture(
+                    float(theta_f), eta, data_arr, model, prior, statistic.name,
+                    support=support, alpha=alpha,
+                )
+            return out
+
         sigma = float(model.sigma)
         sigma0 = float(prior.scale)
         w = sigma0 ** 2 / (sigma ** 2 + sigma0 ** 2)
         D = float(np.asarray(data, dtype=np.float64).item())
-        theta_arr = np.atleast_1d(np.asarray(theta, dtype=np.float64))
 
         if getattr(self.selector, "is_dynamic", False):
             coarse_n = int(getattr(self.selector, "coarse_n", 25))
@@ -579,10 +814,31 @@ class MixtureTilting:
         config: "Config | None" = None,
     ) -> list[tuple[float, float]]:
         """Selector-aware region list."""
-        if not (is_normal_normal(model) and isinstance(prior, NormalDistribution)):
-            raise NotImplementedError(
-                "MixtureTilting.confidence_regions: generic path in Stage B."
+        force_generic = bool(getattr(statistic, "force_generic", False))
+        is_nn = is_normal_normal(model) and isinstance(prior, NormalDistribution)
+        route_generic = force_generic or not is_nn
+        if route_generic:
+            if getattr(self.selector, "is_dynamic", False):
+                raise NotImplementedError(
+                    "MixtureTilting + dynamic-eta selector + "
+                    "(force_generic=True or non-NN model) is not supported "
+                    "(dynamic scanner is NN-flavoured). Use a static selector."
+                )
+            eta = float(
+                self.selector.select(
+                    self,
+                    data=data,
+                    model=model,
+                    prior=prior,
+                    alpha=alpha,
+                    statistic=statistic,
+                )
             )
+            lo, hi = _generic_tilted_confidence_interval_mixture(
+                alpha, data, model, prior, eta, statistic.name,
+            )
+            return [(lo, hi)]
+
         D = float(np.asarray(data, dtype=np.float64).item())
 
         if getattr(self.selector, "is_dynamic", False):
