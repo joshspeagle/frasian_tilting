@@ -190,15 +190,20 @@ def _call_generic_grid_pvalue(
     support_theta_grid_t: jax.Array | None = None,
     log_p_prior_grid_t: jax.Array | None = None,
 ) -> jax.Array:
-    """Adapter: call ``generic_grid_tilted_pvalue`` (Phase 4 generic path).
+    """Adapter: call the per-scheme generic-grid tilted-pvalue kernel.
+
+    Dispatches on `scheme_name` via `get_jax_tilted_pvalue(scheme_name,
+    "generic")`: power_law → e-geodesic surrogate
+    (``generic_grid_tilted_pvalue``), mixture → m-geodesic density-space
+    surrogate (``mixture_grid_tilted_pvalue``).
 
     Phase G: representative (rep_model, rep_prior) prior_grid + support
     are supplied by the caller. This is a known approximation when
     hyperparams vary per-batch — see plan Step 6.4 caveat.
     """
-    from .pvalue_jax import generic_grid_tilted_pvalue
+    from .pvalue_jax import get_jax_tilted_pvalue
 
-    del D_batch_t, scheme_name  # unused in the kernel call
+    del D_batch_t  # unused in the kernel call
     if (
         log_p_lik_grid_t is None
         or support_theta_grid_t is None
@@ -220,7 +225,8 @@ def _call_generic_grid_pvalue(
     ).reshape(B * G, lik_hp_batch_t.shape[1])
     eta_flat = eta_net(theta_bg_flat, prior_hp_bg, lik_hp_bg)
     eta_bg = eta_flat.reshape(B, G)
-    return generic_grid_tilted_pvalue(
+    kernel = get_jax_tilted_pvalue(scheme_name, "generic")
+    return kernel(
         theta_bg_2d,
         eta_bg,
         log_p_lik_grid_t,
@@ -233,7 +239,11 @@ def _call_generic_grid_pvalue(
 WIDTH_LOSS_DISPATCH: dict[tuple[str, str], Any] = {
     ("power_law", "normal_normal"): _call_normal_normal_pvalue,
     ("ot", "normal_normal"): _call_normal_normal_pvalue,
+    ("mixture", "normal_normal"): _call_normal_normal_pvalue,
     ("power_law", "generic"): _call_generic_grid_pvalue,
+    # ``("mixture", "generic")`` registered below — see _call_generic_grid_pvalue
+    # which dispatches on scheme_name to pick the right kernel.
+    ("mixture", "generic"): _call_generic_grid_pvalue,
 }
 
 
