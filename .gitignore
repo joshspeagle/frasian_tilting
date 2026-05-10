@@ -117,10 +117,18 @@ docs/superpowers/
 #         --config experiments/canonical_<scheme>_v4.yaml \
 #         --out artifacts/learned_eta_canonical_<scheme>_v4.eqx
 artifacts/learned_eta_*_v4.eqx
+# Production training-time diagnostics sidecars (paired with the .eqx
+# checkpoints; same regenerability rationale).
+artifacts/learned_eta_*_v4.diagnostics.json
 # Probe / smoke / diagnostic checkpoints (gitignored — train locally)
 artifacts/probe_v4_*.eqx
 artifacts/probe_v4_*.diagnostics.json
 artifacts/probe_pl_*.eqx
+# Diagnostic .npz outputs from probe scripts (regenerable by re-running
+# the corresponding `scripts/probe_*.py`). Includes per_theta_test_argmin,
+# v4_hyperparam_audit, single_slice_*, two_slice_discrim, continuous_kd,
+# etc.
+artifacts/*.npz
 
 # Temporary files
 *.tmp

@@ -55,7 +55,7 @@ changed" section if they care to.
 ## Index
 
 - [2026-05-09-phase-g-v4-fix.md](./2026-05-09-phase-g-v4-fix.md) —
-  σ-anchored θ training + input normalization unblocks the Phase G
+  σ₀-anchored θ training + input normalization unblocks the Phase G
   v4 conditional learned-η selector (which initially collapsed to
   η ≈ 1 = Wald). Includes per-loss audit results and the
   `LearnedDynamicEtaSelector` clamp-instead-of-refuse change.
@@ -67,6 +67,21 @@ changed" section if they care to.
   large |θ| instead of approaching 1) and proposes loss-landscape
   probes to disambiguate before Stage C training. Includes the
   `_spectral_roughness` DC-bin bug-fix.
+- [2026-05-10-followup-todo.md](./2026-05-10-followup-todo.md) —
+  Three follow-up items after the 2026-05-10 corrected-framing
+  investigation: (1) audit the 4 scripts per experimental-design cell
+  for correct evaluation framing; (2) re-run wald-audit for PL and
+  OT with OOD-θ clamp + σ₀-anchored evaluation; (3) return to
+  mixture Stage C training.
+- [2026-05-10-eta-conventions-and-loss-derivation.md](./2026-05-10-eta-conventions-and-loss-derivation.md) —
+  Critical distinctions that cause confused diagnostic results: η=0
+  is WALDO and η=1 is Wald in `power_law_tilted_pvalue_jax` (names
+  feel backwards); the integrated_p loss equals "average CI width
+  across all α-levels" via Fubini; the σ₀-anchored integration
+  domain makes Wald loss appear σ₀-dependent (truncation artifact);
+  per-θ_test ≠ per-θ_true argmin η; v4 trained on σ₀-anchored θ_test
+  cannot learn far-from-μ₀ Wald-fallback. Reference for future
+  diagnostic work.
 - [2026-05-10-learned-eta-intervention-design.md](./2026-05-10-learned-eta-intervention-design.md) —
   Deep investigation into the learned-η training failures. Computes
   calibrated benchmarks (real headroom is 14%, not 30% as
