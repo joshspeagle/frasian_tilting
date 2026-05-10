@@ -140,6 +140,47 @@ class TestD3ActivationStats:
         assert isinstance(stats["n_dead_neurons"], int)
         assert stats["n_dead_neurons"] >= 0
 
+    def test_d3_detects_constant_penultimate_as_all_dead(self):
+        """If the input pathway is severed (zero weights + zero bias on
+        the input Linear), every subsequent layer sees constant zero
+        input, so penultimate activations are constant across the batch
+        — every neuron should be flagged "dead"."""
+        import jax
+        import jax.numpy as jnp
+        import equinox as eqx
+        from frasian.learned.training.architecture import EtaNet
+        from frasian.learned.training.diagnostics import (
+            build_probe_batch, compute_d3_activation_stats,
+        )
+        last_hidden = 16
+        rng = np.random.default_rng(0xCAFE)
+        pb = build_probe_batch(
+            scheme_name="power_law", n=32, rng=rng,
+            hyperparam_distribution=_v4_hyperparam_distribution(),
+        )
+        net = EtaNet(theta_dim=1, prior_dim=2, lik_dim=1,
+                     hidden_sizes=(16, last_hidden),
+                     key=jax.random.PRNGKey(0))
+        # Zero the input layer's weight and bias so the rest of the MLP
+        # always sees a constant (zero) input vector. Then the penult
+        # activations are constant across the batch → std=0 → all dead.
+        first_layer = net.mlp.layers[0]
+        zero_w = jnp.zeros_like(first_layer.weight)
+        zero_b = jnp.zeros_like(first_layer.bias)
+        new_first = eqx.tree_at(
+            lambda l: (l.weight, l.bias), first_layer, (zero_w, zero_b),
+        )
+        new_layers = (new_first, *net.mlp.layers[1:])
+        new_mlp = eqx.tree_at(lambda m: m.layers, net.mlp, new_layers)
+        net_dead = eqx.tree_at(lambda n: n.mlp, net, new_mlp)
+        stats = compute_d3_activation_stats(net_dead, pb)
+        assert stats["n_dead_neurons"] == last_hidden, (
+            f"expected all {last_hidden} penult neurons dead, "
+            f"got {stats['n_dead_neurons']}"
+        )
+        assert stats["penult_std_min"] < 1e-6
+        assert stats["penult_std_mean"] < 1e-6
+
 
 @pytest.mark.L1
 @pytest.mark.properties
@@ -168,6 +209,36 @@ class TestD2GradientNorms:
         for k in ("grad_norm_lowW", "grad_norm_midW", "grad_norm_highW"):
             assert k in norms, f"missing {k}"
             assert np.isfinite(norms[k]) and norms[k] >= 0.0
+
+    def test_d2_gradient_path_alive_on_random_init(self):
+        """On a freshly-random EtaNet + standard probe, every gradient
+        norm we report should be strictly positive — catches future
+        regressions that accidentally sever the autograd path
+        (e.g. a stop_gradient slipping into the loss path)."""
+        import jax
+        from frasian.learned.training.architecture import EtaNet
+        from frasian.learned.training.diagnostics import (
+            build_probe_batch, compute_d2_gradient_norms,
+        )
+        rng = np.random.default_rng(0xCAFE)
+        pb = build_probe_batch(
+            scheme_name="power_law", n=64, rng=rng,
+            hyperparam_distribution=_v4_hyperparam_distribution(),
+        )
+        net = EtaNet(theta_dim=1, prior_dim=2, lik_dim=1,
+                     hidden_sizes=(16, 16), key=jax.random.PRNGKey(7))
+        norms = compute_d2_gradient_norms(
+            net, pb, scheme_name="power_law", statistic_name="waldo",
+        )
+        # Any single grad norm being exactly zero on a random init +
+        # 64-sample probe would be evidence of a severed gradient path.
+        # We assert the input-weight and lowW per-bin gradients pass.
+        assert norms["grad_norm_input_w"] > 0.0, (
+            "input-layer gradient norm is zero — gradient path may be severed"
+        )
+        assert norms["grad_norm_lowW"] > 0.0, (
+            "lowW per-bin gradient norm is zero — gradient path may be severed"
+        )
 
 
 @pytest.mark.L1
