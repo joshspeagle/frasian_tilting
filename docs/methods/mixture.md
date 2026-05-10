@@ -1,6 +1,6 @@
 # mixture
 
-> Status: `stub`
+> Status: `implemented`
 
 ## Summary
 
@@ -462,18 +462,29 @@ aware.
 
 ## Links
 
-- Implementation: `src/frasian/tilting/mixture.py` (stub)
-- Property tests: `tests/properties/test_mixture_invariants.py` (skipped)
-- Illustration:   TBD
+- Implementation: `src/frasian/tilting/mixture.py`
+- Distribution wrapper: `src/frasian/models/distributions.py`
+  (`GaussianMixtureDistribution`, `MixtureDistribution`)
+- Property tests: `tests/properties/test_mixture_invariants.py`,
+  `tests/properties/test_gaussian_mixture_distribution.py`
+- Regression tests: `tests/regression/test_mixture_pvalue.py`
+- Illustration:   `src/frasian/experiments/illustrations/mixture_demo.py`
 
 ## Status notes
 
-Stub — implementation requires (a) a two-component mixture
-`Distribution` wrapper, (b) the bimodal-quantile branch in WALDO
-acceptance-region inversion (or the explicit fall-back to NaN), and
-(c) registration of the `Distribution` protocol for non-unimodal
-outputs. The framework's `(mixture, waldo)` cell will produce
-genuinely novel behaviour: the m-geodesic counterpart to `power_law`'s
-Dynamic-WALDO. Coverage is expected to drop in the bimodal regime
-even with `DynamicNumericalEtaSelector`, since WALDO is misspecified
-against a non-Gaussian sampling distribution.
+Stage A complete: closed-form NN tilt (returns
+`GaussianMixtureDistribution`), closed-form tilted-WALDO p-value via
+the quadratic-roots branching derived in §"Derivation",
+selector-aware `pvalue` / `confidence_interval` / `confidence_regions`,
+`dynamic_tilted_confidence_interval` via the shared
+`tilting._dynamic.dynamic_ci_scan` helper.
+
+The framework's `(mixture, waldo)` cell produces genuinely novel
+behaviour: the m-geodesic counterpart to `power_law`'s Dynamic-WALDO.
+Coverage is expected to depart from nominal in the bimodal regime
+`|Δ| > 2√w` (Behboodian 1970) even with `DynamicNumericalEtaSelector`,
+since the tilted reference is non-Gaussian and the WALDO test
+statistic interpretation as a squared standardised distance breaks
+down in a sub-region of X-space when `η > 1`. The closed-form
+p-value remains correct because it inverts the polynomial inequality
+`Q(X) ≥ 0` directly. See §"Caveat on `eta > 1`" in Derivation.
