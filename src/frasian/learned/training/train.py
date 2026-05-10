@@ -12,6 +12,7 @@ heavy lifting lives in:
 
 from __future__ import annotations
 
+import json
 import warnings as _warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -275,7 +276,13 @@ def fit_eta_artifact(
     probe = None
     if diagnostics_out is not None:
         from .diagnostics import build_probe_batch
-        probe_rng = np.random.default_rng(int(config.seed) ^ 0xD1A6)
+        # Derive the probe RNG via SeedSequence.spawn instead of XOR. XOR
+        # has aliasing risk: with seed=0xD1A6 the probe RNG would silently
+        # collide with seed-0 baselines elsewhere. Spawning yields N
+        # independent sub-streams — index 5 is reserved for the probe so
+        # spawn_rngs (4 streams in _setup.py) doesn't overlap with us.
+        _probe_seed_seq = np.random.SeedSequence(int(config.seed)).spawn(6)[5]
+        probe_rng = np.random.default_rng(_probe_seed_seq)
         probe = build_probe_batch(
             scheme_name=config.scheme_name,
             n=int(probe_batch_size),
@@ -384,22 +391,41 @@ def fit_eta_artifact(
         )
 
     if diagnostics_out is not None:
-        import json
         diagnostics_out = Path(diagnostics_out)
         diagnostics_out.parent.mkdir(parents=True, exist_ok=True)
         with diagnostics_out.open("w") as f:
             json.dump({
                 "config": {
+                    # Identity / scheme
                     "scheme": config.scheme_name,
                     "statistic": config.statistic_name,
-                    "n_epochs": n_epochs,
-                    "batch_size": batch_size,
+                    "prior_class": config.prior_cls.__name__,
+                    "model_class": config.model_cls.__name__,
+                    "version": str(version),
+                    # Schedule
+                    "n_epochs": int(n_epochs),
+                    "batch_size": int(batch_size),
                     "loss_kind": loss_kind,
                     "alpha": alpha,
-                    "lambda_max": lambda_max,
-                    "anti_wald_max": anti_wald_max,
+                    # Optimizer
+                    "lr_a": float(lr_a),
+                    "lr_b": float(lr_b),
+                    "weight_decay": float(weight_decay),
+                    # Penalty schedules
+                    "lambda_max": float(lambda_max),
+                    "lambda_warmup_frac": float(lambda_warmup_frac),
+                    "anti_wald_max": float(anti_wald_max),
+                    "anti_collapse_max": float(anti_collapse_max),
+                    "anti_decay_frac": float(anti_decay_frac),
+                    # Architecture
+                    "eta_hidden_sizes": list(eta_hidden_sizes),
+                    "validity_hidden_sizes": list(validity_hidden_sizes),
                     "normalize_inputs": bool(normalize_inputs),
-                    "probe_seed": int(config.seed) ^ 0xD1A6,
+                    # Early stopping
+                    "patience": int(patience),
+                    "min_delta": float(min_delta),
+                    # Reproducibility
+                    "seed": int(config.seed),
                     "probe_n": int(probe_batch_size),
                 },
                 "epochs": out.diagnostics,
