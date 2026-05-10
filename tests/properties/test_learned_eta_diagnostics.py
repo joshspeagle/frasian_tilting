@@ -102,3 +102,52 @@ class TestD3ActivationStats:
             assert k in stats, f"missing {k}"
         assert isinstance(stats["n_dead_neurons"], int)
         assert stats["n_dead_neurons"] >= 0
+
+
+@pytest.mark.L1
+@pytest.mark.properties
+class TestD2GradientNorms:
+    def test_d2_returns_expected_keys(self):
+        import jax
+        import numpy as np
+        from frasian.learned.training.architecture import EtaNet
+        from frasian.learned.training.diagnostics import (
+            build_probe_batch, compute_d2_gradient_norms,
+        )
+        rng = np.random.default_rng(0xCAFE)
+        pb = build_probe_batch(scheme_name="power_law", n=32, rng=rng)
+        net = EtaNet(theta_dim=1, prior_dim=2, lik_dim=1,
+                     hidden_sizes=(16, 16), key=jax.random.PRNGKey(0))
+        norms = compute_d2_gradient_norms(
+            net, pb, scheme_name="power_law", statistic_name="waldo",
+        )
+        # Per-layer (input weight, output weight, output bias)
+        for k in ("grad_norm_input_w", "grad_norm_output_w", "grad_norm_output_b"):
+            assert k in norms, f"missing {k}"
+            assert np.isfinite(norms[k]) and norms[k] >= 0.0
+        # Per-w-bin
+        for k in ("grad_norm_lowW", "grad_norm_midW", "grad_norm_highW"):
+            assert k in norms, f"missing {k}"
+            assert np.isfinite(norms[k]) and norms[k] >= 0.0
+
+
+@pytest.mark.L1
+@pytest.mark.properties
+class TestD4LossByBin:
+    def test_d4_returns_expected_keys(self):
+        import jax
+        import numpy as np
+        from frasian.learned.training.architecture import EtaNet
+        from frasian.learned.training.diagnostics import (
+            build_probe_batch, compute_d4_loss_by_bin,
+        )
+        rng = np.random.default_rng(0xCAFE)
+        pb = build_probe_batch(scheme_name="power_law", n=64, rng=rng)
+        net = EtaNet(theta_dim=1, prior_dim=2, lik_dim=1,
+                     hidden_sizes=(16, 16), key=jax.random.PRNGKey(0))
+        result = compute_d4_loss_by_bin(
+            net, pb, scheme_name="power_law", statistic_name="waldo",
+        )
+        for k in ("loss_lowW", "loss_midW", "loss_highW"):
+            assert k in result, f"missing {k}"
+            assert np.isfinite(result[k]) and result[k] >= 0.0

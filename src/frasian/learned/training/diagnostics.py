@@ -20,6 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -223,3 +224,139 @@ def compute_d3_activation_stats(
         "penult_std_min": float(np.min(per_neuron_std)),
         "n_dead_neurons": int(np.sum(per_neuron_std < _DEAD_NEURON_THRESHOLD)),
     }
+
+
+def _per_sample_loss_on_probe(
+    eta_net: "EtaNet",
+    probe: ProbeBatch,
+    scheme_name: str,
+    statistic_name: str,
+    K: float = 5.0,
+) -> jax.Array:
+    """Per-sample integrated-p loss on the probe batch.
+
+    Returns shape (n,) -- one loss value per probe sample.
+    """
+    pvalue_fn = get_jax_tilted_pvalue(scheme_name, "normal_normal")
+    n = probe.theta.size
+    losses = []
+    for i in range(n):
+        mu0_i = float(probe.prior_hp[i, 0])
+        sigma0_i = float(probe.prior_hp[i, 1])
+        sigma_i = float(probe.lik_hp[i, 0])
+        D_i = float(probe.D[i])
+        w_i = sigma0_i ** 2 / (sigma_i ** 2 + sigma0_i ** 2)
+        theta_grid = jnp.asarray(np.linspace(
+            mu0_i - K * sigma0_i, mu0_i + K * sigma0_i, 401,
+        ))
+        prior_hp_b = jnp.broadcast_to(jnp.asarray(probe.prior_hp[i]), (401, 2))
+        lik_hp_b = jnp.broadcast_to(jnp.asarray(probe.lik_hp[i]), (401, 1))
+        eta_arr = eta_net(theta_grid, prior_hp_b, lik_hp_b)  # (401,)
+        p = pvalue_fn(
+            theta=theta_grid, D=jnp.asarray(D_i), w=jnp.asarray(w_i),
+            mu0=jnp.asarray(mu0_i), sigma=jnp.asarray(sigma_i),
+            eta=eta_arr, statistic_name=statistic_name,
+        )
+        loss_i = jnp.trapezoid(p, theta_grid)
+        losses.append(loss_i)
+    return jnp.stack(losses)  # (n,)
+
+
+def compute_d2_gradient_norms(
+    eta_net: "EtaNet",
+    probe: ProbeBatch,
+    *,
+    scheme_name: str,
+    statistic_name: str,
+) -> dict[str, float]:
+    """D2: gradient norms by layer + by w-bin subgroup.
+
+    Computes the gradient of mean per-sample loss on the probe batch
+    with respect to EtaNet parameters. Returns:
+      - per-layer gradient norms (input_w, output_w, output_b).
+      - per-w-bin gradient norms.
+    """
+    def loss_per_sample_sum(en):
+        per = _per_sample_loss_on_probe(en, probe, scheme_name, statistic_name)
+        return jnp.mean(per)
+
+    # NOTE: this function calls eqx.filter_grad 4 times per invocation
+    # (1 full + 3 per-bin subsets). Acceptable since D2 is a once-per-epoch
+    # diagnostic on a 64-sample probe; not a hot loop. If profiling later
+    # shows this matters, batch via jax.jacrev + per-sample mask.
+    grad_tree = eqx.filter_grad(loss_per_sample_sum)(eta_net)
+
+    # Walk grad_tree to extract input-layer weights, output weights/bias.
+    # eqx.nn.MLP layout: layers is a tuple of eqx.nn.Linear; first is
+    # input layer, last is output layer. Each Linear has .weight and
+    # .bias.
+    mlp_grad = grad_tree.mlp
+    input_layer = mlp_grad.layers[0]
+    output_layer = mlp_grad.layers[-1]
+
+    def _norm(t):
+        if t is None:
+            return 0.0
+        arr = np.asarray(t).flatten()
+        return float(np.sqrt(np.sum(arr * arr)))
+
+    norms = {
+        "grad_norm_input_w": _norm(getattr(input_layer, "weight", None)),
+        "grad_norm_output_w": _norm(getattr(output_layer, "weight", None)),
+        "grad_norm_output_b": _norm(getattr(output_layer, "bias", None)),
+    }
+
+    # Per-w-bin gradients: re-compute gradient on each subset.
+    for bin_name in ("lowW", "midW", "highW"):
+        mask = np.array([w_bin(float(w)) == bin_name for w in probe.w])
+        if not mask.any():
+            norms[f"grad_norm_{bin_name}"] = 0.0
+            continue
+        # Subset probe to this bin
+        sub = ProbeBatch(
+            theta=probe.theta[mask], D=probe.D[mask],
+            prior_hp=probe.prior_hp[mask], lik_hp=probe.lik_hp[mask],
+            argmin_eta=probe.argmin_eta[mask], w=probe.w[mask],
+        )
+        def sub_loss(en, _sub=sub):
+            per = _per_sample_loss_on_probe(en, _sub, scheme_name, statistic_name)
+            return jnp.mean(per)
+        sub_grad = eqx.filter_grad(sub_loss)(eta_net)
+        # Total grad norm across the EtaNet's params:
+        leaves = jax.tree.leaves(sub_grad)
+        total = 0.0
+        for leaf in leaves:
+            if leaf is None:
+                continue
+            arr = np.asarray(leaf).flatten()
+            total += float(np.sum(arr * arr))
+        norms[f"grad_norm_{bin_name}"] = float(np.sqrt(total))
+    return norms
+
+
+def compute_d4_loss_by_bin(
+    eta_net: "EtaNet",
+    probe: ProbeBatch,
+    *,
+    scheme_name: str,
+    statistic_name: str,
+) -> dict[str, float]:
+    """D4: integrated-p loss values broken down by w-bin.
+
+    Useful for spotting gradient-magnitude asymmetry: if low-w slices
+    have 10x the loss of high-w (or vice versa), the optimizer is
+    biased.
+    """
+    losses = np.asarray(
+        _per_sample_loss_on_probe(eta_net, probe, scheme_name, statistic_name),
+        dtype=np.float64,
+    )
+    bins = np.array([w_bin(float(w)) for w in probe.w])
+    out = {}
+    for bin_name in ("lowW", "midW", "highW"):
+        mask = bins == bin_name
+        if mask.any():
+            out[f"loss_{bin_name}"] = float(np.mean(losses[mask]))
+        else:
+            out[f"loss_{bin_name}"] = float("nan")
+    return out
