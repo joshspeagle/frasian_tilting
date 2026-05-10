@@ -154,3 +154,63 @@ class TestGaussianMixtureDistribution:
         x = np.asarray(gm.quantile(u), dtype=np.float64)
         cdf_back = np.asarray(gm.cdf(x), dtype=np.float64)
         np.testing.assert_allclose(cdf_back, u, atol=1e-7)
+
+
+@pytest.mark.L1
+@pytest.mark.properties
+class TestMixtureDistributionGeneric:
+    """MixtureDistribution accepts any 2 Distribution-protocol endpoints."""
+
+    def test_two_normals_match_gaussian_mixture(self):
+        from frasian.models.distributions import (
+            MixtureDistribution,
+            NormalDistribution,
+        )
+        p = NormalDistribution(loc=0.0, scale=1.0)
+        q = NormalDistribution(loc=2.0, scale=0.5)
+        gm = GaussianMixtureDistribution(
+            weights=(0.3, 0.7), means=(0.0, 2.0), scales=(1.0, 0.5)
+        )
+        md = MixtureDistribution(weights=(0.3, 0.7), components=(p, q))
+        x = np.linspace(-3.0, 5.0, 50)
+        np.testing.assert_allclose(
+            np.asarray(md.pdf(x)), np.asarray(gm.pdf(x)), atol=1e-12
+        )
+        assert md.mean() == pytest.approx(gm.mean(), abs=1e-12)
+        # Variance via 64-pt Gauss-Legendre (numerical) vs closed-form GM.
+        assert md.var() == pytest.approx(gm.var(), abs=1e-3)
+
+    def test_cdf_monotone(self):
+        from frasian.models.distributions import (
+            MixtureDistribution,
+            NormalDistribution,
+        )
+        p = NormalDistribution(loc=0.0, scale=1.0)
+        q = NormalDistribution(loc=2.0, scale=0.5)
+        md = MixtureDistribution(weights=(0.4, 0.6), components=(p, q))
+        x = np.linspace(-5.0, 7.0, 200)
+        cdf = np.asarray(md.cdf(x), dtype=np.float64)
+        assert np.all(np.diff(cdf) >= -1e-12)
+
+    def test_quantile_round_trip(self):
+        from frasian.models.distributions import (
+            MixtureDistribution,
+            NormalDistribution,
+        )
+        p = NormalDistribution(loc=0.0, scale=1.0)
+        q = NormalDistribution(loc=2.0, scale=0.5)
+        md = MixtureDistribution(weights=(0.4, 0.6), components=(p, q))
+        u = np.array([0.1, 0.5, 0.9])
+        x = np.asarray(md.quantile(u), dtype=np.float64)
+        cdf_back = np.asarray(md.cdf(x), dtype=np.float64)
+        np.testing.assert_allclose(cdf_back, u, atol=1e-7)
+
+    def test_weights_must_sum_to_one(self):
+        from frasian.models.distributions import (
+            MixtureDistribution,
+            NormalDistribution,
+        )
+        p = NormalDistribution(loc=0.0, scale=1.0)
+        q = NormalDistribution(loc=2.0, scale=0.5)
+        with pytest.raises(ValueError, match="weights"):
+            MixtureDistribution(weights=(0.3, 0.5), components=(p, q))
