@@ -31,7 +31,7 @@ import math
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from functools import partial
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 import jax
 import jax.numpy as jnp
@@ -46,8 +46,14 @@ from .._registry import register_tilting
 from ..models._dispatch import is_normal_normal
 from ..models.base import Likelihood, Model, Posterior, Prior
 from ..models.distributions import GaussianLikelihood, NormalDistribution
+from ..statistics.base import TestStatistic
+from ._dynamic import dynamic_ci_scan
+from ._solvers import brentq_with_doubling
 from .base import EtaSelector, ParamSpec
 from .eta_selectors import FixedEtaSelector
+
+if TYPE_CHECKING:
+    from ..config import Config
 
 _FORCE_X64 = _x64
 
@@ -419,7 +425,7 @@ class FisherRaoTilting:
             "t in [0, 1] along the Fisher-Rao geodesic between posterior (t=0) "
             "and the likelihood-induced Gaussian N(D, sigma^2) (t=1)."
         ),
-        training_output_bounds=None,  # FR has no eta_max admissibility
+        training_output_bounds=(0.0, 1.0),  # FR geodesic param t in [0, 1]
     )
     selector: EtaSelector = field(default_factory=lambda: FixedEtaSelector(eta=0.0))
 
@@ -514,3 +520,200 @@ class FisherRaoTilting:
             jnp.asarray(theta), jnp.asarray(eta), jnp.asarray(D),
             jnp.asarray(w), jnp.asarray(mu0), jnp.asarray(sigma), statistic_name,
         ))
+
+    # ------------------------------------------------------------------
+    # Selector-aware CI / regions / pvalue (Stage A.5)
+    # ------------------------------------------------------------------
+
+    def confidence_regions(
+        self,
+        alpha: float,
+        data: NDArray[np.float64],
+        model: Model,
+        prior: Prior,
+        statistic: TestStatistic,
+        *,
+        config: "Config | None" = None,
+    ) -> list[tuple[float, float]]:
+        from .eta_selectors import (
+            DynamicNumericalEtaSelector,
+            LearnedDynamicEtaSelector,
+            NumericalEtaSelector,
+        )
+        if not is_normal_normal(model):
+            raise NotImplementedError(
+                "FisherRaoTilting.confidence_regions currently requires NormalNormalModel; "
+                "Stage B's generic numerical path will route here via WaldoStatistic(force_generic=True)."
+            )
+        if not isinstance(prior, NormalDistribution):
+            raise NotImplementedError(
+                "FisherRaoTilting.confidence_regions currently requires NormalDistribution prior."
+            )
+        D = float(np.asarray(data).mean())
+        sigma = float(model.sigma)
+        mu0 = float(prior.loc)
+        sigma0 = float(prior.scale)
+        w = sigma0 ** 2 / (sigma ** 2 + sigma0 ** 2)
+        statistic_name = getattr(statistic, "name", type(statistic).__name__.lower())
+        if isinstance(self.selector, FixedEtaSelector):
+            eta_resolved = float(self.selector.eta)
+            return self._static_confidence_regions(
+                alpha=alpha, eta=eta_resolved, D=D, w=w, mu0=mu0, sigma=sigma,
+                statistic_name=statistic_name,
+            )
+        if isinstance(self.selector, NumericalEtaSelector):
+            eta_raw = float(self.selector.select(
+                self, data=data, model=model, prior=prior, alpha=alpha, statistic=statistic
+            ))
+            # NumericalEtaSelector._eta_bounds returns power_law's
+            # admissible window `(-w/(1-w), 1/(1-w))`, which can overshoot
+            # FR's geodesic-segment range `[0, 1]`. Clamp to admissible.
+            eta_resolved = float(np.clip(eta_raw, 0.0 + 1e-9, 1.0 - 1e-9))
+            return self._static_confidence_regions(
+                alpha=alpha, eta=eta_resolved, D=D, w=w, mu0=mu0, sigma=sigma,
+                statistic_name=statistic_name,
+            )
+        if isinstance(self.selector, (DynamicNumericalEtaSelector, LearnedDynamicEtaSelector)):
+            n_grid = int(getattr(self.selector, "n_grid", 401))
+            coarse_n = int(getattr(self.selector, "coarse_n", 25))
+            search_mult = float(getattr(self.selector, "search_mult", 8.0))
+
+            # FR-admissible eta clamp: NumericalEtaSelector's bracket is
+            # power_law's wider window `(-w/(1-w), 1/(1-w))`, which can
+            # land outside FR's geodesic-segment range `[0, 1]`. Clamp
+            # in the tilted_pvalue closures so the dynamic scan stays
+            # in admissible territory.
+            _eta_lo, _eta_hi = 0.0 + 1e-9, 1.0 - 1e-9
+
+            def _tilted_pvalue_fn(theta_v: float, eta_v: float) -> float:
+                eta_clamped = float(np.clip(float(eta_v), _eta_lo, _eta_hi))
+                return _fr_tilted_pvalue_numpy_scalar(
+                    theta_f=float(theta_v), eta_f=eta_clamped, D_f=D,
+                    w=w, mu0=mu0, sigma=sigma, statistic_name=statistic_name,
+                )
+
+            def _tilted_pvalue_vec_fn(
+                theta_arr: np.ndarray, eta_arr: np.ndarray
+            ) -> np.ndarray:
+                eta_clamped = np.clip(eta_arr, _eta_lo, _eta_hi)
+                out = np.empty(theta_arr.shape, dtype=np.float64)
+                for i in range(theta_arr.shape[0]):
+                    out[i] = _fr_tilted_pvalue_numpy_scalar(
+                        theta_f=float(theta_arr[i]), eta_f=float(eta_clamped[i]),
+                        D_f=D, w=w, mu0=mu0, sigma=sigma,
+                        statistic_name=statistic_name,
+                    )
+                return out
+
+            regions, _, _ = dynamic_ci_scan(
+                tilted_pvalue_fn=_tilted_pvalue_fn,
+                tilted_pvalue_vec_fn=_tilted_pvalue_vec_fn,
+                alpha=alpha,
+                D=D,
+                w=w,
+                mu0=mu0,
+                sigma=sigma,
+                eta_selector=self.selector,
+                scheme=self,
+                statistic_name=statistic_name,
+                n_grid=n_grid,
+                coarse_n=coarse_n,
+                search_mult=search_mult,
+                model_fingerprint=model.fingerprint(),
+                prior_fingerprint=prior.fingerprint(),
+                model=model,
+                prior=prior,
+            )
+            if not regions:
+                raise RuntimeError(
+                    f"FisherRaoTilting dynamic CI inversion produced no regions at D={D!r}"
+                )
+            return regions
+        raise NotImplementedError(
+            f"FisherRaoTilting: selector {type(self.selector).__name__} not yet wired."
+        )
+
+    def _static_confidence_regions(
+        self, *, alpha: float, eta: float, D: float, w: float, mu0: float,
+        sigma: float, statistic_name: str,
+    ) -> list[tuple[float, float]]:
+        """Brent-invert the closed-form scalar p-value at fixed eta.
+
+        Uses brentq_with_doubling on f(theta) = p_FR(theta) - alpha,
+        bracketing around (mu_t, s_t) at eta.
+        """
+        sigma_n = math.sqrt(w) * sigma
+        mu_n = w * D + (1.0 - w) * mu0
+        mu_t, s_t = _fr_geodesic_gaussian_scalar(mu_n, sigma_n, D, sigma, eta)
+
+        def f(th: float) -> float:
+            return _fr_tilted_pvalue_numpy_scalar(
+                theta_f=th, eta_f=eta, D_f=D, w=w, mu0=mu0, sigma=sigma,
+                statistic_name=statistic_name,
+            ) - alpha
+
+        lo = brentq_with_doubling(
+            f, midpoint=mu_t, initial_half_width=s_t, direction=-1, max_doublings=20,
+        )
+        hi = brentq_with_doubling(
+            f, midpoint=mu_t, initial_half_width=s_t, direction=+1, max_doublings=20,
+        )
+        return [(float(lo), float(hi))]
+
+    def confidence_interval(
+        self,
+        alpha: float,
+        data: NDArray[np.float64],
+        model: Model,
+        prior: Prior,
+        statistic: TestStatistic,
+        *,
+        config: "Config | None" = None,
+    ) -> tuple[float, float]:
+        regions = self.confidence_regions(alpha, data, model, prior, statistic, config=config)
+        los = [lo for lo, _ in regions]
+        his = [hi for _, hi in regions]
+        return (float(min(los)), float(max(his)))
+
+    def pvalue(
+        self,
+        theta: ArrayLike,
+        data: NDArray[np.float64],
+        model: Model,
+        prior: Prior,
+        statistic: TestStatistic,
+    ) -> NDArray[np.float64]:
+        from .eta_selectors import (
+            DynamicNumericalEtaSelector,
+            LearnedDynamicEtaSelector,
+        )
+        if not is_normal_normal(model):
+            raise NotImplementedError(
+                "FisherRaoTilting.pvalue currently requires NormalNormalModel."
+            )
+        D = float(np.asarray(data).mean())
+        sigma = float(model.sigma)
+        mu0 = float(prior.loc)
+        sigma0 = float(prior.scale)
+        w = sigma0 ** 2 / (sigma ** 2 + sigma0 ** 2)
+        statistic_name = getattr(statistic, "name", type(statistic).__name__.lower())
+        thetas = np.atleast_1d(np.asarray(theta))
+        if isinstance(self.selector, (DynamicNumericalEtaSelector, LearnedDynamicEtaSelector)):
+            etas = self.selector.select_grid(
+                thetas, scheme=self, model=model, prior=prior, alpha=0.05,
+                statistic=statistic,
+            )
+        else:
+            eta_single = self.selector.select(
+                self, data=data, model=model, prior=prior, alpha=0.05, statistic=statistic,
+            )
+            etas = np.full_like(thetas, float(eta_single))
+        # FR-admissible eta clamp; see confidence_regions for rationale.
+        etas_clamped = np.clip(np.asarray(etas, dtype=np.float64), 0.0 + 1e-9, 1.0 - 1e-9)
+        pvals = np.empty_like(thetas, dtype=np.float64)
+        for i, (th, et) in enumerate(zip(thetas, etas_clamped)):
+            pvals[i] = _fr_tilted_pvalue_numpy_scalar(
+                theta_f=float(th), eta_f=float(et), D_f=D, w=w, mu0=mu0, sigma=sigma,
+                statistic_name=statistic_name,
+            )
+        return pvals
