@@ -151,6 +151,97 @@ tilting, hence `s_t`, not `sigma_t`, in the formula. A future reader
 expecting `sigma_t` will see the eta=0 endpoint break by ~0.35 in
 p-value error on the canonical sandbox.
 
+## Admissibility (general statement + NN closed form)
+
+**Setup.** The Wasserstein-2 (W2) geodesic between two 1D distributions
+`p` and `q` on the real line, by the McCann interpolation theorem, is
+the quantile mixture
+
+    F_t^{-1}(u) = (1 − t) F_p^{-1}(u) + t F_q^{-1}(u),    u ∈ [0, 1],
+
+In the Frasian convention `p = posterior`, `q = likelihood-as-distribution`
+(a Gaussian centred at `D` with variance `σ²`); `η ≡ t` so `η = 0` is the
+posterior, `η = 1` is the likelihood.
+
+A 1D distribution is uniquely determined by a CDF, and a function
+`F: ℝ → [0, 1]` is a valid CDF iff it is non-decreasing, right-continuous,
+with `F(−∞)=0`, `F(+∞)=1`. Equivalently, `F_t^{-1}` must be non-decreasing
+on `(0, 1)` for `F_t = (F_t^{-1})^{-1}` to be a CDF.
+
+**(B1) General admissibility.** Differentiating `F_t^{-1}(u)` in `u`:
+
+    d/du F_t^{-1}(u) = (1 − t) q_p(u) + t q_q(u),
+    where q_•(u) = dF_•^{-1}/du = 1/f_•(F_•^{-1}(u)) ≥ 0.
+
+- **For `t ∈ [0, 1]`**: both `(1-t) ≥ 0` and `t ≥ 0`, so derivative ≥ 0.
+  **Always admissible.** (McCann displacement interpolation.)
+- **For `t ∉ [0, 1]`**: one coefficient negative. Admissibility iff
+  `(1 − t) q_p(u) + t q_q(u) ≥ 0  ∀ u ∈ (0, 1)`.
+
+In terms of the spread ratio `r(u) ≡ q_p(u) / q_q(u) > 0`:
+
+- `t < 0`:  need `t ≥ -r(u)/(1 - r(u))` for `r(u) < 1`. The binding
+  bound is `t ≥ -inf_u r(u)/(1 - r(u))` over `{u: r(u) < 1}`.
+- `t > 1`:  need `t ≤ r(u)/(r(u) - 1)` for `r(u) > 1`. Binding bound
+  `t ≤ inf_u r(u)/(r(u) - 1)` over `{u: r(u) > 1}`.
+
+In words: admissibility outside `[0, 1]` depends on the per-quantile
+spread ratio of `p` and `q`. In the framework's standard case
+(prior narrower than likelihood, `σ_p < σ_q`), `r(u) < 1` everywhere
+on NN — only the lower bound is finite, the upper bound is `+∞`.
+
+**(B2) NN closed form.** For `p = N(μ_p, σ_p²)`, `q = N(μ_q, σ_q²)`,
+
+    F_t^{-1}(u) = [(1 - t) μ_p + t μ_q]  +  [(1 - t) σ_p + t σ_q] · Φ^{-1}(u).
+
+Tilted distribution is `N(μ_t, σ_t²)` with `σ_t = (1 - t) σ_p + t σ_q`.
+**Admissibility ⇔ `σ_t > 0`.**
+
+Framework convention: `σ_p = √w · σ` (posterior), `σ_q = σ` (likelihood).
+
+    σ_t = σ · [√w + t(1 − √w)].
+
+Solving `σ_t = 0`:
+
+    t* = −√w / (1 − √w).
+
+Since `√w ∈ (0, 1)`, `1 − √w > 0` so the slope is positive. Admissibility:
+
+    **η ∈ (−√w/(1 − √w), +∞)** — lower bound only, no finite upper.
+
+| `w`  | `σ`  | analytic lower bound          |
+|------|------|-------------------------------|
+| 0.2  | 1.0  | `−0.80901699...`              |
+| 0.5  | 2.0  | `−2.41421356...`              |
+| 0.8  | 1.0  | `−8.47213595...`              |
+
+**(B3) Resolve the empirical `(−0.25, ~1.9)` claim.** At `σ₀ = 0.5, σ = 1.0`
+(w=0.2):
+
+- **PL fallback**: `(−w/(1−w), 1/(1−w)) = (−0.25, +1.25)`. Wrong for OT in
+  both directions.
+- **True OT**: `(−0.80901699, +∞)`.
+
+The PL bounds come from the natural-parameter / precision space. OT lives
+in the scale-mixture parameter space, which has a different (in fact more
+permissive on the negative side, unbounded above) admissibility region.
+
+**(B4) Non-NN sketch (Beta-Beta).** No closed-form `Φ`-style decomposition.
+Admissibility outside `[0, 1]` requires
+
+    inf_{u ∈ (0,1)}  [(1−t) / f_p(F_p^{-1}(u)) + t / f_q(F_q^{-1}(u))]  ≥  0,
+
+evaluated numerically on a quantile grid.
+
+**(B5) Implementation sketch.**
+
+1. **NN fast path** (`ot.py` lines 884–902): compute
+   `σ_t = (1 − η) σ_p + η σ_q`, raise `TiltingDomainError` if `σ_t ≤ 0`.
+2. **Generic path**: build `F_t^{-1}` on a u-grid (e.g. 4096 points),
+   check `np.all(np.diff(F_t_inv) >= -atol)`. Fold into
+   `QuantileMixturePath` constructor.
+3. **Endpoint shortcut**: `η ∈ [0, 1]` always admissible, skip check.
+
 ## Predicted behavior
 
 - **Smoothness.** `eta*(|Delta|)` curve has no clamp (admissible
