@@ -307,6 +307,100 @@ def _fr_tilted_pvalue_numpy_scalar(
     return float(max(0.0, min(1.0, p)))
 
 
+# ----------------------------------------------------------------------
+# JAX kernel — batched / jit-friendly trap-rule tilted p-value
+# ----------------------------------------------------------------------
+#
+# Used by the learned-eta training loop (loss gradients through the
+# p-value need a differentiable, jit-traceable kernel). Brentq inside
+# JIT is hard, so we use fine-grain trapezoidal (n_grid=2000) rather
+# than the numpy-scalar's adaptive boundary finding. Precision ~5e-5
+# at n=2000 is sufficient for gradient signal. The numpy scalar path
+# (adaptive brentq) is the production-precision route for audit CIs.
+
+
+_FR_JAX_N_GRID_DEFAULT: int = 2000
+
+
+def _fr_geodesic_gaussian_jax(
+    mu_a: jax.Array, sigma_a: jax.Array, mu_b: jax.Array, sigma_b: jax.Array, t: jax.Array
+) -> tuple[jax.Array, jax.Array]:
+    """JAX-traceable Fisher-Rao geodesic on Gaussian endpoints. Vmap-friendly.
+
+    Uses constant-speed parametrisation s(t) -> phi(t) (rev 1 correction).
+    Branches on |mu_a - mu_b| < eps via jnp.where (no Python control flow).
+    """
+    sqrt2 = jnp.sqrt(jnp.array(2.0))
+    mu_a_t = mu_a / sqrt2
+    mu_b_t = mu_b / sqrt2
+    denom = mu_a_t - mu_b_t
+    safe_denom = jnp.where(jnp.abs(denom) < _VERTICAL_CASE_EPS, jnp.array(1.0), denom)
+    c_tilde = ((mu_a_t * mu_a_t - mu_b_t * mu_b_t) + (sigma_a * sigma_a - sigma_b * sigma_b)) \
+              / (2.0 * safe_denom)
+    r = jnp.sqrt((mu_a_t - c_tilde) ** 2 + sigma_a * sigma_a)
+    phi_a = jnp.arctan2(sigma_a, mu_a_t - c_tilde)
+    phi_b = jnp.arctan2(sigma_b, mu_b_t - c_tilde)
+    # Constant-speed param: s(t) = (1-t)*ln(tan(phi_a/2)) + t*ln(tan(phi_b/2))
+    s_a = jnp.log(jnp.tan(phi_a / 2.0))
+    s_b = jnp.log(jnp.tan(phi_b / 2.0))
+    s_t = (1.0 - t) * s_a + t * s_b
+    phi_t = 2.0 * jnp.arctan(jnp.exp(s_t))
+    mu_t_tilde_arc = c_tilde + r * jnp.cos(phi_t)
+    s_sigma_arc = r * jnp.sin(phi_t)
+    # Vertical branch: sigma(t) = sigma_a^(1-t) * sigma_b^t, mu unchanged.
+    mu_t_tilde_vert = mu_a_t
+    s_sigma_vert = sigma_a ** (1.0 - t) * sigma_b ** t
+    is_vertical = jnp.abs(denom) < _VERTICAL_CASE_EPS
+    mu_t_tilde = jnp.where(is_vertical, mu_t_tilde_vert, mu_t_tilde_arc)
+    s_sigma = jnp.where(is_vertical, s_sigma_vert, s_sigma_arc)
+    return sqrt2 * mu_t_tilde, s_sigma
+
+
+@partial(jax.jit, static_argnames=("statistic_name", "n_grid"))
+def _fr_tilted_pvalue_kernel(
+    theta: jax.Array,
+    eta: jax.Array,
+    D: jax.Array,
+    w: jax.Array,
+    mu0: jax.Array,
+    sigma: jax.Array,
+    statistic_name: str,
+    n_grid: int = _FR_JAX_N_GRID_DEFAULT,
+) -> jax.Array:
+    """JIT'd Fisher-Rao tilted p-value on Normal-Normal.
+
+    Wald: closed-form ``2 * jsp_stats.norm.sf(|D - theta|/sigma)``.
+
+    WALDO: trapezoidal quadrature over X under H_0 (no closed form at
+    interior eta; rev 1 finding). Fine-grain n_grid=2000 default for
+    ~5e-5 precision. Endpoints (eta=0, eta=1) go through quadrature
+    too for jit-stability — they agree with closed-form bare-WALDO /
+    bare-Wald to quadrature truncation.
+    """
+    if statistic_name == "wald":
+        z = jnp.abs(D - theta) / sigma
+        return 2.0 * jsp_stats.norm.sf(z)
+    if statistic_name != "waldo":
+        raise NotImplementedError(
+            f"FisherRaoTilting JAX kernel: unknown statistic_name={statistic_name!r}."
+        )
+    sigma_n = jnp.sqrt(w) * sigma
+    mu_n = w * D + (1.0 - w) * mu0
+    mu_t_obs, s_t_obs = _fr_geodesic_gaussian_jax(mu_n, sigma_n, D, sigma, eta)
+    tau_obs = (mu_t_obs - theta) ** 2 / (s_t_obs ** 2)
+    X_grid = jnp.linspace(theta - 8.0 * sigma, theta + 8.0 * sigma, n_grid)
+    # Vmap per-X geodesic + tau computation
+    def _tau_at_X(X):
+        mu_n_X = w * X + (1.0 - w) * mu0
+        mu_t_X, s_t_X = _fr_geodesic_gaussian_jax(mu_n_X, sigma_n, X, sigma, eta)
+        return (mu_t_X - theta) ** 2 / (s_t_X ** 2)
+    tau_rep = jax.vmap(_tau_at_X)(X_grid)
+    pdf = jsp_stats.norm.pdf(X_grid, loc=theta, scale=sigma)
+    indicator = jnp.where(tau_rep >= tau_obs, 1.0, 0.0)
+    p = jnp.trapezoid(pdf * indicator, X_grid)
+    return p
+
+
 @register_tilting(name="fisher_rao", brief="docs/methods/fisher_rao.md", status="stub")
 @dataclass(frozen=True)
 class FisherRaoTilting:
