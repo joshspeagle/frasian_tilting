@@ -198,6 +198,56 @@ def _gaussian_fisher_metric(theta: jax.Array) -> jax.Array:
     return jnp.diag(jnp.array([1.0 / sigma ** 2, 2.0 / sigma ** 2]))
 
 
+def _christoffel_from_metric(g_fn, theta: jax.Array) -> jax.Array:
+    """Christoffel symbols of the Levi-Civita connection from a metric tensor field.
+
+    Args:
+        g_fn: callable ``theta -> (D, D) matrix`` returning the metric
+              tensor at the given parameter point. Must be JAX-traceable
+              (we apply ``jax.jacrev`` to it).
+        theta: ``(D,)`` parameter vector.
+
+    Returns:
+        ``(D, D, D)`` tensor with ``gamma[k, i, j] = Γ^k_{ij}``, the
+        Christoffel symbols of the second kind. Symmetric in ``(i, j)``.
+
+    Formula::
+
+        Γ^k_{ij} = 0.5 · g^{kl} · ( ∂_i g_{lj} + ∂_j g_{li} − ∂_l g_{ij} )
+
+    where ``g^{kl}`` is the inverse metric and Einstein summation is over
+    ``l``. Verified against the Gaussian closed form in
+    ``TestFisherRaoChristoffel`` for the metric ``diag(1/σ², 2/σ²)`` on
+    the half-plane (the only metric this PR exercises; rev 2 spec).
+
+    This is the second piece of the general-purpose autodiff machinery
+    (after ``_gaussian_fisher_metric`` in B.2). The geodesic ODE rhs
+    (B.4) and the shooting BVP (B.5) consume it.
+    """
+    g = g_fn(theta)                                # (D, D)
+    g_inv = jnp.linalg.inv(g)                      # (D, D)
+    # jax.jacrev convention: jacrev(f)(theta)[output_axes, theta_axis]
+    # so dg[i, j, k] = ∂_k g_{ij}.
+    dg = jax.jacrev(g_fn)(theta)                   # (D, D, D)
+    # Build the bracket: ∂_i g_{lj} + ∂_j g_{li} − ∂_l g_{ij}.
+    # Using axis names, dg has shape (i_out, j_out, k_diff) ≡ (a, b, c)
+    # interpreted as `∂_c g_{ab}`.
+    # We need terms in (i, j, l) space (i.e. the bracket for Γ^k_{ij}):
+    #   ∂_i g_{lj}  →  dg[l, j, i]  → transpose perm (2, 1, 0):
+    #       new[i,j,l] = dg[old] where old[2]=i, old[1]=j, old[0]=l → dg[l,j,i] ✓
+    #   ∂_j g_{li}  →  dg[l, i, j]  → transpose perm (1, 2, 0):
+    #       new[i,j,l] = dg[old] where old[1]=i, old[2]=j, old[0]=l → dg[l,i,j] ✓
+    #   ∂_l g_{ij}  →  dg[i, j, l]  → identity perm (0, 1, 2):
+    #       new[i,j,l] = dg[old] where old[0]=i, old[1]=j, old[2]=l → dg[i,j,l] ✓
+    term_a = jnp.transpose(dg, (2, 1, 0))          # [i, j, l] = ∂_i g_{lj}
+    term_b = jnp.transpose(dg, (1, 2, 0))          # [i, j, l] = ∂_j g_{li}
+    term_c = jnp.transpose(dg, (0, 1, 2))          # [i, j, l] = ∂_l g_{ij}
+    bracket = 0.5 * (term_a + term_b - term_c)     # (i, j, l)
+    # Γ^k_{ij} = g^{kl} · bracket[i, j, l] — contract over l.
+    gamma = jnp.einsum("kl,ijl->kij", g_inv, bracket)
+    return gamma
+
+
 # ----------------------------------------------------------------------
 # Tilted-WALDO p-value (adaptive quadrature with brentq boundary finding)
 # ----------------------------------------------------------------------

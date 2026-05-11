@@ -424,3 +424,68 @@ class TestFisherRaoGaussianFisherMetric:
         g = jit_g(jnp.array([0.0, 1.0]))
         assert np.isclose(float(g[0, 0]), 1.0, atol=1e-12)
         assert np.isclose(float(g[1, 1]), 2.0, atol=1e-12)
+
+
+@pytest.mark.L1
+@pytest.mark.properties
+class TestFisherRaoChristoffel:
+    """Christoffel symbols from autodiff on the metric tensor field.
+
+    Validates against the Gaussian closed form (the only metric this PR
+    exercises). For g = diag(1/σ², 2/σ²) on (μ, σ):
+        Γ^μ_{μσ} = Γ^μ_{σμ} = -1/σ
+        Γ^σ_{μμ} = +1/(2σ)
+        Γ^σ_{σσ} = -1/σ
+    All other entries zero.
+    """
+
+    @pytest.mark.parametrize("sigma", [0.5, 1.0, 1.5, 2.0])
+    def test_christoffel_gaussian_closed_form(self, sigma):
+        from frasian.tilting.fisher_rao import (
+            _christoffel_from_metric, _gaussian_fisher_metric,
+        )
+        import jax.numpy as jnp
+        theta = jnp.array([0.0, sigma])  # mu=0 (Γ is mu-independent)
+        gamma = _christoffel_from_metric(_gaussian_fisher_metric, theta)
+        assert gamma.shape == (2, 2, 2)
+        # Indexing: gamma[k, i, j] with k, i, j ∈ {0=mu, 1=sigma}.
+        # Non-zero entries:
+        assert np.isclose(float(gamma[0, 0, 1]), -1.0 / sigma, atol=1e-9)
+        assert np.isclose(float(gamma[0, 1, 0]), -1.0 / sigma, atol=1e-9)
+        assert np.isclose(float(gamma[1, 0, 0]),  1.0 / (2.0 * sigma), atol=1e-9)
+        assert np.isclose(float(gamma[1, 1, 1]), -1.0 / sigma, atol=1e-9)
+        # Zero entries:
+        assert np.isclose(float(gamma[0, 0, 0]),  0.0, atol=1e-12)
+        assert np.isclose(float(gamma[0, 1, 1]),  0.0, atol=1e-12)
+        assert np.isclose(float(gamma[1, 0, 1]),  0.0, atol=1e-12)
+        assert np.isclose(float(gamma[1, 1, 0]),  0.0, atol=1e-12)
+
+    def test_christoffel_symmetric_in_lower_indices(self):
+        """Γ^k_{ij} = Γ^k_{ji} for the Levi-Civita connection."""
+        from frasian.tilting.fisher_rao import (
+            _christoffel_from_metric, _gaussian_fisher_metric,
+        )
+        import jax.numpy as jnp
+        theta = jnp.array([0.5, 1.3])
+        gamma = _christoffel_from_metric(_gaussian_fisher_metric, theta)
+        # Symmetry: gamma[k, i, j] = gamma[k, j, i] for all k, i, j
+        for k in range(2):
+            for i in range(2):
+                for j in range(2):
+                    assert np.isclose(
+                        float(gamma[k, i, j]),
+                        float(gamma[k, j, i]),
+                        atol=1e-12,
+                    ), f"asymmetry at gamma[{k}, {i}, {j}]"
+
+    def test_christoffel_is_jit_compatible(self):
+        """Must JIT-compile since downstream uses it inside diffrax solves."""
+        import jax
+        import jax.numpy as jnp
+        from frasian.tilting.fisher_rao import (
+            _christoffel_from_metric, _gaussian_fisher_metric,
+        )
+        jit_christoffel = jax.jit(lambda th: _christoffel_from_metric(_gaussian_fisher_metric, th))
+        gamma = jit_christoffel(jnp.array([0.0, 1.0]))
+        assert gamma.shape == (2, 2, 2)
+        assert np.isclose(float(gamma[0, 0, 1]), -1.0, atol=1e-9)
