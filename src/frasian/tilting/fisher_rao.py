@@ -951,6 +951,23 @@ def _fr_tilted_pvalue_numpy_scalar(
 
 _FR_JAX_N_GRID_DEFAULT: int = 8000
 
+# Straight-through estimator sharpness for the WALDO indicator in
+# `_fr_tilted_pvalue_kernel`. Forward uses the hard indicator (exact
+# match to the numpy scalar adaptive-brentq path); backward uses
+# sigmoid((tau_rep - tau_obs) / SHARPNESS) so `jax.grad(p)(eta)` has a
+# meaningful descent direction. Without the ST trick, the hard indicator
+# kills gradient through the JAX kernel (jnp.where on a boolean has
+# zero gradient through the condition), so `d p / d eta == 0` almost
+# everywhere — surfaced in Stage C.2 (training collapsed to a random
+# walk).
+#
+# Sharpness 0.05: tau is in (mu_t - theta)^2 / s_t^2 units (typically
+# O(1) for well-conditioned NN); 0.05 gives ~10-20 effective gradient-
+# bearing X-grid points around each indicator transition. Smaller →
+# sharper sigmoid (closer to hard, less gradient signal); larger →
+# smoother but biased away from the actual transition location.
+_FR_INDICATOR_SHARPNESS: float = 0.05
+
 
 def _fr_geodesic_gaussian_jax(
     mu_a: jax.Array, sigma_a: jax.Array, mu_b: jax.Array, sigma_b: jax.Array, t: jax.Array
@@ -1046,7 +1063,21 @@ def _fr_tilted_pvalue_kernel(
         return (mu_t_X - theta) ** 2 / (s_t_X ** 2)
     tau_rep = jax.vmap(_tau_at_X)(X_grid)
     pdf = jsp_stats.norm.pdf(X_grid, loc=theta, scale=sigma)
-    indicator = jnp.where(tau_rep >= tau_obs, 1.0, 0.0)
+    # Straight-through estimator for the discontinuous indicator.
+    # Forward: hard indicator `1{tau_rep >= tau_obs}` — exact p-value
+    # (matches the numpy scalar adaptive-brentq path to ~4e-4 at n_grid=8000).
+    # Backward: sigmoid surrogate with sharpness `_FR_INDICATOR_SHARPNESS`
+    # so jax.grad through eta produces non-zero descent signal. Without
+    # this trick, `d/d eta` of the hard indicator is zero almost
+    # everywhere (JAX convention on jnp.where boolean conditions),
+    # which makes the integrated-p loss gradient identically zero — the
+    # learned-eta training collapses to a random walk. Surfaced in
+    # Stage C.2: autograd grad was 0 while FD showed clear descent
+    # direction; SGD made no progress over 15 epochs.
+    hard_ind = jnp.where(tau_rep >= tau_obs, 1.0, 0.0)
+    soft_ind = jax.nn.sigmoid((tau_rep - tau_obs) / _FR_INDICATOR_SHARPNESS)
+    # ST trick: forward == hard_ind; backward == d(soft_ind)/d(...).
+    indicator = soft_ind + jax.lax.stop_gradient(hard_ind - soft_ind)
     p = jnp.trapezoid(pdf * indicator, X_grid)
     return p
 
