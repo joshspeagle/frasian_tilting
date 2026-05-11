@@ -248,6 +248,42 @@ def _christoffel_from_metric(g_fn, theta: jax.Array) -> jax.Array:
     return gamma
 
 
+def _geodesic_ode_rhs(t: jax.Array, state: jax.Array, args) -> jax.Array:
+    """First-order ODE rhs for the Levi-Civita geodesic equation.
+
+    Args:
+        t: scalar parameter (unused — the ODE is autonomous, but
+           diffrax passes it for API symmetry).
+        state: ``(2*D,)`` concatenation of ``(theta, v)`` where
+            ``v = dtheta/dt``.
+        args: ``(g_fn,)`` 1-tuple containing the metric-tensor callable
+            ``g_fn: theta -> (D, D) matrix``. Passed via diffrax's
+            ``ODETerm(..., args=...)`` plumbing.
+
+    Returns:
+        ``(2*D,)`` concatenation of ``(v, accel)`` where
+        ``accel^k = -Γ^k_{ij}(theta) v^i v^j``.
+
+    Computes Christoffel symbols by autodiff (``_christoffel_from_metric``)
+    at every rhs call; the Christoffel call is the dominant cost
+    inside the diffrax solve. ``_christoffel_from_metric`` is
+    JIT-compatible (verified in B.3), so the full rhs JITs through
+    diffrax cleanly.
+
+    The geodesic ODE is *autonomous* (no explicit t-dependence), but
+    diffrax's ODETerm signature requires accepting t as the first
+    positional arg.
+    """
+    g_fn, = args
+    D = state.shape[0] // 2
+    theta = state[:D]
+    v = state[D:]
+    gamma = _christoffel_from_metric(g_fn, theta)              # (D, D, D)
+    # accel^k = -Γ^k_{ij} v^i v^j (Einstein sum over i, j)
+    accel = -jnp.einsum("kij,i,j->k", gamma, v, v)             # (D,)
+    return jnp.concatenate([v, accel])
+
+
 # ----------------------------------------------------------------------
 # Tilted-WALDO p-value (adaptive quadrature with brentq boundary finding)
 # ----------------------------------------------------------------------

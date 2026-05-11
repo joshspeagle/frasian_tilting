@@ -489,3 +489,75 @@ class TestFisherRaoChristoffel:
         gamma = jit_christoffel(jnp.array([0.0, 1.0]))
         assert gamma.shape == (2, 2, 2)
         assert np.isclose(float(gamma[0, 0, 1]), -1.0, atol=1e-9)
+
+
+@pytest.mark.L1
+@pytest.mark.properties
+class TestFisherRaoGeodesicOdeRhs:
+    """First-order ODE rhs for the FR geodesic equation."""
+
+    def test_geodesic_ode_rhs_shape_and_finite(self):
+        """rhs returns (2*D,) finite values for a valid state."""
+        from frasian.tilting.fisher_rao import (
+            _gaussian_fisher_metric, _geodesic_ode_rhs,
+        )
+        import jax.numpy as jnp
+        # State: theta=(mu=0, sigma=1), v=(1, 0) — moving along the
+        # mu-direction at the half-plane base point.
+        state = jnp.array([0.0, 1.0, 1.0, 0.0])
+        rhs = _geodesic_ode_rhs(
+            jnp.array(0.0), state, (_gaussian_fisher_metric,),
+        )
+        assert rhs.shape == (4,)
+        assert jnp.all(jnp.isfinite(rhs))
+        # First two entries should be the velocity v=(1, 0)
+        assert np.isclose(float(rhs[0]), 1.0, atol=1e-12)
+        assert np.isclose(float(rhs[1]), 0.0, atol=1e-12)
+
+    def test_geodesic_ode_rhs_accel_matches_closed_form_at_known_state(self):
+        """At theta=(0, 1), v=(1, 0):
+        accel^mu = -Γ^mu_{ij} v^i v^j = -Γ^mu_{00} · 1 · 1 = 0 (since Γ^μ_{μμ}=0).
+        accel^sigma = -Γ^sigma_{00} · 1 · 1 = -1/(2*1) = -0.5.
+        """
+        from frasian.tilting.fisher_rao import (
+            _gaussian_fisher_metric, _geodesic_ode_rhs,
+        )
+        import jax.numpy as jnp
+        state = jnp.array([0.0, 1.0, 1.0, 0.0])
+        rhs = _geodesic_ode_rhs(jnp.array(0.0), state, (_gaussian_fisher_metric,))
+        # accel^mu (rhs[2]) = -Γ^μ_{ij} v^i v^j = -Γ^μ_{μμ} = 0
+        assert np.isclose(float(rhs[2]), 0.0, atol=1e-9)
+        # accel^sigma (rhs[3]) = -Γ^σ_{ij} v^i v^j = -Γ^σ_{μμ} · 1·1 = -1/(2σ) = -0.5
+        assert np.isclose(float(rhs[3]), -0.5, atol=1e-9)
+
+    def test_geodesic_ode_rhs_accel_matches_closed_form_pure_sigma_velocity(self):
+        """At theta=(0, 1), v=(0, 1):
+        accel^mu = -Γ^mu_{σσ} · 1 · 1 = 0 (Γ^μ_{σσ}=0).
+        accel^sigma = -Γ^σ_{σσ} · 1 · 1 = -(-1/σ) · 1 · 1 = 1/σ = 1.
+        Wait — Γ^σ_{σσ} = -1/σ per B.3, so accel = -Γ^σ_{σσ} = +1/σ = +1.
+        """
+        from frasian.tilting.fisher_rao import (
+            _gaussian_fisher_metric, _geodesic_ode_rhs,
+        )
+        import jax.numpy as jnp
+        state = jnp.array([0.0, 1.0, 0.0, 1.0])  # v = (0, 1)
+        rhs = _geodesic_ode_rhs(jnp.array(0.0), state, (_gaussian_fisher_metric,))
+        # accel^mu = -Γ^μ_{σσ} = 0
+        assert np.isclose(float(rhs[2]), 0.0, atol=1e-9)
+        # accel^sigma = -Γ^σ_{σσ} · 1 · 1 = -(-1/σ) = +1/σ = 1.0 at sigma=1
+        assert np.isclose(float(rhs[3]), 1.0, atol=1e-9)
+
+    def test_geodesic_ode_rhs_jit_compiles(self):
+        """Must JIT-compile since diffrax wraps it inside the solver."""
+        import jax
+        import jax.numpy as jnp
+        from frasian.tilting.fisher_rao import (
+            _gaussian_fisher_metric, _geodesic_ode_rhs,
+        )
+        # diffrax passes args as a tuple via ODETerm; emulate that here.
+        jit_rhs = jax.jit(
+            lambda t, st: _geodesic_ode_rhs(t, st, (_gaussian_fisher_metric,)),
+        )
+        rhs = jit_rhs(jnp.array(0.0), jnp.array([0.0, 1.0, 1.0, 0.0]))
+        assert rhs.shape == (4,)
+        assert jnp.all(jnp.isfinite(rhs))
