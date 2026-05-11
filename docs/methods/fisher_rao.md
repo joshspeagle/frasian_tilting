@@ -299,11 +299,12 @@ case differs).
   rescaled-coordinate endpoints passes through high-curvature
   regions, careful arc parameterisation is required (Nielsen 2023
   discusses numerical Fisher-Rao computation).
-- **Non-Gaussian likelihood / prior.** This stub will land Gaussian-
-  only first; non-Gaussian endpoints raise `NotImplementedError`,
-  matching `power_law`'s discipline. A general `ParametricFamily`
-  interface (with explicit Fisher metric for non-Gaussian families,
-  e.g. Beta, Bernoulli) is a follow-up refactor.
+- **Non-Gaussian likelihood / prior.** Stage A lands Gaussian-only;
+  non-Gaussian endpoints raise `NotImplementedError`, matching
+  `power_law`'s discipline. A general `ParametricFamily` interface
+  (with explicit Fisher metric for non-Gaussian families, e.g. Beta,
+  Bernoulli) is a follow-up refactor; Stage B introduces the autodiff
+  + diffrax shooting machinery validated against the closed form on NN.
 
 ## Invariants
 
@@ -420,10 +421,10 @@ case differs).
 
 ## Links
 
-- Implementation: `src/frasian/tilting/fisher_rao.py` (stub)
+- Implementation: `src/frasian/tilting/fisher_rao.py`
 - Property tests: `tests/properties/test_fisher_rao_invariants.py`
-                  (skipped)
-- Illustration: TBD
+                  (42 passing)
+- Illustration: `src/frasian/experiments/illustrations/fisher_rao_demo.py`
 
 ## Status notes
 
