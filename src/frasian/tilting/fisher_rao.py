@@ -455,14 +455,13 @@ class FisherRaoTilting:
             "t in [0, 1] along the Fisher-Rao geodesic between posterior (t=0) "
             "and the likelihood-induced Gaussian N(D, sigma^2) (t=1)."
         ),
-        # Structural bound matching the geodesic-segment admissibility
-        # decision (Stage A audit finding #3): the Riemannian geodesic
-        # extends smoothly for t in R but the tilting interpretation
-        # (posterior↔likelihood interpolant) only makes sense on the
-        # closed segment [0, 1]. Revisit after Stage C empirical results
-        # tell us whether the learned-η optimum stays well inside this
-        # window or hugs an endpoint.
-        training_output_bounds=(0.0, 1.0),
+        # None matches PL/OT — let learned-η explore freely; mixture is
+        # the only scheme with a hard structural bound. FR's Riemannian
+        # geodesic is geometrically smooth for eta in R (except at the
+        # sigma=0 boundary, which `_fr_geodesic_gaussian_scalar` checks
+        # internally); there is no density-positivity constraint that
+        # restricts eta to [0, 1].
+        training_output_bounds=None,
     )
     selector: EtaSelector = field(default_factory=lambda: FixedEtaSelector(eta=0.0))
 
@@ -474,26 +473,21 @@ class FisherRaoTilting:
     def tilt(
         self, posterior: Posterior, prior: Prior, likelihood: Likelihood, eta: ArrayLike
     ) -> Posterior:
+        """Tilt along the Fisher-Rao Gaussian-half-plane geodesic.
+
+        Stage A's `tilt()` admissibility is `σ(η) > 0` along the
+        Gaussian-family geodesic (enforced inside
+        `_fr_geodesic_gaussian_scalar`); Stage B's generic ParametricFamily
+        path will add family-specific admissibility (e.g. α, β > 0 for
+        Beta). The Riemannian geodesic itself is smooth for η ∈ ℝ — the
+        [0, 1] segment is the "posterior ↔ likelihood interpolant"
+        interpretation but η outside [0, 1] is a well-defined
+        extrapolation along the same geodesic.
+        """
         eta_f = float(np.asarray(eta).item())
         if not np.isfinite(eta_f):
             raise TiltingDomainError(
                 f"FisherRaoTilting requires finite eta, got {eta_f!r}."
-            )
-        if not (0.0 <= eta_f <= 1.0):
-            # Stage A audit finding #3: FR's admissible range for the
-            # *tilting interpretation* is the geodesic segment [0, 1]
-            # between posterior (eta=0) and likelihood (eta=1). The
-            # Riemannian geodesic extends smoothly to t in R, but
-            # extrapolation outside [0, 1] does not represent a valid
-            # posterior↔likelihood interpolant — the WALDO p-value
-            # landscape degenerates (see selector-wiring discussion in
-            # confidence_regions). Refuse rather than silently allow.
-            raise TiltingDomainError(
-                f"FisherRaoTilting.tilt requires eta in [0, 1] (the "
-                f"geodesic-segment between posterior and likelihood); "
-                f"got eta={eta_f!r}. The geodesic continues smoothly "
-                f"for eta in R but the tilting interpretation breaks "
-                f"down outside [0, 1]."
             )
         if not (
             isinstance(posterior, NormalDistribution)
@@ -615,30 +609,14 @@ class FisherRaoTilting:
             )
         if isinstance(self.selector, FixedEtaSelector):
             eta_resolved = float(self.selector.eta)
-            # Stage A audit finding #4: validate FixedEtaSelector's eta
-            # against FR's geodesic-segment admissibility. Construction-
-            # time validation would require touching `eta_selectors.py`'s
-            # FixedEtaSelector to add a scheme hook; runtime check here
-            # keeps the change local.
-            if not (0.0 <= eta_resolved <= 1.0):
-                raise TiltingDomainError(
-                    f"FisherRaoTilting with FixedEtaSelector requires "
-                    f"eta in [0, 1] (geodesic-segment admissibility); "
-                    f"got eta={eta_resolved!r}."
-                )
             return self._static_confidence_regions(
                 alpha=alpha, eta=eta_resolved, D=D, w=w, mu0=mu0, sigma=sigma,
                 statistic_name=statistic_name,
             )
         if isinstance(self.selector, NumericalEtaSelector):
-            eta_raw = float(self.selector.select(
+            eta_resolved = float(self.selector.select(
                 self, data=data, model=model, prior=prior, alpha=alpha, statistic=statistic
             ))
-            # NumericalEtaSelector now consults scheme.param_space's
-            # `training_output_bounds` (Stage A audit finding #3), so for
-            # FR the bracket is `[0, 1]` directly. The clip here is a
-            # defensive double-check against floating-point overshoot.
-            eta_resolved = float(np.clip(eta_raw, 0.0 + 1e-9, 1.0 - 1e-9))
             return self._static_confidence_regions(
                 alpha=alpha, eta=eta_resolved, D=D, w=w, mu0=mu0, sigma=sigma,
                 statistic_name=statistic_name,
@@ -648,17 +626,9 @@ class FisherRaoTilting:
             coarse_n = int(getattr(self.selector, "coarse_n", 25))
             search_mult = float(getattr(self.selector, "search_mult", 8.0))
 
-            # FR-admissible eta clamp: NumericalEtaSelector now consults
-            # `training_output_bounds=(0, 1)` (Stage A audit finding #3),
-            # so its bracket is FR-aware. The clamps here are defensive
-            # double-checks against the LearnedDynamic path (which can
-            # extrapolate via EtaNet before its own ValidityNet clamp).
-            _eta_lo, _eta_hi = 0.0 + 1e-9, 1.0 - 1e-9
-
             def _tilted_pvalue_fn(theta_v: float, eta_v: float) -> float:
-                eta_clamped = float(np.clip(float(eta_v), _eta_lo, _eta_hi))
                 return _fr_tilted_pvalue_numpy_scalar(
-                    theta_f=float(theta_v), eta_f=eta_clamped, D_f=D,
+                    theta_f=float(theta_v), eta_f=float(eta_v), D_f=D,
                     w=w, mu0=mu0, sigma=sigma, statistic_name=statistic_name,
                 )
 
@@ -671,11 +641,10 @@ class FisherRaoTilting:
             def _tilted_pvalue_vec_fn(
                 theta_arr: np.ndarray, eta_arr: np.ndarray
             ) -> np.ndarray:
-                eta_clamped = np.clip(eta_arr, _eta_lo, _eta_hi)
                 out = np.empty(theta_arr.shape, dtype=np.float64)
                 for i in range(theta_arr.shape[0]):
                     out[i] = _fr_tilted_pvalue_numpy_scalar(
-                        theta_f=float(theta_arr[i]), eta_f=float(eta_clamped[i]),
+                        theta_f=float(theta_arr[i]), eta_f=float(eta_arr[i]),
                         D_f=D, w=w, mu0=mu0, sigma=sigma,
                         statistic_name=statistic_name,
                     )
@@ -789,10 +758,9 @@ class FisherRaoTilting:
                 self, data=data, model=model, prior=prior, alpha=0.05, statistic=statistic,
             )
             etas = np.full_like(thetas, float(eta_single))
-        # FR-admissible eta clamp; see confidence_regions for rationale.
-        etas_clamped = np.clip(np.asarray(etas, dtype=np.float64), 0.0 + 1e-9, 1.0 - 1e-9)
+        etas_arr = np.asarray(etas, dtype=np.float64)
         pvals = np.empty_like(thetas, dtype=np.float64)
-        for i, (th, et) in enumerate(zip(thetas, etas_clamped)):
+        for i, (th, et) in enumerate(zip(thetas, etas_arr)):
             pvals[i] = _fr_tilted_pvalue_numpy_scalar(
                 theta_f=float(th), eta_f=float(et), D_f=D, w=w, mu0=mu0, sigma=sigma,
                 statistic_name=statistic_name,
