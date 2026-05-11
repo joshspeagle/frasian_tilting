@@ -87,6 +87,7 @@ markers = [
     "slow: deselect with -m 'not slow'",
     "nightly: long-running calibration regressions; deselect with -m 'not nightly'",
     "properties: alias for L1, used by registry-driven test discovery",
+    "regression: alias for L2/L4 array-level regression tests with committed baselines",
 ]
 
 [tool.black]
