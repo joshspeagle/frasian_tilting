@@ -317,6 +317,60 @@ class TestFisherRaoInvariants:
 @pytest.mark.L2
 @pytest.mark.regression
 class TestFisherRaoJaxKernel:
+    def test_jax_kernel_grad_is_non_zero_and_matches_fd(self):
+        """`jax.grad(integrated_p_loss)(eta)` must return a non-zero
+        gradient matching finite-difference direction. Stage C.2
+        regression: the hard indicator `jnp.where(tau_rep >= tau_obs,
+        1, 0)` killed gradient through the boolean comparison (JAX
+        convention: zero grad through `cond` of jnp.where), so
+        autograd returned exactly zero at every η despite the loss
+        landscape being non-trivial. SGD collapsed to a random walk.
+
+        Fix: straight-through estimator (forward = hard indicator,
+        backward = sigmoid surrogate at sharpness 0.05). This test
+        pins that fix — if a future change reverts to the hard
+        indicator without an ST trick, autograd grad will go to zero
+        and this test will catch it.
+        """
+        import jax
+        import jax.numpy as jnp
+        from frasian.learned.training.pvalue_jax import fisher_rao_tilted_pvalue_jax
+
+        D, w, mu0, sigma = 0.5, 0.5, 0.0, 1.0
+        theta_grid = jnp.linspace(-5.0, 5.0, 50)
+
+        def loss_at_eta(eta_scalar):
+            eta_arr = jnp.full_like(theta_grid, eta_scalar)
+            D_arr = jnp.full_like(theta_grid, D)
+            w_arr = jnp.full_like(theta_grid, w)
+            mu0_arr = jnp.full_like(theta_grid, mu0)
+            sigma_arr = jnp.full_like(theta_grid, sigma)
+            p = fisher_rao_tilted_pvalue_jax(
+                theta_grid, D_arr, w_arr, mu0_arr, sigma_arr, eta_arr, "waldo",
+            )
+            return jnp.trapezoid(p, theta_grid)
+
+        grad_loss = jax.grad(loss_at_eta)
+
+        # Probe at three representative eta values in (0, 1). The ST
+        # surrogate is biased (within ~2x of FD) so we only assert the
+        # SIGN matches and the magnitude is non-zero.
+        for eta in [0.2, 0.5, 0.8]:
+            g_auto = float(grad_loss(eta))
+            h = 1e-3
+            g_fd = float((loss_at_eta(eta + h) - loss_at_eta(eta - h)) / (2 * h))
+            assert abs(g_auto) > 1e-3, (
+                f"autograd gradient near zero at eta={eta}: {g_auto:.6e} "
+                f"(FD says {g_fd:.6e}). Did the straight-through estimator "
+                f"regress? See fisher_rao.py:_fr_tilted_pvalue_kernel and "
+                f"the indicator construction."
+            )
+            # Sign agreement is the load-bearing check.
+            assert (g_auto > 0) == (g_fd > 0), (
+                f"autograd sign disagrees with FD at eta={eta}: "
+                f"auto={g_auto:.6e}, fd={g_fd:.6e}"
+            )
+
     def test_jax_kernel_handles_vector_theta_input(self):
         """`fisher_rao_tilted_pvalue_jax` must accept vector / 2D `theta`
         and return same-shape p-values. The learned-eta training loop
