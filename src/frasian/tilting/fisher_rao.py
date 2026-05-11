@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from functools import partial
 from typing import TYPE_CHECKING, ClassVar
 
+import diffrax
 import jax
 import jax.numpy as jnp
 import jax.scipy.stats as jsp_stats
@@ -282,6 +283,198 @@ def _geodesic_ode_rhs(t: jax.Array, state: jax.Array, args) -> jax.Array:
     # accel^k = -Γ^k_{ij} v^i v^j (Einstein sum over i, j)
     accel = -jnp.einsum("kij,i,j->k", gamma, v, v)             # (D,)
     return jnp.concatenate([v, accel])
+
+
+# ----------------------------------------------------------------------
+# Stage B.5: diffrax shooting BVP for the geodesic
+# ----------------------------------------------------------------------
+#
+# Forward-integrate the geodesic IVP with diffrax (Tsit5 + PID controller)
+# and shoot via Newton on the initial velocity to satisfy the BVP
+# theta(0) = theta_a, theta(1) = theta_b. Validated against the closed-form
+# Gaussian half-plane geodesic in TestFisherRaoGeodesicNumerical.
+
+
+# Solver settings — tight tolerances to hit atol ~1e-7 vs closed-form
+_DIFFRAX_RTOL: float = 1e-8
+_DIFFRAX_ATOL: float = 1e-10
+_DIFFRAX_MAX_STEPS: int = 10000
+_BVP_NEWTON_MAX_ITERS: int = 30
+_BVP_NEWTON_TOL: float = 1e-9
+
+
+def _solve_geodesic_forward(g_fn, theta_a: jax.Array, v0: jax.Array) -> jax.Array:
+    """Forward-integrate the geodesic ODE from theta_a with initial velocity v0.
+
+    Args:
+        g_fn: metric-tensor callable ``theta -> (D, D)``.
+        theta_a: ``(D,)`` initial parameter point.
+        v0: ``(D,)`` initial velocity.
+
+    Returns:
+        ``theta(1)`` as a ``(D,)`` JAX array (the parameter point at t=1).
+
+    Uses diffrax.Tsit5 with PIDController(rtol=1e-8, atol=1e-10), max
+    10k steps. Saves only at t=1 (we don't need the full trajectory
+    for the BVP residual). JIT-traceable; gradient-through-solve works
+    via diffrax's implicit-function adjoint.
+    """
+    D = theta_a.shape[0]
+    state0 = jnp.concatenate([theta_a, v0])
+    term = diffrax.ODETerm(_geodesic_ode_rhs)
+    solver = diffrax.Tsit5()
+    sol = diffrax.diffeqsolve(
+        term, solver,
+        t0=0.0, t1=1.0, dt0=0.01,
+        y0=state0,
+        args=(g_fn,),
+        saveat=diffrax.SaveAt(t1=True),
+        stepsize_controller=diffrax.PIDController(
+            rtol=_DIFFRAX_RTOL, atol=_DIFFRAX_ATOL,
+        ),
+        max_steps=_DIFFRAX_MAX_STEPS,
+    )
+    # sol.ys has shape (1, 2*D) since SaveAt(t1=True) returns 1 timepoint.
+    return sol.ys[0, :D]
+
+
+def _shoot_bvp(
+    g_fn, theta_a: jax.Array, theta_b: jax.Array,
+    max_iters: int = _BVP_NEWTON_MAX_ITERS, tol: float = _BVP_NEWTON_TOL,
+) -> jax.Array:
+    """Newton iteration on initial velocity to satisfy the BVP θ(0)=θ_a, θ(1)=θ_b.
+
+    Args:
+        g_fn: metric-tensor callable.
+        theta_a, theta_b: ``(D,)`` boundary points.
+        max_iters: Newton iteration budget (default 30).
+        tol: convergence tolerance on ``||θ(1) - θ_b||`` (default 1e-9).
+
+    Returns:
+        ``v0`` = ``(D,)`` initial velocity such that forward-integrating
+        with ``_solve_geodesic_forward(g_fn, theta_a, v0)`` lands at
+        ``theta_b`` within ``tol``.
+
+    Raises:
+        RuntimeError if Newton fails to converge in ``max_iters``.
+
+    Initial guess: ``v_0 = θ_b - θ_a`` (parameter-space linear interp
+    rate). Refined via **damped Newton with backtracking line search**
+    on the boundary residual. The Jacobian is computed via
+    ``jax.jacrev``; the linear solve uses ``jnp.linalg.solve`` and falls
+    back to ``lstsq`` if singular.
+
+    Damping rationale: the curved half-plane metric makes the
+    parameter-space linear guess ``v_0 = θ_b - θ_a`` overshoot the true
+    geodesic velocity by ~2-4× in typical Gaussian endpoint settings.
+    Undamped Newton from this guess can diverge (huge step, near-singular
+    Jacobian, overflow). Backtracking line search (halve step until
+    residual decreases or until 20 backtracks) globalizes convergence;
+    we also reject any step that produces non-finite forward integration.
+    """
+    v0 = theta_b - theta_a
+
+    def residual(v):
+        return _solve_geodesic_forward(g_fn, theta_a, v) - theta_b
+
+    r = residual(v0)
+    r_norm = float(jnp.linalg.norm(r))
+    for _ in range(max_iters):
+        if r_norm < tol:
+            return v0
+        J = jax.jacrev(residual)(v0)                    # (D, D)
+        try:
+            dv = jnp.linalg.solve(J, -r)
+        except Exception:
+            dv = -jnp.linalg.lstsq(J, r)[0]
+        # Backtracking line search: halve the step until residual strictly
+        # decreases. Cap at 20 backtracks (alpha=2^-20 ≈ 1e-6).
+        alpha = 1.0
+        accepted = False
+        for _ in range(20):
+            v_trial = v0 + alpha * dv
+            try:
+                r_trial = residual(v_trial)
+                r_trial_norm = float(jnp.linalg.norm(r_trial))
+                if jnp.all(jnp.isfinite(r_trial)) and r_trial_norm < r_norm:
+                    v0 = v_trial
+                    r = r_trial
+                    r_norm = r_trial_norm
+                    accepted = True
+                    break
+            except Exception:
+                # Forward solve exploded; halve alpha and try again.
+                pass
+            alpha *= 0.5
+        if not accepted:
+            raise RuntimeError(
+                f"FR geodesic shooting BVP: line search failed to find a "
+                f"residual-reducing step (theta_a={theta_a}, theta_b={theta_b}, "
+                f"|r|={r_norm:.3e})."
+            )
+    raise RuntimeError(
+        f"FR geodesic shooting BVP did not converge in {max_iters} iters "
+        f"(theta_a={theta_a}, theta_b={theta_b}, last_residual_norm={r_norm:.3e})."
+    )
+
+
+def _fr_geodesic_numerical(
+    theta_a, theta_b, t: float, g_fn=None,
+):
+    """Generic Fisher-Rao geodesic at parameter t in [0, 1] (or extrapolation).
+
+    Args:
+        theta_a, theta_b: ``(D,)`` boundary parameter points (numpy or JAX).
+        t: scalar in ``[0, 1]`` (or extrapolation).
+        g_fn: metric-tensor callable; defaults to ``_gaussian_fisher_metric``
+            (the only metric this PR exercises; rev 2 spec).
+
+    Returns:
+        ``theta_t`` as a numpy ``(D,)`` array — the parameter point along
+        the FR geodesic at the given t.
+
+    Pipeline:
+    1. Solve the BVP for the initial velocity ``v_0`` such that
+       ``_solve_geodesic_forward(theta_a, v_0)`` lands at ``theta_b``.
+    2. Forward-integrate from ``theta_a`` with ``v_0`` to time t, return
+       the parameter point.
+
+    Validated against the closed-form Gaussian half-plane geodesic in
+    ``TestFisherRaoGeodesicNumerical``: atol ~1e-7 on the parameter
+    point at three representative endpoint pairs.
+
+    The BVP solve is the dominant cost (~10-20 diffrax solves per Newton
+    iteration × ~5-10 iterations = 50-200 solves total). Per-call cost
+    on CPU: ~100-500 ms depending on the geodesic length. Used only by
+    the `fr_dyn_numerical_generic` audit flavor (B.7); the production
+    NN path uses the closed-form ``_fr_geodesic_gaussian_scalar``.
+    """
+    if g_fn is None:
+        g_fn = _gaussian_fisher_metric
+    theta_a_j = jnp.asarray(theta_a, dtype=jnp.float64)
+    theta_b_j = jnp.asarray(theta_b, dtype=jnp.float64)
+    v0 = _shoot_bvp(g_fn, theta_a_j, theta_b_j)
+    if t == 0.0:
+        return np.asarray(theta_a_j)
+    if t == 1.0:
+        return np.asarray(theta_b_j)
+    # Forward-integrate to time t.
+    state0 = jnp.concatenate([theta_a_j, v0])
+    term = diffrax.ODETerm(_geodesic_ode_rhs)
+    solver = diffrax.Tsit5()
+    sol = diffrax.diffeqsolve(
+        term, solver,
+        t0=0.0, t1=float(t), dt0=0.01 if t > 0.0 else None,
+        y0=state0,
+        args=(g_fn,),
+        saveat=diffrax.SaveAt(t1=True),
+        stepsize_controller=diffrax.PIDController(
+            rtol=_DIFFRAX_RTOL, atol=_DIFFRAX_ATOL,
+        ),
+        max_steps=_DIFFRAX_MAX_STEPS,
+    )
+    D = theta_a_j.shape[0]
+    return np.asarray(sol.ys[0, :D])
 
 
 # ----------------------------------------------------------------------

@@ -10,6 +10,8 @@ removed because the stub is being replaced). Rev 1 corrections applied:
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 from hypothesis import given, settings, strategies as st
@@ -561,3 +563,99 @@ class TestFisherRaoGeodesicOdeRhs:
         rhs = jit_rhs(jnp.array(0.0), jnp.array([0.0, 1.0, 1.0, 0.0]))
         assert rhs.shape == (4,)
         assert jnp.all(jnp.isfinite(rhs))
+
+
+@pytest.mark.L1
+@pytest.mark.properties
+class TestFisherRaoGeodesicNumerical:
+    """Diffrax shooting BVP for the FR geodesic, validated against the
+    closed-form half-plane geodesic on Gaussian endpoints.
+    """
+
+    @pytest.mark.parametrize(
+        "mu_a, sigma_a, mu_b, sigma_b, t",
+        [
+            (0.0, 1.0, 1.0, 0.5, 0.3),
+            (0.5, 0.5, -0.5, 1.5, 0.7),
+            (1.0, 2.0, -1.0, 0.5, 0.5),
+        ],
+    )
+    def test_numerical_geodesic_matches_closed_form_on_normal(
+        self, mu_a, sigma_a, mu_b, sigma_b, t
+    ):
+        """At three representative endpoint pairs and t in (0, 1):
+        _fr_geodesic_numerical(theta_a, theta_b, t) matches
+        _fr_geodesic_gaussian_scalar(mu_a, sigma_a, mu_b, sigma_b, t)
+        to atol 1e-7. This is the load-bearing validation of the entire
+        Stage B autodiff/diffrax machinery.
+        """
+        from frasian.tilting.fisher_rao import (
+            _fr_geodesic_gaussian_scalar, _fr_geodesic_numerical,
+        )
+        mu_t_cf, sigma_t_cf = _fr_geodesic_gaussian_scalar(
+            mu_a, sigma_a, mu_b, sigma_b, t
+        )
+        theta_a = np.array([mu_a, sigma_a])
+        theta_b = np.array([mu_b, sigma_b])
+        theta_t = _fr_geodesic_numerical(theta_a, theta_b, t)
+        assert np.isclose(theta_t[0], mu_t_cf, atol=1e-7), (
+            f"mu mismatch at t={t}: numerical {theta_t[0]:.8f} vs closed {mu_t_cf:.8f}"
+        )
+        assert np.isclose(theta_t[1], sigma_t_cf, atol=1e-7), (
+            f"sigma mismatch at t={t}: numerical {theta_t[1]:.8f} vs closed {sigma_t_cf:.8f}"
+        )
+
+    def test_diffrax_jit_compiles(self):
+        """_solve_geodesic_forward must JIT-compile for use inside training loops."""
+        import jax
+        import jax.numpy as jnp
+        from frasian.tilting.fisher_rao import (
+            _gaussian_fisher_metric, _solve_geodesic_forward,
+        )
+        theta_a = jnp.array([0.0, 1.0])
+        v0 = jnp.array([1.0, 0.0])
+        jit_solve = jax.jit(
+            lambda v: _solve_geodesic_forward(_gaussian_fisher_metric, theta_a, v)
+        )
+        theta_1 = jit_solve(v0)
+        assert theta_1.shape == (2,)
+        assert jnp.all(jnp.isfinite(theta_1))
+
+    def test_diffrax_grad_through_solve(self):
+        """jax.grad through the forward solve must produce finite gradients
+        (needed for learned-eta training in Stage C).
+        """
+        import jax
+        import jax.numpy as jnp
+        from frasian.tilting.fisher_rao import (
+            _gaussian_fisher_metric, _solve_geodesic_forward,
+        )
+        theta_a = jnp.array([0.0, 1.0])
+        def loss(v):
+            theta_1 = _solve_geodesic_forward(_gaussian_fisher_metric, theta_a, v)
+            return jnp.sum(theta_1 ** 2)
+        v0 = jnp.array([1.0, 0.0])
+        grad = jax.grad(loss)(v0)
+        assert grad.shape == (2,)
+        assert jnp.all(jnp.isfinite(grad))
+
+    @pytest.mark.parametrize("Delta_scaled", [-3.0, -1.0, 0.0, 1.0, 3.0])
+    def test_shooting_converges_at_typical_conflict_regimes(self, Delta_scaled):
+        """At three (theta_a, theta_b) pairs corresponding to mild-to-extreme
+        conflict, the Newton shooting iteration converges without raising.
+        """
+        from frasian.tilting.fisher_rao import _fr_geodesic_numerical
+        # Construct (theta_a, theta_b) where mu_a, mu_b reflect the conflict.
+        sigma = 1.0
+        sigma0 = 1.0
+        w = sigma0 ** 2 / (sigma ** 2 + sigma0 ** 2)  # = 0.5 here
+        D = -Delta_scaled * sigma / (1.0 - w)  # so Delta = (1-w)*(0 - D)/sigma
+        mu0 = 0.0
+        mu_n = w * D + (1.0 - w) * mu0
+        sigma_n = math.sqrt(w) * sigma
+        theta_a = np.array([mu_n, sigma_n])
+        theta_b = np.array([D, sigma])
+        # Should not raise; result should be finite & sigma_t > 0.
+        theta_t = _fr_geodesic_numerical(theta_a, theta_b, 0.5)
+        assert np.all(np.isfinite(theta_t))
+        assert theta_t[1] > 0.0, f"sigma_t = {theta_t[1]} not positive at Delta={Delta_scaled}"
