@@ -146,6 +146,49 @@ def ot_tilted_pvalue_jax(
     )
 
 
+def fisher_rao_tilted_pvalue_jax(
+    theta: jax.Array,
+    D: jax.Array,
+    w: jax.Array,
+    mu0: jax.Array,
+    sigma: jax.Array,
+    eta: jax.Array,
+    statistic_name: str,
+) -> jax.Array:
+    """JAX port of `FisherRaoTilting.tilted_pvalue` for (fisher_rao, waldo|wald).
+
+    Thin wrapper around ``_fr_tilted_pvalue_kernel`` from
+    ``frasian.tilting.fisher_rao`` — the kernel is already jit'd and
+    vmap-friendly via per-X geodesic broadcasting. The wrapper just
+    re-orders the args to match the registry convention shared with
+    ``power_law_tilted_pvalue_jax`` / ``ot_tilted_pvalue_jax`` /
+    ``mixture_tilted_pvalue_jax`` (``(theta, D, w, mu0, sigma, eta,
+    statistic_name)``).
+
+    Precision characteristics (per the FR kernel docstring): ~4e-4 at
+    n_grid=8000 via trapezoidal quadrature over X. No closed form for
+    interior eta because mu_FR(eta; X) is non-linear in X along the
+    curved geodesic. This is sufficient gradient signal for training;
+    audit-precision CIs use the adaptive brentq numpy-scalar path.
+
+    Like the other JAX kernels, the surface stays smooth at the eta=[0,1]
+    boundary so Head A's width loss can descend toward admissible eta
+    even when EtaNet drifts. The validity helper (numpy-driven) labels
+    Head B's BCE correctly regardless of what the JAX surface returns.
+
+    See ``power_law_tilted_pvalue_jax`` for input/output shape conventions;
+    signatures match for registry uniformity.
+    """
+    # Import inside the function to avoid a cycle: tilting/fisher_rao.py
+    # already imports from statistics/, which imports back here via the
+    # training package.
+    from ...tilting.fisher_rao import _fr_tilted_pvalue_kernel
+
+    return _fr_tilted_pvalue_kernel(
+        theta, eta, D, w, mu0, sigma, statistic_name,
+    )
+
+
 _MIXTURE_QUADRATIC_LEADING_EPS = 1e-12
 _MIXTURE_DISCRIMINANT_EPS = 1e-12
 
@@ -577,11 +620,15 @@ JAX_TILTED_PVALUE: dict[tuple[str, str], Callable[..., jax.Array]] = {
     ("power_law", "normal_normal"): power_law_tilted_pvalue_jax,
     ("ot", "normal_normal"): ot_tilted_pvalue_jax,
     ("mixture", "normal_normal"): mixture_tilted_pvalue_jax,
+    ("fisher_rao", "normal_normal"): fisher_rao_tilted_pvalue_jax,
     ("power_law", "generic"): generic_grid_tilted_pvalue,
     ("mixture", "generic"): mixture_grid_tilted_pvalue,
     # ("ot", "generic") is deferred — QuantileMixturePath has no
     # closed-form log-density on a fixed grid; would need a separate
     # quantile-pushforward kernel.
+    # ("fisher_rao", "generic") is deferred — FR currently requires
+    # Gaussian endpoints (the half-plane closed form); a parametric-
+    # family generic path is Stage B work.
 }
 
 

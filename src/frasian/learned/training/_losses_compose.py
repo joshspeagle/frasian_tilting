@@ -240,10 +240,14 @@ WIDTH_LOSS_DISPATCH: dict[tuple[str, str], Any] = {
     ("power_law", "normal_normal"): _call_normal_normal_pvalue,
     ("ot", "normal_normal"): _call_normal_normal_pvalue,
     ("mixture", "normal_normal"): _call_normal_normal_pvalue,
+    ("fisher_rao", "normal_normal"): _call_normal_normal_pvalue,
     ("power_law", "generic"): _call_generic_grid_pvalue,
     # ``("mixture", "generic")`` registered below — see _call_generic_grid_pvalue
     # which dispatches on scheme_name to pick the right kernel.
     ("mixture", "generic"): _call_generic_grid_pvalue,
+    # ``("fisher_rao", "generic")`` deferred — FR requires Gaussian
+    # endpoints today (half-plane closed form). Stage B will extend
+    # to parametric families.
 }
 
 
