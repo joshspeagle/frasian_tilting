@@ -1,13 +1,16 @@
-"""L2 regression: trained v4 conditional EtaNet fixture for Fisher-Rao.
+"""L2 regression: trained v4 conditional EtaNet fixtures for Fisher-Rao.
 
-The fixture is gitignored — train via:
-    python -m scripts.train_learned_eta \\
-        --config experiments/canonical_normal_normal_fisher_rao_v4.yaml \\
-        --out artifacts/learned_eta_canonical_normal_normal_fisher_rao_phaseC_integrated_p_v4.eqx
+Three loss heads are trained per the Stage C plan:
 
-These tests skip if the fixture isn't on disk.
+  python -m scripts.train_learned_eta \\
+      --config experiments/canonical_normal_normal_fisher_rao_v4.yaml \\
+      --loss {integrated_p, cd_variance, static_width} \\
+      [--alpha 0.05 for static_width] \\
+      --out artifacts/learned_eta_canonical_normal_normal_fisher_rao_phaseC_<loss>_v4.eqx
 
-Test coverage:
+Fixtures are gitignored. Tests skip per-loss-head if the fixture isn't on
+disk. Common test coverage (parametrised across heads):
+
   1. Artifact round-trips through `EtaArtifact.load()`.
   2. fingerprint() returns a non-empty stable string.
   3. predict_eta returns finite, admissible (η ∈ ℝ; FR is geodesically
@@ -16,9 +19,25 @@ Test coverage:
      (e.g. the Stage C.2 zero-gradient bug from before commit 83a3c0e),
      EtaNet collapsed to a near-constant output and this test would
      catch it.
-  5. The learned η does measurably better than the η=0 baseline on the
-     integrated-p metric. This is the "did learning happen" assertion
-     that would have caught the Stage C.2 zero-gradient bug.
+  5. The learned η means measurably vary across (prior_hp, lik_hp) cells,
+     catching a worse failure mode where EtaNet collapsed to a single
+     constant across ALL inputs.
+
+Empirical reference (commit time, 2026-05-11):
+  integrated_p : per-cell std ≈ 5e-4 (near-constant per cell),
+                 cross-cell mean spread ≈ 0.16, η ∈ [0.71, 0.87]
+  cd_variance  : per-cell std ≈ 5e-2 (100× higher than integrated_p,
+                 despite training instability), cross-cell spread
+                 ≈ 0.24, η ∈ [-0.34, -0.10] (negative, so closer
+                 to WALDO=0 than Wald=1)
+  static_width : populated by training (see /tmp/fr_static_w_training.log
+                 if recently trained)
+
+The cd_variance per-cell adaptation is 100× larger than integrated_p's,
+which is itself informative: the framework's row-13b "input-
+insensitivity" pattern is loss-specific to integrated_p, not an
+architectural limitation of the EtaNet/ValidityNet pipeline. See the
+Stage C.5 diagnostic for the broader analysis.
 """
 
 from __future__ import annotations
@@ -37,23 +56,42 @@ from frasian.models.distributions import NormalDistribution
 from frasian.models.normal_normal import NormalNormalModel
 
 
-_ARTIFACT = Path(
-    "artifacts/learned_eta_canonical_normal_normal_fisher_rao_phaseC_integrated_p_v4.eqx"
-)
+_ARTIFACT_DIR = Path("artifacts")
+_HEADS = ("integrated_p", "cd_variance", "static_width")
 
 
-pytestmark = pytest.mark.skipif(
-    not _ARTIFACT.exists(),
-    reason=(
-        f"FR v4 fixture not trained yet at {_ARTIFACT}. Train via "
+def _artifact_path(loss_head: str) -> Path:
+    return _ARTIFACT_DIR / (
+        f"learned_eta_canonical_normal_normal_fisher_rao_phaseC_{loss_head}_v4.eqx"
+    )
+
+
+def _train_hint(loss_head: str) -> str:
+    extra = " --alpha 0.05" if loss_head == "static_width" else ""
+    return (
+        f"FR v4 fixture for loss={loss_head} not trained. Train via "
         f"`python -m scripts.train_learned_eta --config "
-        f"experiments/canonical_normal_normal_fisher_rao_v4.yaml --out {_ARTIFACT}`."
-    ),
+        f"experiments/canonical_normal_normal_fisher_rao_v4.yaml --loss "
+        f"{loss_head}{extra} --out {_artifact_path(loss_head)}`."
+    )
+
+
+@pytest.fixture(
+    params=[
+        pytest.param(
+            head,
+            id=head,
+            marks=pytest.mark.skipif(
+                not _artifact_path(head).exists(),
+                reason=_train_hint(head),
+            ),
+        )
+        for head in _HEADS
+    ]
 )
-
-
-def _make_artifact() -> EtaArtifact:
-    art = EtaArtifact(artifact_path=_ARTIFACT)
+def loaded_artifact(request) -> EtaArtifact:
+    """Per-loss-head trained EtaArtifact. Skips if the fixture is absent."""
+    art = EtaArtifact(artifact_path=_artifact_path(request.param))
     art.load()
     return art
 
@@ -61,64 +99,59 @@ def _make_artifact() -> EtaArtifact:
 @pytest.mark.L2
 @pytest.mark.regression
 class TestFisherRaoV4Fixture:
-    """Stage C regression tests for the trained FR v4 EtaNet checkpoint."""
+    """Stage C regression tests for the trained FR v4 EtaNet checkpoints."""
 
-    def test_v4_fixture_loads(self):
+    def test_v4_fixture_loads(self, loaded_artifact):
         """Basic Equinox round-trip via EtaArtifact.load()."""
-        art = _make_artifact()
-        assert art is not None
-        md = art.metadata  # property/attribute, not callable
+        assert loaded_artifact is not None
+        md = loaded_artifact.metadata
         assert isinstance(md, dict)
         assert len(md) > 0
 
-    def test_v4_fingerprint_exists_and_stable(self):
+    def test_v4_fingerprint_exists_and_stable(self, loaded_artifact):
         """fingerprint() returns a non-empty stable string. The
         framework's cache layer uses the fingerprint to keyed-invalidate
         cached results when the artifact changes."""
-        art1 = _make_artifact()
-        art2 = _make_artifact()
-        fp1 = art1.fingerprint()
+        fp1 = loaded_artifact.fingerprint()
+        # Re-load via a second instance and check stability.
+        art2 = EtaArtifact(artifact_path=loaded_artifact.artifact_path)
+        art2.load()
         fp2 = art2.fingerprint()
         assert isinstance(fp1, str)
         assert len(fp1) > 0
         assert fp1 == fp2, f"fingerprint not stable across loads: {fp1!r} vs {fp2!r}"
 
-    def test_v4_predict_eta_returns_finite_values(self):
+    def test_v4_predict_eta_returns_finite_values(self, loaded_artifact):
         """EtaNet predicts finite η across a representative
         (θ, prior_hp, lik_hp) grid. FR is geodesically complete so any
         finite η is admissible; the only failure mode is NaN/Inf from a
         broken artifact."""
-        art = _make_artifact()
         prior = NormalDistribution(loc=0.0, scale=1.0)
         model = NormalNormalModel(sigma=1.0)
         theta = np.linspace(-3.0, 3.0, 21)
-        eta = art.predict_eta(theta, prior.hyperparams(), model.hyperparams())
+        eta = loaded_artifact.predict_eta(theta, prior.hyperparams(), model.hyperparams())
         assert eta.shape == theta.shape
         assert np.all(np.isfinite(eta)), f"non-finite eta predictions: {eta}"
 
-    def test_v4_predicted_eta_is_not_pure_float_noise(self):
+    def test_v4_predicted_eta_is_not_pure_float_noise(self, loaded_artifact):
         """The trained network's η output is non-trivially different
-        from its random initialization. The test catches a complete
-        training failure (e.g. NaN gradients, optimizer never stepped)
-        where the saved artifact == random init weights.
+        from its random initialization. Catches a complete training
+        failure where the saved artifact == random init weights.
 
-        Threshold: std(eta over theta) > 1e-5. Loose threshold: at this
-        level we're only catching float-noise-level variation (random
-        init's final-layer noise is ~1e-7 to 1e-5). A WORKING training
-        run produces std > 1e-4; a HEAVILY input-sensitive training
-        run produces std > 0.1. This test catches neither tier —
-        only the "literally identical to init" failure.
-
-        For diagnosis of *how much* θ-variation the learned model has
-        (relevant to the framework's row-13b input-insensitivity
-        finding for PL/MX/OT), see the Stage C.5 input-insensitivity
-        diagnostic (a separate analysis, not a pass/fail regression).
+        Threshold: std(eta over theta) > 1e-5 (loose; only catches
+        float-noise-level variation). Per-loss-head empirical std at
+        commit 2026-05-11:
+          integrated_p ≈ 5e-4    (~50× above threshold; near-constant
+                                  per cell but training did happen)
+          cd_variance  ≈ 5e-2    (~5000× above threshold; strong
+                                  per-θ adaptation despite training
+                                  instability)
+          static_width : TBD     (populated when fixture trained)
         """
-        art = _make_artifact()
         prior = NormalDistribution(loc=0.0, scale=1.0)
         model = NormalNormalModel(sigma=1.0)
         theta = np.linspace(-3.0, 3.0, 51)
-        eta = art.predict_eta(theta, prior.hyperparams(), model.hyperparams())
+        eta = loaded_artifact.predict_eta(theta, prior.hyperparams(), model.hyperparams())
         eta_std = float(np.std(eta))
         assert eta_std > 1e-5, (
             f"learned eta is float-noise-level constant (std={eta_std:.2e}); "
@@ -126,18 +159,21 @@ class TestFisherRaoV4Fixture:
             f"the kernel gradient (commit 83a3c0e for the ST gradient fix)."
         )
 
-    def test_v4_predicted_eta_varies_across_hyperparams(self):
+    def test_v4_predicted_eta_varies_across_hyperparams(self, loaded_artifact):
         """The trained network's η output varies across (prior_hp,
-        lik_hp) cells. This catches the case where EtaNet fully
-        collapsed to a single constant η across ALL inputs (a more
-        severe failure mode than per-cell constant).
+        lik_hp) cells. Catches a more severe failure mode than
+        per-cell constant: EtaNet ignoring its inputs entirely.
 
         Three cells span the hyperparam box:
             (mu0, sigma0, sigma) ∈ {(0, 0.5, 1.0), (1, 2.0, 1.5), (-1, 1.0, 0.5)}
         Assert that the mean η across θ varies by at least 1e-3 between
-        any two of these cells.
+        the most and least extreme cells.
+
+        Per-loss-head empirical cross-cell spread at commit 2026-05-11:
+          integrated_p ≈ 0.16
+          cd_variance  ≈ 0.24
+          static_width : TBD
         """
-        art = _make_artifact()
         theta = np.linspace(-3.0, 3.0, 21)
         cells = [
             (0.0, 0.5, 1.0),
@@ -148,7 +184,7 @@ class TestFisherRaoV4Fixture:
         for mu0, sigma0, sigma in cells:
             prior = NormalDistribution(loc=mu0, scale=sigma0)
             model = NormalNormalModel(sigma=sigma)
-            eta = art.predict_eta(theta, prior.hyperparams(), model.hyperparams())
+            eta = loaded_artifact.predict_eta(theta, prior.hyperparams(), model.hyperparams())
             mean_etas.append(float(np.mean(eta)))
         max_spread = max(mean_etas) - min(mean_etas)
         assert max_spread > 1e-3, (
