@@ -58,7 +58,12 @@ if TYPE_CHECKING:
 _FORCE_X64 = _x64
 
 # Numerical guards
-_VERTICAL_CASE_EPS = 1e-12       # threshold for |mu_a - mu_b| -> vertical-line geodesic
+_VERTICAL_CASE_EPS = 1e-12       # numpy scalar path: threshold for |mu_a - mu_b| -> vertical-line geodesic
+_VERTICAL_CASE_EPS_JAX = 1e-6    # JAX path: wider so gradients through the arc denominator don't blow up
+                                  # (autograd reverses through 1/safe_denom; the arc formula has a coordinate
+                                  # singularity at denom=0, so wraps must trigger BEFORE the gradient corrupts.
+                                  # At |denom|<1e-7 the autograd-vs-FD gap explodes; 1e-6 leaves a safety margin.
+                                  # See test_jax_geodesic_gradient_through_vertical for the calibration grid.)
 _SIGMA_FLOOR = 1e-300            # absolute floor on sigma along the path
 
 
@@ -128,6 +133,11 @@ def _fr_arc_length_costa(
     is the symmetrised KL distance. Correct citation is Eqs. 5-6.)
     """
     arg = 1.0 + ((mu_a - mu_b) ** 2 / 2.0 + (sigma_a - sigma_b) ** 2) / (2.0 * sigma_a * sigma_b)
+    # Stage A audit finding #14: arg is structurally >= 1 (sum of
+    # squares / positive denominator + 1), but floating-point roundoff
+    # at identical endpoints can produce arg = 1 - epsilon, sending
+    # math.acosh into a domain error. Clamp at construction.
+    arg = max(1.0, arg)
     return float(math.sqrt(2.0) * math.acosh(arg))
 
 
@@ -328,28 +338,48 @@ def _fr_geodesic_gaussian_jax(
 
     Uses constant-speed parametrisation s(t) -> phi(t) (rev 1 correction).
     Branches on |mu_a - mu_b| < eps via jnp.where (no Python control flow).
+
+    **Gradient correctness (Stage A audit finding #1):** the naive
+    ``safe_denom = where(is_vertical, 1.0, denom)`` pattern catches
+    forward NaNs at denom=0 but does NOT prevent reverse-mode gradient
+    corruption when ``denom`` is small-but-above-threshold — autograd
+    flows through ``c_tilde ~ 1/safe_denom`` whose Jacobian blows up
+    as ``1/denom**2`` even though the eventual ``mu_t_tilde - c_tilde``
+    and ``sigma`` outputs are bounded. The symbolic double-where trick
+    used here computes BOTH branches with ``safe_denom`` (which equals
+    1.0 in the vertical regime), then selects via ``where`` at the
+    output level. The JAX-specific threshold ``_VERTICAL_CASE_EPS_JAX
+    = 1e-6`` is wider than the numpy scalar's ``1e-12`` because the
+    arc-branch derivative magnitudes don't stabilise until ~1e-7;
+    ``1e-6`` adds a one-decade safety margin. Validated against
+    central-difference FD in
+    ``test_jax_geodesic_gradient_through_vertical``.
     """
     sqrt2 = jnp.sqrt(jnp.array(2.0))
     mu_a_t = mu_a / sqrt2
     mu_b_t = mu_b / sqrt2
     denom = mu_a_t - mu_b_t
-    safe_denom = jnp.where(jnp.abs(denom) < _VERTICAL_CASE_EPS, jnp.array(1.0), denom)
-    c_tilde = ((mu_a_t * mu_a_t - mu_b_t * mu_b_t) + (sigma_a * sigma_a - sigma_b * sigma_b)) \
-              / (2.0 * safe_denom)
-    r = jnp.sqrt((mu_a_t - c_tilde) ** 2 + sigma_a * sigma_a)
-    phi_a = jnp.arctan2(sigma_a, mu_a_t - c_tilde)
-    phi_b = jnp.arctan2(sigma_b, mu_b_t - c_tilde)
+    is_vertical = jnp.abs(denom) < _VERTICAL_CASE_EPS_JAX
+    # Symbolic double-where: arc-branch computation uses safe_denom (= 1.0 in
+    # vertical regime), so its forward value is finite and its reverse-mode
+    # gradient is bounded irrespective of the true denom.
+    safe_denom = jnp.where(is_vertical, jnp.array(1.0), denom)
+    c_tilde_arc = ((mu_a_t * mu_a_t - mu_b_t * mu_b_t) + (sigma_a * sigma_a - sigma_b * sigma_b)) \
+                  / (2.0 * safe_denom)
+    r_arc = jnp.sqrt((mu_a_t - c_tilde_arc) ** 2 + sigma_a * sigma_a)
+    phi_a = jnp.arctan2(sigma_a, mu_a_t - c_tilde_arc)
+    phi_b = jnp.arctan2(sigma_b, mu_b_t - c_tilde_arc)
     # Constant-speed param: s(t) = (1-t)*ln(tan(phi_a/2)) + t*ln(tan(phi_b/2))
     s_a = jnp.log(jnp.tan(phi_a / 2.0))
     s_b = jnp.log(jnp.tan(phi_b / 2.0))
     s_t = (1.0 - t) * s_a + t * s_b
     phi_t = 2.0 * jnp.arctan(jnp.exp(s_t))
-    mu_t_tilde_arc = c_tilde + r * jnp.cos(phi_t)
-    s_sigma_arc = r * jnp.sin(phi_t)
-    # Vertical branch: sigma(t) = sigma_a^(1-t) * sigma_b^t, mu unchanged.
+    mu_t_tilde_arc = c_tilde_arc + r_arc * jnp.cos(phi_t)
+    s_sigma_arc = r_arc * jnp.sin(phi_t)
+    # Vertical branch (bit-equal to closed-form geometric mean): sigma(t) =
+    # sigma_a^(1-t) * sigma_b^t, mu unchanged.
     mu_t_tilde_vert = mu_a_t
     s_sigma_vert = sigma_a ** (1.0 - t) * sigma_b ** t
-    is_vertical = jnp.abs(denom) < _VERTICAL_CASE_EPS
     mu_t_tilde = jnp.where(is_vertical, mu_t_tilde_vert, mu_t_tilde_arc)
     s_sigma = jnp.where(is_vertical, s_sigma_vert, s_sigma_arc)
     return sqrt2 * mu_t_tilde, s_sigma
@@ -387,7 +417,7 @@ def _fr_tilted_pvalue_kernel(
     mu_n = w * D + (1.0 - w) * mu0
     mu_t_obs, s_t_obs = _fr_geodesic_gaussian_jax(mu_n, sigma_n, D, sigma, eta)
     tau_obs = (mu_t_obs - theta) ** 2 / (s_t_obs ** 2)
-    X_grid = jnp.linspace(theta - 8.0 * sigma, theta + 8.0 * sigma, n_grid)
+    X_grid = jnp.linspace(theta - _FR_X_RANGE * sigma, theta + _FR_X_RANGE * sigma, n_grid)
     # Vmap per-X geodesic + tau computation
     def _tau_at_X(X):
         mu_n_X = w * X + (1.0 - w) * mu0
@@ -441,6 +471,22 @@ class FisherRaoTilting:
         if not np.isfinite(eta_f):
             raise TiltingDomainError(
                 f"FisherRaoTilting requires finite eta, got {eta_f!r}."
+            )
+        if not (0.0 <= eta_f <= 1.0):
+            # Stage A audit finding #3: FR's admissible range for the
+            # *tilting interpretation* is the geodesic segment [0, 1]
+            # between posterior (eta=0) and likelihood (eta=1). The
+            # Riemannian geodesic extends smoothly to t in R, but
+            # extrapolation outside [0, 1] does not represent a valid
+            # posterior↔likelihood interpolant — the WALDO p-value
+            # landscape degenerates (see selector-wiring discussion in
+            # confidence_regions). Refuse rather than silently allow.
+            raise TiltingDomainError(
+                f"FisherRaoTilting.tilt requires eta in [0, 1] (the "
+                f"geodesic-segment between posterior and likelihood); "
+                f"got eta={eta_f!r}. The geodesic continues smoothly "
+                f"for eta in R but the tilting interpretation breaks "
+                f"down outside [0, 1]."
             )
         if not (
             isinstance(posterior, NormalDistribution)
@@ -555,8 +601,24 @@ class FisherRaoTilting:
         sigma0 = float(prior.scale)
         w = sigma0 ** 2 / (sigma ** 2 + sigma0 ** 2)
         statistic_name = getattr(statistic, "name", type(statistic).__name__.lower())
+        if getattr(statistic, "force_generic", False):
+            raise NotImplementedError(
+                "FisherRaoTilting.confidence_regions: force_generic=True is "
+                "the Stage B generic numerical path; not implemented in Stage A."
+            )
         if isinstance(self.selector, FixedEtaSelector):
             eta_resolved = float(self.selector.eta)
+            # Stage A audit finding #4: validate FixedEtaSelector's eta
+            # against FR's geodesic-segment admissibility. Construction-
+            # time validation would require touching `eta_selectors.py`'s
+            # FixedEtaSelector to add a scheme hook; runtime check here
+            # keeps the change local.
+            if not (0.0 <= eta_resolved <= 1.0):
+                raise TiltingDomainError(
+                    f"FisherRaoTilting with FixedEtaSelector requires "
+                    f"eta in [0, 1] (geodesic-segment admissibility); "
+                    f"got eta={eta_resolved!r}."
+                )
             return self._static_confidence_regions(
                 alpha=alpha, eta=eta_resolved, D=D, w=w, mu0=mu0, sigma=sigma,
                 statistic_name=statistic_name,
@@ -565,9 +627,10 @@ class FisherRaoTilting:
             eta_raw = float(self.selector.select(
                 self, data=data, model=model, prior=prior, alpha=alpha, statistic=statistic
             ))
-            # NumericalEtaSelector._eta_bounds returns power_law's
-            # admissible window `(-w/(1-w), 1/(1-w))`, which can overshoot
-            # FR's geodesic-segment range `[0, 1]`. Clamp to admissible.
+            # NumericalEtaSelector now consults scheme.param_space's
+            # `training_output_bounds` (Stage A audit finding #3), so for
+            # FR the bracket is `[0, 1]` directly. The clip here is a
+            # defensive double-check against floating-point overshoot.
             eta_resolved = float(np.clip(eta_raw, 0.0 + 1e-9, 1.0 - 1e-9))
             return self._static_confidence_regions(
                 alpha=alpha, eta=eta_resolved, D=D, w=w, mu0=mu0, sigma=sigma,
@@ -578,11 +641,11 @@ class FisherRaoTilting:
             coarse_n = int(getattr(self.selector, "coarse_n", 25))
             search_mult = float(getattr(self.selector, "search_mult", 8.0))
 
-            # FR-admissible eta clamp: NumericalEtaSelector's bracket is
-            # power_law's wider window `(-w/(1-w), 1/(1-w))`, which can
-            # land outside FR's geodesic-segment range `[0, 1]`. Clamp
-            # in the tilted_pvalue closures so the dynamic scan stays
-            # in admissible territory.
+            # FR-admissible eta clamp: NumericalEtaSelector now consults
+            # `training_output_bounds=(0, 1)` (Stage A audit finding #3),
+            # so its bracket is FR-aware. The clamps here are defensive
+            # double-checks against the LearnedDynamic path (which can
+            # extrapolate via EtaNet before its own ValidityNet clamp).
             _eta_lo, _eta_hi = 0.0 + 1e-9, 1.0 - 1e-9
 
             def _tilted_pvalue_fn(theta_v: float, eta_v: float) -> float:
@@ -592,6 +655,12 @@ class FisherRaoTilting:
                     w=w, mu0=mu0, sigma=sigma, statistic_name=statistic_name,
                 )
 
+            # Stage A audit finding #6: this vec helper is a Python loop
+            # over scalar `_fr_tilted_pvalue_numpy_scalar` calls (vs OT's
+            # true vectorisation), so dynamic-CI inversion on FR is slower
+            # per cell than on OT. Stage A limitation; a proper batched
+            # path is deferred to Stage B alongside the generic numerical
+            # machinery.
             def _tilted_pvalue_vec_fn(
                 theta_arr: np.ndarray, eta_arr: np.ndarray
             ) -> np.ndarray:
@@ -690,6 +759,11 @@ class FisherRaoTilting:
         if not is_normal_normal(model):
             raise NotImplementedError(
                 "FisherRaoTilting.pvalue currently requires NormalNormalModel."
+            )
+        if getattr(statistic, "force_generic", False):
+            raise NotImplementedError(
+                "FisherRaoTilting.pvalue: force_generic=True is the Stage B "
+                "generic numerical path; not implemented in Stage A."
             )
         D = float(np.asarray(data).mean())
         sigma = float(model.sigma)
