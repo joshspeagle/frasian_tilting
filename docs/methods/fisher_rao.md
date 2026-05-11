@@ -458,17 +458,79 @@ case differs).
 
 ## Status notes
 
-Implemented 2026-05-11 (feat/fisher-rao-tilting). Stage A landed:
-NN closed-form half-plane geodesic (constant-speed s(t)→phi(t) param);
-adaptive quadrature p-value via brentq boundary finding + analytical
-Gaussian CDF integration over accept intervals (no closed form at
-interior eta — see Derivation Step 8); 4 selectors wired (Fixed,
-Numerical, DynamicNumerical, LearnedDynamic); 4 fr_* audit flavors.
-Stage B (generic ParametricFamily numerical machinery — autodiff
-Fisher metric + diffrax shooting BVP) and Stage C (learned-eta v4
-fixture + training + input-insensitivity diagnostic) follow.
+Implemented 2026-05-11 (feat/fisher-rao-tilting). Stage breakdown:
+
+- **Stage A (implemented).** NN closed-form half-plane geodesic
+  (constant-speed `s(t) → phi(t)` parametrisation); adaptive
+  quadrature p-value via brentq boundary finding + analytical
+  Gaussian CDF integration over accept intervals (no closed form
+  at interior `eta` — see Derivation Step 8); 4 selectors wired
+  (Fixed, Numerical, DynamicNumerical, LearnedDynamic); production
+  audit flavor `fr_dyn_numerical`.
+- **Stage B (implemented, commits 6e03d0b–bf9d0c9).** General-
+  purpose JAX-autodiff Fisher metric + Christoffel via
+  `jax.jacrev` + diffrax `Tsit5` shooting BVP. The autodiff/
+  diffrax machinery operates on a `g_fn` metric callable; the
+  Gaussian metric (`_gaussian_fisher_metric`) is the only metric
+  this PR exercises. Audit flavor `fr_dyn_numerical_generic` runs
+  the generic-MC machinery (`_generic_tilt_fr` +
+  `_generic_tilted_pvalue_fr`) against the Stage A closed-form
+  path to validate correctness. NN-validated only (no non-
+  Gaussian endpoint paths).
+- **Stage C (pending).** NN learned-η v4 fixture + training +
+  input-insensitivity diagnostic. The `fr_learned_*` audit
+  flavors (`fr_learned_intp`, `fr_learned_cd_var`,
+  `fr_learned_static_w`) are commented out of `_FLAVORS` in
+  `scripts/run_wald_audit.py` until the v4 artifacts are
+  trained; the `_build_cell` branches stay so they're easy to
+  re-enable.
+- **Stage D (pending).** Smoothness comparison + headline note.
 
 A general `ParametricFamily` interface — required for Fisher-Rao on
 non-Gaussian families like Beta / Bernoulli — is deferred to a
 separate refactor PR. The current `Distribution` protocol exposes
-no Fisher metric.
+no Fisher metric; the Stage B machinery is structured so a
+non-Gaussian family plugs in by passing a different `g_fn` callable
+to `_fr_geodesic_numerical`.
+
+### Generic-path performance (Stage B)
+
+The general-purpose `_fr_geodesic_numerical` + `_generic_tilt_fr`
+machinery is **wall-clock-prohibitive for production audit runs**.
+Cost decomposition:
+
+- Each FR-tilted reference requires a diffrax shooting BVP. Per-shoot
+  cost on CPU: ~100-500 ms (typical ~200 ms; Newton iterates 5-10
+  times, each iterate runs ~10-20 diffrax solves of the geodesic ODE).
+- The FR-tilted moments `(mu_FR(eta; X), sigma_FR(eta; X))` are
+  **non-linear in the candidate replicate X** (Derivation Step 8),
+  so each MC replicate within `_generic_tilted_pvalue_fr` requires
+  its own shoot. At default `n_mc = 200`: ~200 × ~200 ms ≈ ~40 s per
+  p-value evaluation.
+- A dynamic-η CI inverts the p-value via brentq + dynamic-η scan over
+  a 401-θ grid (default `Config.fast()`); even with brentq pruning
+  the order of magnitude is hours per CI.
+
+**Measured wall-clock.** A single `fr_dyn_numerical_generic` CI at
+`w=0.5, data=[0.5]` did **not** return within 10 minutes (measurement
+attempted with a 600 s timeout; earlier 120 s+ runs on smaller
+variants also exceeded their budgets). The cost characterisation is
+therefore **"> 10 minutes per single CI"**. Even **post finding-#3
+fix** (the `t ∈ {0, 1}` BVP shortcut that skips the shoot entirely at
+exact endpoints), production audit cells remain in the multi-minutes-
+per-CI regime: the shortcut only fires at endpoint η, and the
+dynamic-η scan spends almost all its budget at interior η values
+where the BVP is unavoidable.
+
+**Implication.** The `fr_dyn_numerical_generic` audit flavor is
+**math-validation infrastructure, not for production audits.** The
+load-bearing correctness gate is the atol-1e-7 closed-form-match test
+in `TestFisherRaoGenericTilt`
+(`tests/properties/test_fisher_rao_invariants.py`), which validates
+the Stage B autodiff/diffrax pipeline against the Stage A closed-form
+half-plane formula without an MC sampling layer. The slow-marked
+coverage-and-width parity test in
+`tests/regression/test_fr_generic_matches_closed_form.py` is a sanity
+check that runs only with `pytest -m slow`. The closed-form-geodesic
++ adaptive-brentq-quadrature path (`fr_dyn_numerical`, Stage A) is
+the production-precision route.
