@@ -184,9 +184,51 @@ def fisher_rao_tilted_pvalue_jax(
     # training package.
     from ...tilting.fisher_rao import _fr_tilted_pvalue_kernel
 
-    return _fr_tilted_pvalue_kernel(
-        theta, eta, D, w, mu0, sigma, statistic_name,
+    # The underlying scalar kernel internally constructs an X-grid via
+    # `jnp.linspace(theta - 8σ, theta + 8σ, n_grid=8000)`. For SCALAR
+    # theta this yields shape `(n_grid,)` and the downstream
+    # vmap+trapezoid chain returns a scalar. For VECTOR theta of shape
+    # `S`, the linspace would broadcast to `(n_grid, *S)`, and the
+    # downstream per-X vmap over axis=0 then iterates over the n_grid
+    # axis with X having shape S — breaking the scalar-X assumption of
+    # `_tau_at_X`. Stage C.2 surfaced this at first training run
+    # (TypeError: mul got incompatible shapes for broadcasting:
+    # (B, T) vs (n_grid, n_aux)).
+    #
+    # Fix: vmap the scalar kernel over a flattened theta, then restore
+    # shape. The other free args (D, w, mu0, sigma, eta) are typically
+    # batched-along-the-same-leading-axis as theta in the training loop,
+    # so we vmap all six together against `in_axes=0`. Statistic name is
+    # static.
+    theta_arr = jnp.asarray(theta)
+    if theta_arr.ndim == 0:
+        return _fr_tilted_pvalue_kernel(
+            theta_arr, eta, D, w, mu0, sigma, statistic_name,
+        )
+    # Flatten all batched inputs to 1-D, vmap, reshape back.
+    flat_shape = theta_arr.shape
+    theta_f = theta_arr.reshape(-1)
+    # Broadcast the other inputs to the same flat shape so vmap can
+    # iterate uniformly. Inputs that are scalar (e.g. D, sigma during
+    # an audit-time inference) broadcast trivially via jnp.broadcast_to.
+    n = theta_f.shape[0]
+    def _bcast_flat(x: jax.Array) -> jax.Array:
+        arr = jnp.asarray(x)
+        if arr.ndim == 0:
+            return jnp.broadcast_to(arr, (n,))
+        return arr.reshape(-1)
+    D_f = _bcast_flat(D)
+    w_f = _bcast_flat(w)
+    mu0_f = _bcast_flat(mu0)
+    sigma_f = _bcast_flat(sigma)
+    eta_f = _bcast_flat(eta)
+    # The kernel's statistic_name arg is static; close over it.
+    def _scalar_call(th, et, d_, w_, m0, sg):
+        return _fr_tilted_pvalue_kernel(th, et, d_, w_, m0, sg, statistic_name)
+    p_flat = jax.vmap(_scalar_call, in_axes=(0, 0, 0, 0, 0, 0))(
+        theta_f, eta_f, D_f, w_f, mu0_f, sigma_f,
     )
+    return p_flat.reshape(flat_shape)
 
 
 _MIXTURE_QUADRATIC_LEADING_EPS = 1e-12

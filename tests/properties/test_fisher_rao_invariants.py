@@ -317,6 +317,37 @@ class TestFisherRaoInvariants:
 @pytest.mark.L2
 @pytest.mark.regression
 class TestFisherRaoJaxKernel:
+    def test_jax_kernel_handles_vector_theta_input(self):
+        """`fisher_rao_tilted_pvalue_jax` must accept vector / 2D `theta`
+        and return same-shape p-values. The learned-eta training loop
+        passes shape ``(B, T)`` ``theta`` (batch × theta_grid); a kernel
+        that only handles scalar theta crashes at the training step
+        with a shape-broadcasting error.
+
+        Stage C.2 regression: caught at first training run when the
+        kernel's internal X-grid construction
+        ``jnp.linspace(theta - 8σ, theta + 8σ, n_grid=8000)`` broadcast
+        to ``(n_grid, *theta.shape)`` and downstream ops couldn't
+        compose.
+        """
+        from frasian.learned.training.pvalue_jax import fisher_rao_tilted_pvalue_jax
+        import jax.numpy as jnp
+        D, w, mu0, sigma, eta = 0.5, 0.5, 0.0, 1.0, 0.3
+        # Shape (B=2, T=4) — typical training-loop pattern
+        theta = jnp.asarray([
+            [-1.0, -0.5, 0.0, 0.5],
+            [ 0.5,  1.0, 1.5, 2.0],
+        ])
+        p = fisher_rao_tilted_pvalue_jax(
+            theta, jnp.asarray(D), jnp.asarray(w), jnp.asarray(mu0),
+            jnp.asarray(sigma), jnp.asarray(eta), "waldo",
+        )
+        assert p.shape == (2, 4), f"expected (2, 4); got {p.shape}"
+        # All values must be in [0, 1] and finite
+        p_np = np.asarray(p)
+        assert np.all(np.isfinite(p_np))
+        assert np.all((p_np >= 0.0) & (p_np <= 1.0))
+
     @pytest.mark.parametrize("eta", [0.1, 0.3, 0.5, 0.7, 0.9])
     @pytest.mark.parametrize("theta", [-1.0, -0.5, 0.0, 0.5, 1.0])
     def test_jax_kernel_matches_numpy_scalar_waldo(self, eta, theta):
