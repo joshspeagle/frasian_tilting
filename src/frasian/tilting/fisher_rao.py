@@ -160,6 +160,153 @@ def _fr_geodesic_arc_length_numerical(
     return float(sqrt2 * ds.sum())  # multiply by sqrt(2) for Fisher arc length
 
 
+# ----------------------------------------------------------------------
+# Tilted-WALDO p-value (adaptive quadrature with brentq boundary finding)
+# ----------------------------------------------------------------------
+#
+# Rev 1 finding: FR's tilted-WALDO p-value has NO closed form at interior
+# eta because mu_FR(eta; X) is non-linear in X along the curved geodesic.
+# Trapezoidal quadrature on the discontinuous indicator 1{tau_rep >= tau_obs}
+# converges only O(1/n) -- ~1e-2 at n=256. The proper fix uses brentq to
+# find the discontinuity boundaries X* where tau_rep(X*) = tau_obs, then
+# integrates pdf(X) analytically as sums of Gaussian CDF differences over
+# the accept intervals. Machine precision; one brentq per boundary.
+
+
+_FR_COARSE_GRID_N: int = 64           # coarse grid for sign-change discovery
+_FR_X_RANGE: float = 12.0             # X grid spans theta +/- X_RANGE * sigma
+_FR_BRENTQ_TOL: float = 1e-12         # brentq xtol
+
+
+def _fr_tau_rep_minus_obs(
+    X: float, theta_f: float, eta_f: float, mu0: float,
+    w: float, sigma: float, sigma_n: float, tau_obs: float,
+) -> float:
+    """g(X) = tau_rep(X) - tau_obs, with tau_rep(X) computed via the
+    closed-form Fisher-Rao geodesic at replicate X.
+    """
+    mu_n_X = w * X + (1.0 - w) * mu0
+    mu_t_X, s_t_X = _fr_geodesic_gaussian_scalar(mu_n_X, sigma_n, X, sigma, eta_f)
+    tau_rep = (mu_t_X - theta_f) ** 2 / (s_t_X ** 2)
+    return tau_rep - tau_obs
+
+
+def _fr_tilted_pvalue_numpy_scalar(
+    theta_f: float,
+    eta_f: float,
+    D_f: float,
+    w: float,
+    mu0: float,
+    sigma: float,
+    statistic_name: str,
+    *,
+    n_grid: int = _FR_COARSE_GRID_N,
+) -> float:
+    """Scalar Fisher-Rao tilted-WALDO / tilted-Wald p-value on Normal-Normal.
+
+    Wald: closed-form ``2 * Phi(-|D - theta| / sigma)`` (Wald ignores the prior).
+
+    WALDO at endpoints (eta == 0 or eta == 1): closed-form bare-WALDO /
+    bare-Wald fast paths.
+
+    WALDO at interior eta: adaptive quadrature via brentq boundary finding
+    + analytical Gaussian-CDF integration over the accept intervals.
+    Machine precision; per-call cost is bounded by the brentq iteration
+    count times the per-call geodesic cost (typically 0-2 brentq calls
+    each ~20 evaluations, so ~10x scalar geodesic + a coarse-grid sweep).
+
+    n_grid: number of points in the coarse sign-change search grid.
+    Default 64 is sufficient for typical (theta, eta, D) combinations.
+
+    Derivation: docs/methods/fisher_rao.md Derivation (rev 1) Steps 7-9.
+    """
+    from scipy.optimize import brentq
+
+    if statistic_name == "wald":
+        z = abs(D_f - theta_f) / sigma
+        return float(2.0 * _scalar_scipy_stats.norm.sf(z))
+    if statistic_name != "waldo":
+        raise NotImplementedError(
+            f"FisherRaoTilting tilted p-value: unknown statistic_name={statistic_name!r}."
+        )
+    sigma_n = math.sqrt(w) * sigma
+    mu_n = w * D_f + (1.0 - w) * mu0
+    # Endpoint fast paths (deriver Step 9)
+    if np.isclose(eta_f, 0.0, atol=1e-15):
+        a = abs(mu_n - theta_f) / (w * sigma)
+        b = (1.0 - w) * (mu0 - theta_f) / (w * sigma)
+        p = _scalar_scipy_stats.norm.cdf(b - a) + _scalar_scipy_stats.norm.cdf(-a - b)
+        return float(p)
+    if np.isclose(eta_f, 1.0, atol=1e-15):
+        z = abs(D_f - theta_f) / sigma
+        return float(2.0 * _scalar_scipy_stats.norm.sf(z))
+    # Adaptive quadrature: find brentq roots of g(X) = tau_rep(X) - tau_obs
+    mu_t_obs, s_t_obs = _fr_geodesic_gaussian_scalar(mu_n, sigma_n, D_f, sigma, eta_f)
+    tau_obs = (mu_t_obs - theta_f) ** 2 / (s_t_obs ** 2)
+
+    def g(X: float) -> float:
+        return _fr_tau_rep_minus_obs(X, theta_f, eta_f, mu0, w, sigma, sigma_n, tau_obs)
+
+    # Coarse-grid sign-change discovery
+    X_lo, X_hi = theta_f - _FR_X_RANGE * sigma, theta_f + _FR_X_RANGE * sigma
+    coarse_X = np.linspace(X_lo, X_hi, n_grid)
+    coarse_g = np.array([g(float(x)) for x in coarse_X])
+    # Find sign-change indices
+    sign_changes = np.where(np.diff(np.sign(coarse_g)) != 0)[0]
+    if len(sign_changes) == 0:
+        # No sign change: integrand is constant on the grid.
+        # Determine constant value by checking sign at any X.
+        if coarse_g[0] >= 0.0:
+            return 1.0  # accept everywhere
+        return 0.0  # reject everywhere
+    # Refine each sign change with brentq
+    roots = []
+    for idx in sign_changes:
+        a, b = float(coarse_X[idx]), float(coarse_X[idx + 1])
+        try:
+            root = brentq(g, a, b, xtol=_FR_BRENTQ_TOL, maxiter=100)
+            roots.append(root)
+        except ValueError:
+            # Brentq failed (e.g. sign of g(a), g(b) is the same; numerical
+            # artifact of the coarse grid). Skip this candidate.
+            continue
+    if not roots:
+        # All sign changes were numerical noise; fall back to constant check
+        if coarse_g[0] >= 0.0:
+            return 1.0
+        return 0.0
+    roots = sorted(roots)
+    # Build accept intervals. The line is partitioned by roots into intervals;
+    # determine which intervals are "accept" (g >= 0) by checking g at midpoints.
+    intervals = []  # list of (a, b) where g >= 0
+    boundaries = [-np.inf] + list(roots) + [np.inf]
+    for i in range(len(boundaries) - 1):
+        a_i, b_i = boundaries[i], boundaries[i + 1]
+        # Probe midpoint (or use a finite midpoint for ±inf endpoints)
+        if a_i == -np.inf:
+            mid = b_i - 1.0
+        elif b_i == np.inf:
+            mid = a_i + 1.0
+        else:
+            mid = 0.5 * (a_i + b_i)
+        if g(float(mid)) >= 0.0:
+            intervals.append((a_i, b_i))
+    # Sum P(X in accept interval) under X ~ N(theta_f, sigma^2)
+    p = 0.0
+    for a_i, b_i in intervals:
+        if a_i == -np.inf:
+            cdf_a = 0.0
+        else:
+            cdf_a = float(_scalar_scipy_stats.norm.cdf((a_i - theta_f) / sigma))
+        if b_i == np.inf:
+            cdf_b = 1.0
+        else:
+            cdf_b = float(_scalar_scipy_stats.norm.cdf((b_i - theta_f) / sigma))
+        p += cdf_b - cdf_a
+    # Clamp to [0, 1] (numerical safety)
+    return float(max(0.0, min(1.0, p)))
+
+
 @register_tilting(name="fisher_rao", brief="docs/methods/fisher_rao.md", status="stub")
 @dataclass(frozen=True)
 class FisherRaoTilting:

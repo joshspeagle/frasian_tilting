@@ -161,15 +161,18 @@ class TestFisherRaoInvariants:
             assert np.isclose(float(p_fr), float(p_bare), atol=1e-3)
 
     def test_quadrature_converges_with_grid(self):
-        """Quadrature p-value at fixed (eta, theta, D) converges as n_grid grows."""
+        """Adaptive quadrature with brentq boundary finding is essentially
+        machine-precision regardless of n_grid (coarse grid only used for
+        sign-change discovery; brentq xtol=1e-12 refines roots to machine
+        precision). So coarse and fine grids should agree to ~1e-10.
+        """
         from frasian.tilting.fisher_rao import _fr_tilted_pvalue_numpy_scalar
         kwargs = dict(theta_f=0.3, eta_f=0.5, D_f=0.5, w=0.5, mu0=0.0,
                       sigma=1.0, statistic_name="waldo")
-        p_ref = _fr_tilted_pvalue_numpy_scalar(**kwargs, n_grid=8000)
-        p_coarse = _fr_tilted_pvalue_numpy_scalar(**kwargs, n_grid=256)
-        assert abs(p_coarse - p_ref) < 1e-3
-        p_mid = _fr_tilted_pvalue_numpy_scalar(**kwargs, n_grid=2000)
-        assert abs(p_mid - p_ref) < 1e-4
+        p_default = _fr_tilted_pvalue_numpy_scalar(**kwargs)  # default n_grid=64
+        p_dense = _fr_tilted_pvalue_numpy_scalar(**kwargs, n_grid=512)
+        # Should agree to brentq xtol precision
+        assert abs(p_default - p_dense) < 1e-10
 
     @pytest.mark.L3
     def test_calibration_under_h0(self):
