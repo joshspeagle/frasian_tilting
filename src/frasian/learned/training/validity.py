@@ -132,12 +132,16 @@ def _admissibility_mask(
             w = sigma0**2 / (sigma**2 + sigma0**2)
             # Strict raise-bound: power_law.tilted_pvalue raises iff
             # `denom = 1 - eta*(1-w) <= 0`, i.e. `eta >= 1/(1-w)`. We
-            # allow up to but excluding that bound. Note: this is
-            # broader than the buffered η bracket
-            # `NumericalEtaSelector` uses for its minimization (see
-            # `NumericalEtaSelector._eta_bounds`). The mask matches
-            # the strict raise bound (what `tilted_pvalue` actually
-            # enforces), NOT the buffered selector bound.
+            # allow up to but excluding that bound. Per the deriver A.3
+            # admissibility derivation (2026-05-11) PL has no lower
+            # bound on NN; the mask matches the true PL admissibility
+            # (upper-only η < 1/(1-w)) and excludes the inadmissible
+            # region in (1/(1-w), ∞). The `NumericalEtaSelector._eta_bounds`
+            # bracket is the scheme-neutral wide default (-50, 50)
+            # bounded by self-correcting +inf-on-failure, so this mask
+            # is narrower than the bracket — which is the right
+            # relationship (the bracket is a search box, the mask is
+            # a validity contract).
             return finite & (eta_arr < 1.0 / (1.0 - w))
         # Generic (future non-conjugate models): the grid path is
         # well-defined for any finite η on a compact support; the

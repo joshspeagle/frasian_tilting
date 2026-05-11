@@ -44,7 +44,12 @@ class TestNumericalEtaSelectorObjective:
     @pytest.mark.parametrize("w", [0.3, 0.5, 0.7])
     def test_integrated_p_returns_eta_in_admissible_range(self, abs_delta, w):
         """Integrated-p objective produces a finite η in the admissible
-        range for power_law."""
+        range for power_law.
+
+        Updated 2026-05-11: spurious -w/(1-w) lower bound removed per
+        deriver A.3 (PL admissibility on NN is upper-only η < 1/(1-w);
+        no lower bound). Asserts only finiteness + the true upper bound.
+        """
         from frasian.models.distributions import NormalDistribution
         from frasian.models.normal_normal import NormalNormalModel
 
@@ -68,14 +73,17 @@ class TestNumericalEtaSelectorObjective:
             statistic=WaldoStatistic(),
         )
         assert np.isfinite(eta)
-        eta_min = -w / (1.0 - w)
-        assert eta > eta_min
-        assert eta < 1.0
+        # PL admissibility on NN: upper-only η < 1/(1-w) (deriver A.3).
+        eta_max = 1.0 / (1.0 - w)
+        assert eta < eta_max
 
     def test_integrated_p_path_runs_select_grid(self):
         """select_grid completes for integrated_p across a θ sweep
         (Phase 3a-1.5: θ-keyed signature; the legacy |Δ| path is
         dropped).
+
+        Updated 2026-05-11: spurious -w/(1-w) lower bound removed per
+        deriver A.3. Asserts only finiteness + the true PL upper bound.
         """
         from frasian.models.distributions import NormalDistribution
         from frasian.models.normal_normal import NormalNormalModel
@@ -101,6 +109,5 @@ class TestNumericalEtaSelectorObjective:
         )
         assert eta.shape == (9,)
         assert np.all(np.isfinite(eta))
-        eta_min = -1.0  # for w=0.5
-        assert np.all(eta > eta_min)
-        assert np.all(eta < 1.0)
+        # PL admissibility on NN: upper-only η < 1/(1-w) = 2 for w=0.5.
+        assert np.all(eta < 2.0)
