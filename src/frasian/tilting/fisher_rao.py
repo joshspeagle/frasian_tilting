@@ -27,37 +27,26 @@ likelihood-induced Gaussian N(D, sigma^2).
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, ClassVar
-
-import numpy as np
-from numpy.typing import ArrayLike, NDArray
-
-from .._registry import register_tilting
-from ..models.base import Likelihood, Model, Posterior, Prior
-from ..statistics.base import TestStatistic
-from .base import ParamSpec
-
-if TYPE_CHECKING:
-    from ..config import Config
-
-
 import math
+from collections.abc import Iterable
+from dataclasses import dataclass, field
 from functools import partial
+from typing import ClassVar
 
 import jax
 import jax.numpy as jnp
 import jax.scipy.stats as jsp_stats
+import numpy as np
+from numpy.typing import ArrayLike, NDArray
 from scipy import stats as _scalar_scipy_stats
 
 from .. import _jax_setup as _x64  # noqa: F401  -- ensure float64 active
 from .._errors import TiltingDomainError
+from .._registry import register_tilting
 from ..models._dispatch import is_normal_normal
+from ..models.base import Likelihood, Model, Posterior, Prior
 from ..models.distributions import GaussianLikelihood, NormalDistribution
-from ._dynamic import dynamic_ci_scan
-from ._solvers import brentq_with_doubling
-from .base import EtaSelector
+from .base import EtaSelector, ParamSpec
 from .eta_selectors import FixedEtaSelector
 
 _FORCE_X64 = _x64
@@ -405,73 +394,123 @@ def _fr_tilted_pvalue_kernel(
     return p
 
 
-@register_tilting(name="fisher_rao", brief="docs/methods/fisher_rao.md", status="stub")
+# ----------------------------------------------------------------------
+# FisherRaoTilting class
+# ----------------------------------------------------------------------
+
+
+@register_tilting(name="fisher_rao", brief="docs/methods/fisher_rao.md", status="implemented")
 @dataclass(frozen=True)
 class FisherRaoTilting:
-    """STUB. Fisher-Rao (information-geometric) geodesic on the
-    Gaussian half-plane. eta=0 -> posterior, eta=1 -> likelihood-as-Gaussian."""
+    """Levi-Civita (Riemannian) geodesic of the Fisher information metric
+    on the Gaussian half-plane manifold. eta=0 -> posterior, eta=1 ->
+    likelihood-induced N(D, sigma^2).
+
+    See docs/methods/fisher_rao.md for the derivation and predicted
+    behavior.
+    """
 
     name: ClassVar[str] = "fisher_rao"
     param_space: ParamSpec = ParamSpec(
         eta_default=0.0,
         eta_identity=0.0,
+        eta_likelihood_only=1.0,
         description=(
-            "STUB: t in [0, 1] along the Fisher-Rao geodesic between posterior "
-            "(t=0) and the likelihood-induced Gaussian N(D, sigma^2) (t=1)."
+            "t in [0, 1] along the Fisher-Rao geodesic between posterior (t=0) "
+            "and the likelihood-induced Gaussian N(D, sigma^2) (t=1)."
         ),
+        training_output_bounds=None,  # FR has no eta_max admissibility
     )
+    selector: EtaSelector = field(default_factory=lambda: FixedEtaSelector(eta=0.0))
+
+    def __str__(self) -> str:
+        if isinstance(self.selector, FixedEtaSelector) and self.selector.eta == 0.0:
+            return "fisher_rao"
+        return f"fisher_rao[{self.selector.name}]"
 
     def tilt(
         self, posterior: Posterior, prior: Prior, likelihood: Likelihood, eta: ArrayLike
     ) -> Posterior:
-        raise NotImplementedError("FisherRaoTilting is a stub; see docs/methods/fisher_rao.md.")
+        eta_f = float(np.asarray(eta).item())
+        if not np.isfinite(eta_f):
+            raise TiltingDomainError(
+                f"FisherRaoTilting requires finite eta, got {eta_f!r}."
+            )
+        if not (
+            isinstance(posterior, NormalDistribution)
+            and isinstance(prior, NormalDistribution)
+            and isinstance(likelihood, GaussianLikelihood)
+        ):
+            raise NotImplementedError(
+                "FisherRaoTilting.tilt currently requires Normal posterior + "
+                "Normal prior + Gaussian likelihood. Generic numerical path is "
+                "implemented in Stage B (see _generic_tilt_fr); a future PR will "
+                "extend tilt() dispatch to non-Gaussian endpoints."
+            )
+        mu_t, sigma_t = _fr_geodesic_gaussian_scalar(
+            posterior.loc, posterior.scale, likelihood.D, likelihood.sigma, eta_f
+        )
+        if sigma_t <= 0.0:
+            raise TiltingDomainError(
+                f"FisherRaoTilting: sigma_t={sigma_t!r} non-positive at eta={eta_f!r} "
+                f"(geodesic crossed the sigma=0 boundary)."
+            )
+        return NormalDistribution(loc=mu_t, scale=sigma_t)
 
     def path(
-        self, posterior: Posterior, prior: Prior, likelihood: Likelihood, ts: NDArray[np.float64]
-    ) -> Iterable[Posterior]:
-        raise NotImplementedError("FisherRaoTilting is a stub; see docs/methods/fisher_rao.md.")
+        self,
+        posterior: Posterior,
+        prior: Prior,
+        likelihood: Likelihood,
+        ts: NDArray[np.float64],
+    ) -> Iterable[NormalDistribution]:
+        for t in np.asarray(ts, dtype=np.float64):
+            yield self.tilt(posterior, prior, likelihood, float(t))
 
     def is_identity(self, eta: float) -> bool:
         return eta == self.param_space.eta_identity
 
-    # ----- Uniform CI / regions / pvalue interface (audit P0-10) -----
-
-    def confidence_interval(
-        self,
-        alpha: float,
-        data: NDArray[np.float64],
-        model: Model,
-        prior: Prior,
-        statistic: TestStatistic,
-        *,
-        config: "Config | None" = None,
-    ) -> tuple[float, float]:
-        raise NotImplementedError(
-            "FisherRaoTilting.confidence_interval is a stub; see docs/methods/fisher_rao.md."
-        )
-
-    def confidence_regions(
-        self,
-        alpha: float,
-        data: NDArray[np.float64],
-        model: Model,
-        prior: Prior,
-        statistic: TestStatistic,
-        *,
-        config: "Config | None" = None,
-    ) -> list[tuple[float, float]]:
-        raise NotImplementedError(
-            "FisherRaoTilting.confidence_regions is a stub; see docs/methods/fisher_rao.md."
-        )
-
-    def pvalue(
+    def tilted_pvalue(
         self,
         theta: ArrayLike,
-        data: NDArray[np.float64],
+        D: float | NDArray[np.float64],
         model: Model,
-        prior: Prior,
-        statistic: TestStatistic,
-    ) -> NDArray[np.float64]:
-        raise NotImplementedError(
-            "FisherRaoTilting.pvalue is a stub; see docs/methods/fisher_rao.md."
-        )
+        prior: NormalDistribution,
+        eta: ArrayLike,
+        statistic_name: str,
+    ) -> float | NDArray[np.float64]:
+        """Selector-free Fisher-Rao tilted p-value on Normal-Normal.
+
+        Scalar fast path for scalar (theta, eta, D) — uses the adaptive
+        brentq quadrature. JAX kernel for batched inputs — uses fine-grain
+        trap rule. See docstrings on the helpers for the precision
+        characteristics of each path.
+        """
+        if not is_normal_normal(model):
+            raise NotImplementedError(
+                "FisherRaoTilting.tilted_pvalue currently requires NormalNormalModel; "
+                f"got {type(model).__name__!r}."
+            )
+        if not isinstance(prior, NormalDistribution):
+            raise NotImplementedError(
+                "FisherRaoTilting.tilted_pvalue currently requires a NormalDistribution prior."
+            )
+        sigma = float(model.sigma)
+        mu0 = float(prior.loc)
+        sigma0 = float(prior.scale)
+        w = sigma0 ** 2 / (sigma ** 2 + sigma0 ** 2)
+        # Detect scalar vs batched
+        theta_arr = np.asarray(theta)
+        eta_arr = np.asarray(eta)
+        D_arr = np.asarray(D)
+        is_scalar = theta_arr.ndim == 0 and eta_arr.ndim == 0 and D_arr.ndim == 0
+        if is_scalar:
+            return _fr_tilted_pvalue_numpy_scalar(
+                theta_f=float(theta_arr), eta_f=float(eta_arr), D_f=float(D_arr),
+                w=w, mu0=mu0, sigma=sigma, statistic_name=statistic_name,
+            )
+        # Batched JAX path
+        return np.asarray(_fr_tilted_pvalue_kernel(
+            jnp.asarray(theta), jnp.asarray(eta), jnp.asarray(D),
+            jnp.asarray(w), jnp.asarray(mu0), jnp.asarray(sigma), statistic_name,
+        ))
