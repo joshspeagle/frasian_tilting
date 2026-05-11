@@ -383,3 +383,44 @@ class TestFisherRaoJaxKernel:
             f"Autograd vs FD gradient mismatch at mu_b={mu_b}: "
             f"autograd={ag:.6e}, fd={fd:.6e}, diff={abs(ag - fd):.4e}"
         )
+
+
+@pytest.mark.L1
+@pytest.mark.properties
+class TestFisherRaoGaussianFisherMetric:
+    """Closed-form Fisher metric on the Gaussian family.
+
+    Stage B's autodiff/diffrax machinery uses this as the known-correct
+    reference. See `docs/methods/fisher_rao.md` Derivation Step 1.
+    """
+
+    @pytest.mark.parametrize(
+        "mu, sigma",
+        [(0.0, 1.0), (0.5, 1.5), (-1.0, 0.3), (10.0, 2.0)],
+    )
+    def test_gaussian_fisher_metric_closed_form(self, mu, sigma):
+        """g(mu, sigma) = diag(1/sigma^2, 2/sigma^2); independent of mu."""
+        from frasian.tilting.fisher_rao import _gaussian_fisher_metric
+        import jax.numpy as jnp
+        theta = jnp.array([mu, sigma])
+        g = _gaussian_fisher_metric(theta)
+        expected = jnp.diag(jnp.array([1.0 / sigma ** 2, 2.0 / sigma ** 2]))
+        assert g.shape == (2, 2)
+        # Diagonal entries
+        assert np.isclose(float(g[0, 0]), 1.0 / sigma ** 2, atol=1e-12)
+        assert np.isclose(float(g[1, 1]), 2.0 / sigma ** 2, atol=1e-12)
+        # Off-diagonals are zero
+        assert np.isclose(float(g[0, 1]), 0.0, atol=1e-15)
+        assert np.isclose(float(g[1, 0]), 0.0, atol=1e-15)
+        # Full-matrix equality
+        assert np.allclose(np.array(g), np.array(expected), atol=1e-12)
+
+    def test_gaussian_fisher_metric_is_jax_traceable(self):
+        """The metric must be jax-jit'able since downstream uses jax.jacrev on it."""
+        import jax
+        import jax.numpy as jnp
+        from frasian.tilting.fisher_rao import _gaussian_fisher_metric
+        jit_g = jax.jit(_gaussian_fisher_metric)
+        g = jit_g(jnp.array([0.0, 1.0]))
+        assert np.isclose(float(g[0, 0]), 1.0, atol=1e-12)
+        assert np.isclose(float(g[1, 1]), 2.0, atol=1e-12)

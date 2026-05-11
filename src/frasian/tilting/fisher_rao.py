@@ -166,6 +166,39 @@ def _fr_geodesic_arc_length_numerical(
 
 
 # ----------------------------------------------------------------------
+# Stage B: general-purpose JAX autodiff machinery (NN-validation only)
+#
+# Closed-form Gaussian Fisher metric, used as the known-correct reference
+# that the autodiff/diffrax shooting in subsequent helpers is validated
+# against. Per docs/superpowers/specs/2026-05-11-fisher-rao-tilting-design.md
+# (rev 2), Stage B is a general-purpose machinery that operates on a
+# `g_fn: theta -> matrix` callable; the Gaussian metric is the only
+# concrete metric this PR exercises. No non-Gaussian endpoint paths.
+# ----------------------------------------------------------------------
+
+
+def _gaussian_fisher_metric(theta: jax.Array) -> jax.Array:
+    """Closed-form Fisher information metric on the univariate Gaussian family.
+
+    For ``theta = (mu, sigma)``, returns the 2x2 matrix
+    ``g(mu, sigma) = diag(1/sigma^2, 2/sigma^2)``.
+
+    Verified by the deriver agent (sympy: negative expected Hessian of
+    log N(x; mu, sigma^2) returns exactly (1/sigma^2, 2/sigma^2, 0) for
+    the (mu, mu), (sigma, sigma), (mu, sigma) entries). See
+    `docs/methods/fisher_rao.md` Derivation Step 1.
+
+    This is the metric callable that `_christoffel_from_metric` and
+    `_fr_geodesic_numerical` (Stage B helpers) consume. They operate
+    on the abstract `g_fn: (theta,) -> (D, D)` signature, so plugging
+    in a different family's metric in a future PR would extend FR
+    to that family with no other code changes.
+    """
+    sigma = theta[1]
+    return jnp.diag(jnp.array([1.0 / sigma ** 2, 2.0 / sigma ** 2]))
+
+
+# ----------------------------------------------------------------------
 # Tilted-WALDO p-value (adaptive quadrature with brentq boundary finding)
 # ----------------------------------------------------------------------
 #
