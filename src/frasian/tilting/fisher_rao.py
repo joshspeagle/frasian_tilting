@@ -455,7 +455,14 @@ class FisherRaoTilting:
             "t in [0, 1] along the Fisher-Rao geodesic between posterior (t=0) "
             "and the likelihood-induced Gaussian N(D, sigma^2) (t=1)."
         ),
-        training_output_bounds=(0.0, 1.0),  # FR geodesic param t in [0, 1]
+        # Structural bound matching the geodesic-segment admissibility
+        # decision (Stage A audit finding #3): the Riemannian geodesic
+        # extends smoothly for t in R but the tilting interpretation
+        # (posterior↔likelihood interpolant) only makes sense on the
+        # closed segment [0, 1]. Revisit after Stage C empirical results
+        # tell us whether the learned-η optimum stays well inside this
+        # window or hugs an endpoint.
+        training_output_bounds=(0.0, 1.0),
     )
     selector: EtaSelector = field(default_factory=lambda: FixedEtaSelector(eta=0.0))
 

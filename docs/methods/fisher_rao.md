@@ -167,6 +167,13 @@ constant-speed (= arc-length) parametrisation uses the antiderivative
   `tilde_mu(t) = c + r cos(phi(t))`,
   `sigma(t) = r sin(phi(t))`.
 
+*Sign of `s_a, s_b`.* Both signs are valid — `s(t)` is real for any
+`phi ∈ (0, π)`, and `phi(t) = 2 arctan(exp(s(t)))` is monotone, so
+the geodesic is correctly traced regardless of whether `phi_a < phi_b`
+or `phi_a > phi_b`. (`atan2` returns `phi ∈ (0, π)` for `sigma > 0`,
+so `tan(phi/2) ∈ (0, ∞)` and the logs are real-valued.) Implementation
+need not branch on the sign of `phi_b - phi_a`.
+
 Total Poincaré arc length is `L_H = |ln tan(phi_b/2) - ln tan(phi_a/2)|`,
 so `d_F = sqrt(2) L_H`.
 *Verification:* sympy `diff(log(tan(phi/2)), phi) = 1/sin(phi)` exactly;
@@ -299,6 +306,29 @@ case differs).
   rescaled-coordinate endpoints passes through high-curvature
   regions, careful arc parameterisation is required (Nielsen 2023
   discusses numerical Fisher-Rao computation).
+- **Quadrature truncation at near-endpoint η.** The closed-form fast
+  paths at exact `η = 0` and `η = 1` are atol 1e-12; the adaptive
+  brentq + Gaussian-CDF path at `η ∈ (0, 1)` introduces an O(1/n_grid)
+  coarse-grid residual (~1e-4 at default `n_grid = 256`, falling to
+  ~1e-7 at `n_grid = 1024`). brentq-inverted CIs near the endpoints
+  may show small discontinuities at the `η = 0^±` and `η = 1^∓`
+  transitions. At KS-power `n ≥ 10000` the default coarse grid
+  occasionally returns `p = 1.0` for `D` values close to the
+  τ-minimum (no sign change on the n=256 X-grid even though the
+  algorithm is correct in the limit); driving `n_grid = 1024`
+  resolves the calibration check (see
+  `tests/properties/test_fisher_rao_invariants.py::test_calibration_under_h0`).
+- **JAX kernel gradient stability through the vertical case.** The
+  JAX kernel uses fine-grain trapezoidal quadrature (~4e-4 precision
+  at `n_grid = 8000`). The gradient through the equal-`μ` vertical-case
+  branch is fixed via a symbolic double-where substitution with a
+  wider JAX-specific threshold (`_VERTICAL_CASE_EPS_JAX = 1e-6`, vs
+  the numpy path's `1e-12`): the bare `jnp.where(|denom| < eps, 1.0,
+  denom)` pattern catches forward NaNs at `denom = 0` but leaves the
+  reverse-mode gradient corrupted in the small-`denom` regime (autograd
+  reverses through `c_tilde ~ 1/denom` whose Jacobian explodes as
+  `1/denom²`). The fix is pinned by
+  `test_jax_geodesic_gradient_through_vertical`.
 - **Non-Gaussian likelihood / prior.** Stage A lands Gaussian-only;
   non-Gaussian endpoints raise `NotImplementedError`, matching
   `power_law`'s discipline. A general `ParametricFamily` interface
@@ -423,7 +453,7 @@ case differs).
 
 - Implementation: `src/frasian/tilting/fisher_rao.py`
 - Property tests: `tests/properties/test_fisher_rao_invariants.py`
-                  (42 passing)
+                  (50 passing)
 - Illustration: `src/frasian/experiments/illustrations/fisher_rao_demo.py`
 
 ## Status notes
