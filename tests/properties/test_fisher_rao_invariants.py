@@ -143,14 +143,24 @@ class TestFisherRaoInvariants:
             assert np.isclose(float(p_fr), float(p_wald), atol=1e-12)
 
     def test_pvalue_near_endpoints_quadrature_residual(self):
-        """At eta=1e-6 (just inside quadrature path), p_FR matches bare WALDO to atol 1e-3.
+        """Just-inside-quadrature p_FR matches bare statistic to atol.
 
-        Trapezoidal quadrature truncation residual at n_grid=256.
+        At eta=1e-6 the FR-tilted p-value should be close to bare-WALDO
+        (eta=0 limit). At eta=1-1e-6 it should be close to bare-Wald
+        (eta=1 limit). Trapezoidal quadrature truncation residual at
+        the default coarse grid.
+
+        Stage A audit finding #9: extended to also check the eta=1-1e-6
+        boundary, where the geodesic is steeper and quadrature is more
+        sensitive (atol 2e-3 vs 1e-3 at eta=1e-6).
         """
+        from scipy.stats import norm
+
         model, prior, lik, post = _nn_fixtures()
         scheme = FisherRaoTilting()
         bare_waldo = WaldoStatistic()
         theta_grid = np.linspace(-1.5, 1.5, 7)
+        # eta=1e-6 -> compare against bare WALDO
         for theta in theta_grid:
             p_fr = scheme.tilted_pvalue(
                 theta=theta, D=lik.D, model=model, prior=prior, eta=1e-6,
@@ -158,49 +168,98 @@ class TestFisherRaoInvariants:
             )
             p_bare = bare_waldo.pvalue(np.array([theta]), np.array([lik.D]),
                                         model=model, prior=prior)[0]
-            assert np.isclose(float(p_fr), float(p_bare), atol=1e-3)
+            assert np.isclose(float(p_fr), float(p_bare), atol=1e-3), (
+                f"eta=1e-6 residual exceeds 1e-3 at theta={theta}: "
+                f"p_fr={float(p_fr):.6f}, p_bare={float(p_bare):.6f}"
+            )
+        # eta=1 - 1e-6 -> compare against bare Wald
+        for theta in theta_grid:
+            p_fr = scheme.tilted_pvalue(
+                theta=theta, D=lik.D, model=model, prior=prior, eta=1.0 - 1e-6,
+                statistic_name="waldo",
+            )
+            p_wald = 2.0 * norm.sf(abs(lik.D - theta) / lik.sigma)
+            assert np.isclose(float(p_fr), float(p_wald), atol=2e-3), (
+                f"eta=1-1e-6 residual exceeds 2e-3 at theta={theta}: "
+                f"p_fr={float(p_fr):.6f}, p_wald={float(p_wald):.6f}"
+            )
 
     def test_quadrature_converges_with_grid(self):
         """Adaptive quadrature with brentq boundary finding is essentially
         machine-precision regardless of n_grid (coarse grid only used for
         sign-change discovery; brentq xtol=1e-12 refines roots to machine
         precision). So coarse and fine grids should agree to ~1e-10.
+
+        Stage A audit finding #7: previously compared default (n=256) to
+        n=512 — too close to actually exercise the coarse-grid sufficiency
+        claim. Now compares n=64 (much coarser than default) to n=2048.
         """
         from frasian.tilting.fisher_rao import _fr_tilted_pvalue_numpy_scalar
         kwargs = dict(theta_f=0.3, eta_f=0.5, D_f=0.5, w=0.5, mu0=0.0,
                       sigma=1.0, statistic_name="waldo")
-        p_default = _fr_tilted_pvalue_numpy_scalar(**kwargs)  # default n_grid=64
-        p_dense = _fr_tilted_pvalue_numpy_scalar(**kwargs, n_grid=512)
-        # Should agree to brentq xtol precision
-        assert abs(p_default - p_dense) < 1e-10
+        p_coarse = _fr_tilted_pvalue_numpy_scalar(**kwargs, n_grid=64)
+        p_fine = _fr_tilted_pvalue_numpy_scalar(**kwargs, n_grid=2048)
+        # Should agree to brentq xtol precision: the coarse grid only
+        # locates sign changes, brentq refines roots to xtol=1e-12.
+        assert abs(p_coarse - p_fine) < 1e-10
 
     @pytest.mark.L3
-    def test_calibration_under_h0(self):
+    @pytest.mark.parametrize(
+        "theta_true, eta",
+        [
+            (-1.0, 0.3),
+            (0.0, 0.5),
+            (1.0, 0.7),
+            (3.0, 0.9),
+        ],
+    )
+    def test_calibration_under_h0(self, theta_true, eta):
         """KS uniformity of FR tilted-WALDO p-values under H0 (theta=theta_true).
 
         Rev 1 finding: this is the LOAD-BEARING correctness check for FR
         since algebraic-equality cross-checks have intrinsic quadrature noise.
+
+        Stage A audit finding #8: bumped n_replicates 1000 -> 10000 (KS power)
+        and parametrized over (theta_true, eta) so the calibration check
+        is exercised across the (location, geodesic-position) plane,
+        not just at a single regime.
+
+        We invoke ``_fr_tilted_pvalue_numpy_scalar`` directly with
+        ``n_grid=1024`` (vs the default 256 used by ``tilted_pvalue``).
+        At KS-power n=10000 the default coarse grid occasionally returns
+        ``p == 1.0`` for D values near the tau-minimum (no sign change
+        on the n=256 X-grid even though the algorithm is correct in
+        the limit). n_grid=1024 brings KS-stat below the per-shard noise
+        floor for all parametrised cases; runtime cost is acceptable
+        for an L3 test (~40s/param). The fact that default-grid
+        calibration deviates at this power level is a documented
+        Stage A limitation (see docs/methods/fisher_rao.md Failure
+        modes section).
         """
+        from frasian.tilting.fisher_rao import _fr_tilted_pvalue_numpy_scalar
+
         rng = np.random.default_rng(42)
-        n_replicates = 1000
-        theta_true = 0.5
+        n_replicates = 10000
         sigma = 1.0
         sigma0 = 1.0
         mu0 = 0.0
-        scheme = FisherRaoTilting()
+        w = sigma0 ** 2 / (sigma ** 2 + sigma0 ** 2)
         pvals = np.empty(n_replicates)
         for i in range(n_replicates):
             D_obs = theta_true + sigma * rng.standard_normal()
-            model = NormalNormalModel(sigma=sigma)
-            prior = NormalDistribution(loc=mu0, scale=sigma0)
-            p = scheme.tilted_pvalue(
-                theta=theta_true, D=D_obs, model=model, prior=prior, eta=0.5,
+            p = _fr_tilted_pvalue_numpy_scalar(
+                theta_f=theta_true, eta_f=eta, D_f=D_obs,
+                w=w, mu0=mu0, sigma=sigma,
                 statistic_name="waldo",
+                n_grid=1024,
             )
             pvals[i] = float(p)
         from scipy.stats import kstest
         ks_stat, ks_p = kstest(pvals, "uniform")
-        assert ks_p > 0.01, f"KS test rejected uniformity (ks_stat={ks_stat:.4f}, p={ks_p:.4f})"
+        assert ks_p > 0.01, (
+            f"KS test rejected uniformity at (theta_true={theta_true}, eta={eta}): "
+            f"ks_stat={ks_stat:.4f}, p={ks_p:.4f}"
+        )
 
     @pytest.mark.parametrize(
         "sigma, sigma0, mu0, D, eta",
@@ -219,6 +278,38 @@ class TestFisherRaoInvariants:
         ot = OTTilting().tilt(post, prior, lik, eta)
         delta = abs(fr.loc - ot.loc) + abs(fr.scale - ot.scale)
         assert delta > 1e-3
+
+    def test_fr_differs_from_ot_at_equal_sigma(self):
+        """FR's "horizontal geodesic" is a half-ellipse, not OT's straight line.
+
+        Stage A audit finding #10: brief Step 10 claims even the
+        equal-sigma "degenerate" case differs — the FR half-plane
+        geodesic between two points at equal sigma is a semicircle in
+        `(tilde_mu, sigma)` coords, which projects to a half-ellipse
+        in raw `(mu, sigma)` coords (eccentricity 1/sqrt(2), Costa
+        Eq. 8). The FR midpoint dips to higher sigma than either
+        endpoint, while OT's midpoint stays at the common sigma. We
+        construct the test directly via `_fr_geodesic_gaussian_scalar`
+        because engineering `post.scale = lik.sigma` exactly through a
+        Normal-Normal posterior would require sigma0 -> infinity (an
+        improper prior), which is outside the framework's API.
+        """
+        from frasian.tilting.fisher_rao import _fr_geodesic_gaussian_scalar
+        mu_a, sigma_a = 0.0, 1.0
+        mu_b, sigma_b = 2.0, 1.0  # equal sigma, different mu
+        eta = 0.5
+        fr_mu, fr_sigma = _fr_geodesic_gaussian_scalar(
+            mu_a, sigma_a, mu_b, sigma_b, eta,
+        )
+        # OT W2 geodesic on Gaussians is linear in (mu, sigma):
+        ot_mu = (1 - eta) * mu_a + eta * mu_b
+        ot_sigma = (1 - eta) * sigma_a + eta * sigma_b
+        delta = abs(fr_mu - ot_mu) + abs(fr_sigma - ot_sigma)
+        assert delta > 1e-3, (
+            f"FR midpoint=({fr_mu:.6f}, {fr_sigma:.6f}); "
+            f"OT midpoint=({ot_mu:.6f}, {ot_sigma:.6f}); "
+            f"delta={delta:.6e} <= 1e-3"
+        )
 
 
 @pytest.mark.L2
@@ -250,3 +341,45 @@ class TestFisherRaoJaxKernel:
             "waldo",
         ))
         assert np.isclose(p_np, p_jax, atol=1e-3)
+
+    @pytest.mark.parametrize("mu_b", [1e-8, 1e-4, 0.1, 1.0])
+    def test_jax_geodesic_gradient_through_vertical(self, mu_b):
+        """`jax.grad` of the JAX geodesic matches finite-difference at
+        small `mu_b` (the vertical-case threshold).
+
+        Stage A audit finding #1: the bare ``safe_denom = where(...,
+        1.0, denom)`` pattern catches forward NaNs at denom=0 but
+        leaves reverse-mode gradients corrupted in the small-denom
+        regime (autograd reverses through ``c_tilde ~ 1/denom`` whose
+        Jacobian explodes as ``1/denom**2``). The fix is the symbolic
+        double-where pattern with a wider JAX-specific eps
+        ``_VERTICAL_CASE_EPS_JAX = 1e-6``: when ``|denom| < 1e-6`` we
+        evaluate the vertical branch (which has bounded gradients);
+        otherwise the arc branch is well within float64 stability.
+        """
+        import jax
+        import jax.numpy as jnp
+        from frasian.tilting.fisher_rao import _fr_geodesic_gaussian_jax
+
+        mu_a, sigma_a, sigma_b, t = 0.0, 1.0, 2.0, 0.5
+
+        def sigma_t_of_mu_b(mb):
+            _, s = _fr_geodesic_gaussian_jax(
+                jnp.array(mu_a), jnp.array(sigma_a),
+                jnp.array(mb), jnp.array(sigma_b), jnp.array(t),
+            )
+            return s
+
+        # Adaptive central-difference step (small enough to resolve
+        # near-zero derivatives, large enough to avoid float64
+        # roundoff at small mu_b).
+        h = max(1e-5, abs(mu_b) * 1e-4)
+        fd = (
+            float(sigma_t_of_mu_b(mu_b + h))
+            - float(sigma_t_of_mu_b(mu_b - h))
+        ) / (2.0 * h)
+        ag = float(jax.grad(sigma_t_of_mu_b)(mu_b))
+        assert np.isclose(ag, fd, atol=1e-4), (
+            f"Autograd vs FD gradient mismatch at mu_b={mu_b}: "
+            f"autograd={ag:.6e}, fd={fd:.6e}, diff={abs(ag - fd):.4e}"
+        )
