@@ -17,8 +17,8 @@ when sigma_a = sigma_b.
 
 Implementation scope (this stub): Gaussian-only closed form first, with
 NotImplementedError on non-Gaussian endpoints. A general
-ParametricFamily interface (which would let us run Fisher-Rao on Beta,
-Bernoulli, etc.) is a follow-up refactor.
+ParametricFamily interface (which would let us run Fisher-Rao on
+other families) is a follow-up refactor.
 
 Endpoints follow the framework's posterior <-> likelihood convention
 (matching `power_law` and `ot`): eta=0 -> posterior, eta=1 ->

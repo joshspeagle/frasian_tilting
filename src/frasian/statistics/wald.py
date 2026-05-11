@@ -147,11 +147,12 @@ class WaldStatistic:
         # Bracket-width estimation. Three regimes:
         # 1. I(mle) finite & > 0 & not absurd: 4 / sqrt(I(mle)) is the
         #    natural Wald half-width.
-        # 2. I(mle) singular (Bernoulli at MLE in {0, 1}, where 1/(p(1-p))
-        #    blows up): fall back to a fraction of the model support
-        #    range. The previous version produced 4 / sqrt(1e300) = 4e-150,
-        #    which bracket-doubling couldn't expand fast enough; brentq
-        #    raised BracketingFailed and the CI crashed (skeptic finding #5).
+        # 2. I(mle) singular (e.g. at a bounded support boundary, where
+        #    Fisher info diverges): fall back to a fraction of the model
+        #    support range. The previous version produced
+        #    4 / sqrt(1e300) = 4e-150, which bracket-doubling couldn't
+        #    expand fast enough; brentq raised BracketingFailed and the CI
+        #    crashed (skeptic finding #5).
         # 3. Numerical pathologies (NaN, negative): use 1.0 as a sane
         #    default that bracket-doubling will expand.
         info_at_mle = float(np.asarray(model.fisher_information(mle)))

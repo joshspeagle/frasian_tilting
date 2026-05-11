@@ -70,16 +70,14 @@ class Model(Protocol):
 
     Invariants any implementation must satisfy (verified per-model in
     `tests/properties/test_<model_name>_invariants.py` — currently
-    `test_normal_distribution.py` for normal_normal and
-    `test_bernoulli_invariants.py` for bernoulli):
+    `test_normal_distribution.py` for normal_normal):
         - `posterior(data, prior).mean()` lies between `prior.mean()` and
           `mle(data)` (the precision-weighted average of the two).
         - `posterior(data, prior).var() -> 0` as `n_obs -> infinity`
           (asymptotic concentration). Note: posterior variance is *not*
           monotonically below prior variance for every finite n — when
           the prior strongly opposes the data the posterior may
-          transiently widen (verified for Bernoulli; the original draft
-          of this docstring overstated the property).
+          transiently widen.
         - `quantile(cdf(x)) == x` for all returned distributions
           (round-trip; atol depends on tail).
         - `mle(sample_data(theta, ...))` is consistent under increasing n.
@@ -129,8 +127,8 @@ class Model(Protocol):
     #       """`data_batch` shape (n_mc, n_obs); returns
     #       `(mu_arr, var_arr)` each shape (n_mc,)."""
     #
-    # `NormalNormalModel` and `BernoulliModel` provide closed-form
-    # vectorised overrides; non-conjugate / future models can defer.
+    # `NormalNormalModel` provides closed-form vectorised overrides;
+    # non-conjugate / future models can defer.
 
 
 def default_sample_data_batch(
@@ -276,8 +274,7 @@ def default_sample_data_batch_at_thetas(
     `model.sample_data(theta_arr[i], rng, n_data)`. Returns shape
     `(n_theta, n_data)`. The Python `for` loop here is the slow
     path — vectorised models (NN: single rng.normal call shifted per
-    theta; Bernoulli: single rng.binomial call with broadcast
-    probability) override this to remove the per-theta dispatch.
+    theta) override this to remove the per-theta dispatch.
     """
     n_theta = int(np.asarray(theta_arr).size)
     n_data = int(n_data)
@@ -301,8 +298,8 @@ def sample_data_batch_at_thetas(
     Returns shape `(n_theta, n_data)` of MC draws under H_0:theta_arr[i]
     per row. Used by the learned-η training loop (one draw per batch
     element) and the dynamic-η + force_generic CI path. Models with a
-    natively vectorised override (NN, Bernoulli) skip the per-theta
-    Python loop in `default_sample_data_batch_at_thetas`.
+    natively vectorised override (NN) skip the per-theta Python loop
+    in `default_sample_data_batch_at_thetas`.
     """
     fn = getattr(model, "sample_data_batch_at_thetas", None)
     if callable(fn):

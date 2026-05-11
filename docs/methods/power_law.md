@@ -65,6 +65,129 @@ Full derivation including special cases (eta = 0, 1) lives in legacy
 `tilting.py` docstrings; promoting to a standalone derivation file is
 a follow-up cleanup task.
 
+## Admissibility (general statement + NN closed form)
+
+**Setup.** Let `p_post(θ)` be the posterior, `π(θ)` the prior, `L(θ)` the
+likelihood-as-density, and `η ∈ ℝ` the tilting parameter. The e-geodesic
+("power-law") tilting is the unnormalised log-linear interpolation
+
+    q̃(θ; η) := p_post(θ)^(1−η) · L(θ)^η
+            ∝  L(θ) · π(θ)^(1−η)            (Bayes: p_post ∝ L·π)
+
+The framework's convention (`tilting/power_law.py` line 3) is the second
+form. η = 0 returns the posterior; η = 1 returns the likelihood-as-density
+(prior cancels — this is the Wald limit, *not* WALDO; see CLAUDE.md
+"Easily-Conflated Distinctions").
+
+**(A1) General admissibility — leading-tail criterion.**
+`q̃(·; η)` is integrable iff `Z(η) := ∫ q̃(θ; η) dθ < ∞`. Since `q̃` is
+the product of two positive measurable densities, integrability is a
+pure *tail* statement:
+
+- For densities with super-polynomial decay (e.g. Gaussian: `log p ~ −aθ²`),
+  integrability is controlled by the **leading log-density coefficient**.
+  Write `log p_post(θ) = −a_p θ^k_p + o(θ^k_p)` and `log L(θ) = −a_L θ^k_L
+  + o(θ^k_L)` with `a_p, a_L > 0`, `k_p, k_L > 0`. Then on the dominant
+  tail (whichever k is larger, or both if equal),
+  `log q̃ ~ −[(1−η) a_p · 𝟙{k_p=K} + η a_L · 𝟙{k_L=K}] θ^K`. Integrability
+  requires the bracketed sum to be **strictly positive**.
+- For densities with compact or finite support (Beta, truncated families),
+  integrability is checked at each *boundary*: the exponent of `(θ − θ_*)`
+  in the tilted density at each endpoint must be `> −1`. This yields one
+  linear-in-η constraint per boundary (see (A4)).
+- For power-law tails (`log p ~ −(α+1) log|θ|`), one needs the
+  composite tail exponent `(1−η)(α_p+1) + η(α_L+1) > 1`, i.e. the
+  *moment* condition rather than positivity of a quadratic.
+
+The framework currently ships only Gaussian (`normal_normal`) and compact
+(`bernoulli`) endpoints, so the two relevant branches are (A2) and (A4).
+
+**(A2) Normal-Normal closed-form realisation.**
+With `p_post = N(μ_n, σ_n²)` and `L = N(D, σ²)`, drop θ-free constants in
+`log q̃` and expand. Sympy:
+
+    (1-η)·(-(θ-μ_n)²/(2σ_n²))  +  η·(-(θ-D)²/(2σ²))
+    →  Poly(θ,2).nth(2)  =  η/(2σ_n²) − η/(2σ²) − 1/(2σ_n²)
+
+So the leading θ² coefficient is
+
+    c_2(η) = − [(1−η)/(2σ_n²) + η/(2σ²)]
+
+The integrability condition is `c_2(η) < 0`, i.e. the inverse-variance
+of `q̃` is positive. Substituting `σ_n² = w σ²`:
+
+    σ²·[(1−η)/σ_n² + η/σ²]  =  (1 − η(1−w))/w
+
+which is positive iff
+
+    **η < 1 / (1 − w)**          (single upper bound)
+
+with **no finite lower bound** — taking η → −∞ continues to inflate
+the prior contribution, which only sharpens an already-Gaussian product
+(verified numerically below at η = −100 with finite quadrature `Z`).
+
+This matches `_denom(w, eta) = 1 − η(1 − w)` and the closed form
+`σ_η² = w σ² / denom` in `power_law.py:186`.
+
+*Sympy verification:* `sp.solve((1 − η(1−w))/w > 0, η)`
+returns `η < 1/(1−w)`. The boundary `η = 1/(1−w)` makes σ_η² blow up
+(improper uniform limit); beyond it, σ_η² turns negative and `q̃` is no
+longer a density.
+
+*Numerical verification at three settings* (`atol = 1e-12` on
+`scale²` vs `wσ²/denom`):
+
+| Setting (σ, σ₀, μ₀, D)        | w        | 1/(1−w)   | η = −100 admissible? | η at boundary? |
+|-------------------------------|----------|-----------|----------------------|----------------|
+| (1.0, 1.0, 0.0, 0.5)          | 0.5000   | 2.0000    | yes (Z=0.219)        | rejected       |
+| (2.0, 0.5, −1.0, 0.0)         | 0.0588   | 1.0625    | yes (Z=0.110)        | rejected       |
+| (1.0, 2.0, 0.0, 1.0)          | 0.8000   | 5.0000    | yes (Z=0.302)        | rejected       |
+
+**(A3) Discrepancy with `eta_selectors.py:236–238`.**
+The current selector bracket is
+
+    (-w/(1-w) + buffer, 1/(1-w) - buffer)
+
+The upper bound matches (A2). The lower bound `−w/(1−w)` is **not
+derivable from density positivity** — (A2) places no lower bound on
+admissibility, and the numerical check above confirms η = −100 is a
+valid Gaussian density at every NN setting tried.
+
+The likely provenance: `−w/(1−w)` is the η at which the *opposite*
+quadratic coefficient flips, i.e. the symmetric image of the upper
+bound under (η ↔ 1−η) in a power-law-on-posterior parameterisation.
+It may have entered the code as either (i) a numerical-stability
+margin around the bracket midpoint, (ii) a paste from a brentq
+bracket where the bidirectional bound was wanted as a sanity check,
+or (iii) a half-remembered closed-form symmetry. It is **not** an
+admissibility bound; widening or removing it does not change the
+WALDO/Wald math, only the optimizer's search region.
+
+**(A4) Bernoulli/Beta sketch.**
+With prior Beta(a, b), posterior Beta(A₁, B₁) = Beta(a+k, b+n−k), and
+likelihood-as-density Beta(A₂, B₂) = Beta(1+k, 1+n−k), the tilt is
+
+    q̃(p; η) ∝ p^[(1−η)(A₁−1) + η(A₂−1)] · (1−p)^[(1−η)(B₁−1) + η(B₂−1)]
+
+This is a Beta kernel with shape parameters
+
+    α_q(η) = (1−η)(A₁−1) + η(A₂−1) + 1  = A₁ + η·(A₂ − A₁)
+    β_q(η) = (1−η)(B₁−1) + η(B₂−1) + 1  = B₁ + η·(B₂ − B₁)
+
+Integrable iff `α_q > 0` AND `β_q > 0`. The admissible set is the
+intersection of two open half-lines — generically *bounded on both
+sides*, unlike the NN case.
+
+**(A5) Implementation recipe.**
+
+- *Closed-form check on NN* (already implemented at `power_law.py:1186`
+  and `:1296`): `denom = 1 − η(1−w) > 0`. O(1), exact.
+- *Numerical fallback elsewhere* (already implemented at
+  `power_law.py:307–340`): compute `log q̃` on the grid, check
+  `argmax(log q̃)` is interior (not at a grid boundary) — a tilted
+  density whose log peaks on the boundary diagnoses non-integrability
+  because the leading coefficient has flipped.
+
 ## Predicted behavior
 
 - `eta = 0` reproduces the input WALDO posterior (identity element).

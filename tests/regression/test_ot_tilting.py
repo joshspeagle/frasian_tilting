@@ -21,8 +21,6 @@ Plus the OT-tilted WALDO p-value closed form:
   b(theta) = (1 - eta) * (1 - w) * (mu0 - theta) / s_t
   p(theta) = Phi(b - a) + Phi(-a - b).
 
-Plus the general 1D quantile-mixture identity for non-Gaussian endpoints
-(Beta-Beta) — exercises the QuantileMixturePath code path.
 """
 
 from __future__ import annotations
@@ -32,7 +30,7 @@ import pytest
 from scipy import stats
 
 from frasian import TiltingDomainError
-from frasian.models.distributions import BetaDistribution, GaussianLikelihood, NormalDistribution
+from frasian.models.distributions import GaussianLikelihood, NormalDistribution
 from frasian.models.normal_normal import NormalNormalModel
 from frasian.tilting.ot import OTTilting
 from frasian.tilting.quantile_mixture import QuantileMixturePath
@@ -245,106 +243,6 @@ class TestOTTiltedWaldoPvalue:
             ot_p = scheme.tilted_pvalue(thetas, 1.5, model, prior, eta, "wald")
             wald_p = 2.0 * stats.norm.sf(np.abs(1.5 - thetas) / 1.0)
             np.testing.assert_allclose(ot_p, wald_p, atol=1e-12)
-
-
-@pytest.mark.L0
-class TestQuantileMixturePathBetaEndpoints:
-    """General 1D quantile-mixture: exercises non-Gaussian endpoints."""
-
-    @pytest.mark.parametrize("t", [0.0, 0.25, 0.5, 0.75, 1.0])
-    @pytest.mark.parametrize("u", [0.1, 0.3, 0.5, 0.7, 0.9])
-    def test_quantile_is_linear_in_endpoints(self, t, u):
-        p = BetaDistribution(alpha=2.0, beta=5.0)
-        q = BetaDistribution(alpha=5.0, beta=2.0)
-        path = QuantileMixturePath(p=p, q=q, t=t)
-        actual = float(path.quantile(np.asarray(u)))
-        expected = float((1.0 - t) * p.quantile(u) + t * q.quantile(u))
-        np.testing.assert_allclose(actual, expected, atol=1e-12)
-
-    def test_endpoint_recovery_on_beta(self):
-        p = BetaDistribution(alpha=2.0, beta=5.0)
-        q = BetaDistribution(alpha=5.0, beta=2.0)
-        u_grid = np.linspace(0.01, 0.99, 25)
-
-        path0 = QuantileMixturePath(p=p, q=q, t=0.0)
-        np.testing.assert_allclose(path0.quantile(u_grid), p.quantile(u_grid), atol=1e-12)
-
-        path1 = QuantileMixturePath(p=p, q=q, t=1.0)
-        np.testing.assert_allclose(path1.quantile(u_grid), q.quantile(u_grid), atol=1e-12)
-
-    def test_mean_is_linear_in_endpoints(self):
-        p = BetaDistribution(alpha=2.0, beta=5.0)
-        q = BetaDistribution(alpha=5.0, beta=2.0)
-        for t in (0.0, 0.25, 0.5, 0.75, 1.0):
-            path = QuantileMixturePath(p=p, q=q, t=t)
-            expected = (1.0 - t) * p.mean() + t * q.mean()
-            np.testing.assert_allclose(path.mean(), expected, atol=1e-12)
-
-    def test_cdf_quantile_round_trip_on_beta(self):
-        p = BetaDistribution(alpha=2.0, beta=5.0)
-        q = BetaDistribution(alpha=5.0, beta=2.0)
-        path = QuantileMixturePath(p=p, q=q, t=0.4)
-        # Round-trip: x -> u -> x must be the identity (atol depends on tail).
-        u_in = np.array([0.1, 0.3, 0.5, 0.7, 0.9])
-        x = path.quantile(u_in)
-        u_out = path.cdf(x)
-        np.testing.assert_allclose(u_out, u_in, atol=1e-8)
-
-
-@pytest.mark.L2
-class TestQuantileMixtureBoundary:
-    """Pin the cdf/pdf outside-support behaviour.
-
-    The cdf returns exact 0.0 below support and exact 1.0 above support.
-    The pdf returns exact 0.0 outside support, computed symmetrically
-    with cdf's boundary detector (against the endpoint quantiles), so
-    a future refactor of cdf's exact-boundary return value can not
-    silently re-introduce ~3.6e-9 chain-rule garbage in the pdf.
-    """
-
-    def test_cdf_below_support_returns_zero(self):
-        # Beta(2,5) and Beta(5,2) both supported on [0,1]. The path's
-        # support is [0, 1]; -1.0 is strictly below.
-        p = BetaDistribution(alpha=2.0, beta=5.0)
-        q = BetaDistribution(alpha=5.0, beta=2.0)
-        path = QuantileMixturePath(p=p, q=q, t=0.5)
-        x_below = np.asarray(-1.0)
-        u = path.cdf(x_below)
-        np.testing.assert_array_equal(np.asarray(u), 0.0)
-
-    def test_cdf_above_support_returns_one(self):
-        p = BetaDistribution(alpha=2.0, beta=5.0)
-        q = BetaDistribution(alpha=5.0, beta=2.0)
-        path = QuantileMixturePath(p=p, q=q, t=0.5)
-        x_above = np.asarray(2.0)
-        u = path.cdf(x_above)
-        np.testing.assert_array_equal(np.asarray(u), 1.0)
-
-    def test_pdf_outside_support_is_exact_zero(self):
-        """pdf at x outside support must be exactly 0.0 (not ~3.6e-9).
-
-        Pins 1.5-O3's fix: the chain-rule expression underflows to a
-        tiny positive number near the support boundary, but the
-        outside-support mask zeroes it out.
-        """
-        p = BetaDistribution(alpha=2.0, beta=5.0)
-        q = BetaDistribution(alpha=5.0, beta=2.0)
-        path = QuantileMixturePath(p=p, q=q, t=0.5)
-        # Symmetric outside-support detection: anything below the lower
-        # endpoint quantile or above the upper.
-        x_below = np.asarray(-0.5)
-        x_above = np.asarray(1.5)
-        np.testing.assert_array_equal(np.asarray(path.pdf(x_below)), 0.0)
-        np.testing.assert_array_equal(np.asarray(path.pdf(x_above)), 0.0)
-
-    def test_pdf_inside_support_is_finite_positive(self):
-        p = BetaDistribution(alpha=2.0, beta=5.0)
-        q = BetaDistribution(alpha=5.0, beta=2.0)
-        path = QuantileMixturePath(p=p, q=q, t=0.5)
-        # 0.5 is interior to the support of every Beta(α, β) with α, β > 0.
-        x_in = np.asarray(0.5)
-        f = float(np.asarray(path.pdf(x_in)))
-        assert np.isfinite(f) and f > 0.0
 
 
 @pytest.mark.L2

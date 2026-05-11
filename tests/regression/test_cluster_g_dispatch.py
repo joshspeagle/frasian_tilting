@@ -15,7 +15,7 @@ Pins the audit P1 fixes layered over P0:
         the boundary fallback instead of silently returning the
         support edge.
   G.5 — `is_normal_normal(model)` (fingerprint-based) returns True for
-        `NormalNormalModel` and False for `BernoulliModel`, so the
+        `NormalNormalModel` and False for duck-typed mocks, so the
         closed-form NN dispatch is opt-in by fingerprint, not by
         `isinstance` on the concrete class.
   G.6 — `has_acceptance_region` feature-detects the optional method;
@@ -28,13 +28,10 @@ Pins the audit P1 fixes layered over P0:
 
 from __future__ import annotations
 
-import warnings
-
 import numpy as np
 import pytest
 
-from frasian.models.bernoulli import BernoulliModel
-from frasian.models.distributions import BetaDistribution, NormalDistribution
+from frasian.models.distributions import NormalDistribution
 from frasian.models.normal_normal import NormalNormalModel
 from frasian.models._dispatch import is_normal_normal
 from frasian.statistics.base import has_acceptance_region
@@ -140,85 +137,6 @@ class TestWaldoCrossCheckConflictRegime:
         )
 
 
-# --- G.3 CRN seed nests CIs across alpha --------------------------------
-
-
-@pytest.mark.L2
-class TestCRNSeedNestsCisAcrossAlpha:
-    """Audit P1 G.3: dropping alpha from the CRN seed produces nested CIs.
-
-    With alpha in the seed, two cross-calls at α=0.05 and α=0.10 used
-    different MC reference draws → CIs jumped at the MC-noise level.
-    Without alpha (the post-fix behaviour), broader α gives a strictly
-    nested narrower CI deterministically.
-    """
-
-    def test_bernoulli_cis_nest(self):
-        model = BernoulliModel()
-        prior = BetaDistribution(alpha=2.0, beta=2.0)
-        rng = np.random.default_rng(42)
-        data = model.sample_data(0.5, rng, n=12)
-        stat = WaldoStatistic(n_mc=400, seed=7)
-        ci_05 = stat.confidence_interval(0.05, data, model, prior)
-        ci_10 = stat.confidence_interval(0.10, data, model, prior)
-        # Strict nesting: broader α (α=0.05) → wider interval.
-        # Allow a small tolerance for the brentq tolerance, but the
-        # pre-fix bug produced jumps of ~MC noise (1/sqrt(400) ≈ 0.05);
-        # with the CRN seed fixed across alpha, the difference is
-        # smooth and monotone.
-        assert ci_05[0] <= ci_10[0] + 1e-6, (
-            f"CIs not nested on lower bound: ci_05={ci_05}, ci_10={ci_10}"
-        )
-        assert ci_05[1] >= ci_10[1] - 1e-6, (
-            f"CIs not nested on upper bound: ci_05={ci_05}, ci_10={ci_10}"
-        )
-
-
-# --- G.4 boundary-fallback warning --------------------------------------
-
-
-@pytest.mark.L2
-class TestGenericConfidenceIntervalBoundaryWarning:
-    """Audit P1 G.4: bracket-exhaustion at the support boundary emits a UserWarning.
-
-    Construct a Bernoulli setup where the data-driven posterior is
-    very concentrated and the alpha is small enough that the brentq
-    bracket can't fit on the support. The post-fix code emits a
-    UserWarning annotating the boundary fallback (was silent
-    pre-fix).
-    """
-
-    def test_boundary_emits_userwarning(self):
-        # Extreme data: all 1s with a tight prior — the posterior is
-        # heavily concentrated near 1, and a strict alpha pushes the
-        # upper bracket against the [0, 1] support boundary.
-        model = BernoulliModel()
-        prior = BetaDistribution(alpha=0.5, beta=0.5)
-        data = np.ones(20, dtype=np.float64)
-        stat = WaldoStatistic(n_mc=200, seed=0)
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            ci = stat.confidence_interval(0.001, data, model, prior)
-        # Either the bracket fitted (no warning) or it didn't (warning
-        # records boundary side). Both are acceptable behaviours; the
-        # contract being tested is "if boundary is hit, a warning
-        # fires" — never silently. Probe by computing again at a more
-        # extreme alpha if no warning fired here.
-        if not any(issubclass(x.category, UserWarning) for x in w):
-            with warnings.catch_warnings(record=True) as w2:
-                warnings.simplefilter("always")
-                ci = stat.confidence_interval(1e-9, data, model, prior)
-            assert any(
-                issubclass(x.category, UserWarning)
-                and "bracket exhausted" in str(x.message)
-                for x in w2
-            ), (
-                f"Expected boundary-fallback UserWarning at alpha=1e-9 "
-                f"on degenerate Bernoulli data; got CI={ci}, "
-                f"warnings={[str(x.message) for x in w2]}"
-            )
-
-
 # --- G.5 fingerprint-based dispatch -------------------------------------
 
 
@@ -228,9 +146,6 @@ class TestIsNormalNormalFingerprint:
 
     def test_normal_normal_returns_true(self):
         assert is_normal_normal(NormalNormalModel(sigma=1.0)) is True
-
-    def test_bernoulli_returns_false(self):
-        assert is_normal_normal(BernoulliModel()) is False
 
     def test_object_without_fingerprint_returns_false(self):
         # Audit hardening: a duck-typed model without `.fingerprint`
@@ -309,28 +224,6 @@ class TestQuantileMixturePathExtrapolationGuard:
         q = NormalDistribution(loc=1.0, scale=0.1)
         with pytest.raises(ValueError, match="degenerate or reversed Gaussian"):
             QuantileMixturePath(p=p, q=q, t=2.0)
-
-    def test_non_gaussian_non_monotone_extrapolation_raises(self):
-        # Beta(2, 5) is left-skewed (mode near 0.2); Beta(5, 2) is
-        # right-skewed (mode near 0.8). Their inverse-density slopes
-        # differ enough that extrapolation outside [0, 1] easily
-        # produces non-monotone linear-combo quantiles.
-        p = BetaDistribution(alpha=2.0, beta=5.0)
-        q = BetaDistribution(alpha=5.0, beta=2.0)
-        # Search for a t outside [0, 1] that triggers the non-monotone
-        # check; some t may still happen to be valid by coincidence.
-        triggered = False
-        for t in (-2.0, -1.0, 1.5, 2.0, 3.0):
-            try:
-                QuantileMixturePath(p=p, q=q, t=t)
-            except ValueError as exc:
-                if "non-monotone" in str(exc) or "non-finite" in str(exc):
-                    triggered = True
-                    break
-        assert triggered, (
-            "Expected at least one extrapolated t to trigger the "
-            "non-monotone-quantile guard for Beta-Beta endpoints."
-        )
 
     def test_non_finite_t_raises(self):
         p = NormalDistribution(loc=0.0, scale=1.0)

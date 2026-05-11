@@ -2,7 +2,7 @@
 
 Pins:
   1. `posterior_moments_batch` matches per-element `posterior().mean()/.var()`
-     on `NormalNormalModel` and `BernoulliModel`.
+     on `NormalNormalModel`.
   2. `sample_data_batch` returns the right shape and is consistent with
      per-row `sample_data` under shared seeding.
   3. `batch_loglik_grid` matches per-row `likelihood().loglik(theta_grid)`.
@@ -32,11 +32,7 @@ from frasian.models.base import (
     posterior_quantile_batch as dispatch_posterior_quantile_batch,
     sample_data_batch as dispatch_sample_data_batch,
 )
-from frasian.models.bernoulli import BernoulliModel
-from frasian.models.distributions import (
-    BetaDistribution,
-    NormalDistribution,
-)
+from frasian.models.distributions import NormalDistribution
 from frasian.models.normal_normal import NormalNormalModel
 from frasian.statistics.waldo import WaldoStatistic
 
@@ -89,56 +85,6 @@ class TestNormalNormalBatched:
             post = m.posterior(D_batch[i], prior)
             expected = np.asarray(post.quantile(u_grid))
             np.testing.assert_allclose(q_batch[i], expected, atol=1e-12)
-
-
-# ---------- Bernoulli batched ----------
-
-
-@pytest.mark.L2
-class TestBernoulliBatched:
-    def test_sample_data_batch_binary(self):
-        m = BernoulliModel()
-        rng = np.random.default_rng(7)
-        out = m.sample_data_batch(theta=0.3, rng=rng, n_mc=200, n_obs=5)
-        assert out.shape == (200, 5)
-        assert set(np.unique(out)).issubset({0.0, 1.0})
-
-    def test_posterior_moments_batch_matches_per_row(self):
-        m = BernoulliModel()
-        prior = BetaDistribution(alpha=2.0, beta=3.0)
-        rng = np.random.default_rng(2)
-        D_batch = rng.binomial(1, 0.5, size=(40, 4)).astype(np.float64)
-        mu_batch, var_batch = m.posterior_moments_batch(D_batch, prior)
-        for i in range(40):
-            post = m.posterior(D_batch[i], prior)
-            assert mu_batch[i] == pytest.approx(float(post.mean()), abs=1e-12)
-            assert var_batch[i] == pytest.approx(float(post.var()), abs=1e-12)
-
-    def test_batch_loglik_grid_matches_per_row(self):
-        m = BernoulliModel()
-        rng = np.random.default_rng(3)
-        D_batch = rng.binomial(1, 0.6, size=(15, 6)).astype(np.float64)
-        theta_grid = np.linspace(0.05, 0.95, 19)
-        loglik_batch = m.batch_loglik_grid(D_batch, theta_grid)
-        assert loglik_batch.shape == (15, 19)
-        for i in range(15):
-            lik = m.likelihood(D_batch[i])
-            expected = np.asarray(lik.loglik(theta_grid))
-            np.testing.assert_allclose(loglik_batch[i], expected, atol=1e-12)
-
-    def test_posterior_quantile_batch_matches_per_row(self):
-        m = BernoulliModel()
-        prior = BetaDistribution(alpha=2.0, beta=3.0)
-        rng = np.random.default_rng(6)
-        D_batch = rng.binomial(1, 0.4, size=(25, 5)).astype(np.float64)
-        u_grid = np.linspace(0.05, 0.95, 13)
-        q_batch = m.posterior_quantile_batch(D_batch, prior, u_grid)
-        assert q_batch.shape == (25, 13)
-        for i in range(25):
-            post = m.posterior(D_batch[i], prior)
-            expected = np.asarray(post.quantile(u_grid))
-            # scipy.special.betaincinv vs scipy.stats.beta.ppf agree to ~1e-10.
-            np.testing.assert_allclose(q_batch[i], expected, atol=1e-9)
 
 
 # ---------- Default fallback dispatch ----------

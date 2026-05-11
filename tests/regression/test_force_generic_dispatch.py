@@ -187,26 +187,6 @@ class TestForceGenericThroughTilting:
             f"regions={gn_regions}"
         )
 
-    def test_powerlaw_dynamic_force_generic_raises_off_nn(self):
-        """Dynamic + force_generic on NON-NN models still raises — the
-        DynamicNumericalEtaSelector internally uses NumericalEtaSelector
-        which is closed-form NN. Phase F unblocked NN only."""
-        from frasian.models.bernoulli import BernoulliModel
-        from frasian.models.distributions import BetaDistribution
-        from frasian.tilting.eta_selectors import DynamicNumericalEtaSelector
-        from frasian.tilting.power_law import PowerLawTilting
-
-        bern = BernoulliModel()
-        beta_prior = BetaDistribution(alpha=2.0, beta=2.0)
-        data = np.asarray([1.0, 0.0, 1.0])
-        tilting = PowerLawTilting(
-            selector=DynamicNumericalEtaSelector(n_grid=51, coarse_n=11)
-        )
-        with pytest.raises(NotImplementedError, match="dynamic"):
-            tilting.confidence_regions(
-                0.05, data, bern, beta_prior, WaldoStatistic(force_generic=True)
-            )
-
     def test_ot_force_generic_routes_to_generic_on_nn(self):
         from frasian.tilting.eta_selectors import FixedEtaSelector
         from frasian.tilting.ot import OTTilting

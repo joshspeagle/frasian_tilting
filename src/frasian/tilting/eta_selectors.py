@@ -55,11 +55,8 @@ import numpy as np
 from scipy import optimize
 
 from ..learned.base import LearnedArtifact
-from ..models._dispatch import is_normal_normal
 from ..models.base import Model, Prior
-from ..models.distributions import NormalDistribution
 from ..models.normal_normal import NormalNormalModel  # noqa: F401  (legacy field-access typing)
-from ..models.normal_normal import weight as _weight
 from ..statistics.base import TestStatistic
 from .base import TiltingDomainError, TiltingScheme
 
@@ -182,44 +179,43 @@ class NumericalEtaSelector:
                 f"'static_width' or 'integrated_p'; got {self.objective!r}."
             )
 
-    def _normal_normal_w(self, model: Model, prior: Prior) -> float:
-        """Compute w from a NormalNormalModel + NormalDistribution prior.
+    def _eta_bounds(
+        self, model: Model, prior: Prior, scheme: TiltingScheme | None = None,
+    ) -> tuple[float, float]:
+        """η search bracket for the brute-grid + local-refine optimizer.
 
-        NumericalEtaSelector remains Normal-Normal-only by construction;
-        the static-width / integrated-p objectives use the closed-form
-        `w = sigma0**2 / (sigma**2 + sigma0**2)` to derive the η bracket.
-        Non-NormalNormal callers must use the generic numerical selector
-        planned for Phase 3 follow-ups.
+        Scheme-aware: if ``scheme.param_space.training_output_bounds`` is set
+        (mixture: ``(0.0, 1.0)``), honour that range as the structural
+        admissibility. Otherwise use a wide scheme-neutral default
+        ``(-50, 50)`` — the schemes' own ``tilt()`` / ``tilted_pvalue``
+        methods raise ``TiltingDomainError`` for inadmissible η, the
+        CI-inversion brentq raises ``ValueError`` on bracketing failure,
+        and the objective function returns ``+inf`` on either, so
+        over-broad brackets are self-correcting at the optimum.
+
+        Per the deriver agents' formal admissibility derivations
+        (docs/superpowers/specs/2026-05-11-{pl,ot,fr}-admissibility-derivation.md),
+        no general NN-specific formula captures all schemes' admissibility:
+        PL is upper-only (η < 1/(1-w)), OT is lower-only (η > -√w/(1-√w)),
+        FR is geodesically complete (any finite η). The previous version of
+        this method used PL's NN density-positivity formula as a default —
+        wrong for OT/FR (per deriver verification). Mixture's (0, 1) is the
+        only scheme-level constant and lives in its training_output_bounds.
+
+        The (-50, 50) magnitude is chosen so that:
+          - All NN admissibility boundaries lie comfortably inside even for
+            extreme w (e.g. PL upper at w=0.99 → 100; OT lower at w=0.99 →
+            ~-100; both at default w=0.5 are well within).
+          - Brute-grid scan with ~50-100 points covers it at ~1-unit resolution.
+          - The objective's +inf-on-failure mechanism handles the inadmissible
+            regions naturally.
         """
-        if not is_normal_normal(model):
-            raise NotImplementedError(
-                f"NumericalEtaSelector currently requires NormalNormalModel; "
-                f"got {type(model).__name__!r}. Generic-model selector is a "
-                f"future extension (Phase 3 follow-up)."
-            )
-        if not isinstance(prior, NormalDistribution):
-            raise NotImplementedError(
-                f"NumericalEtaSelector currently requires a NormalDistribution "
-                f"prior; got {type(prior).__name__!r}."
-            )
-        return float(_weight(model.sigma, prior.scale))
-
-    def _eta_bounds(self, model: Model, prior: Prior) -> tuple[float, float]:
-        """η search bracket for `scipy.optimize.minimize_scalar`.
-
-        The bracket is the closed-form Normal-Normal `power_law`
-        admissible range `(-w/(1-w) + buffer, 1/(1-w) - buffer)`
-        (also valid for `ot` since `(0, 1) ⊂ (-w/(1-w), 1/(1-w))`
-        for any `w ∈ (0, 1)`); `scheme.tilted_pvalue` will raise
-        `TiltingDomainError` for any η in the bracket that the
-        scheme actually rejects, and `_make_*_objective` returns
-        `+inf` on that exception, so over-broad brackets are
-        self-correcting at the optimizer.
-        """
-        w = self._normal_normal_w(model, prior)
-        eta_lo = -w / (1.0 - w) + self.eta_min_buffer
-        eta_hi = 1.0 / (1.0 - w) - self.eta_min_buffer
-        return (eta_lo, eta_hi)
+        if scheme is not None:
+            bounds = getattr(scheme.param_space, "training_output_bounds", None)
+            if bounds is not None:
+                lo, hi = float(bounds[0]), float(bounds[1])
+                return (lo + self.eta_min_buffer, hi - self.eta_min_buffer)
+        return (-50.0 + self.eta_min_buffer, 50.0 - self.eta_min_buffer)
 
     def select(
         self,
@@ -249,11 +245,14 @@ class NumericalEtaSelector:
         )
 
     def _select_inner(self, scheme, *, D, model, prior, alpha, statistic):
-        # The bracket is the closed-form Normal-Normal `power_law`
-        # admissible range (also valid for `ot`'s W2 displacement line);
-        # the optimizer's objective returns +inf on TiltingDomainError so
-        # over-broad brackets are self-correcting at the optimum.
-        eta_lo, eta_hi = self._eta_bounds(model, prior)
+        # Bracket is the scheme-neutral wide default (or the scheme's
+        # structural training_output_bounds for mixture). The objectives
+        # return +inf on TiltingDomainError / BracketingFailed / etc., so
+        # the inadmissible regions appear as +inf plateaus and the
+        # brute-grid + local-refine strategy below is plateau-robust.
+        # See `_eta_bounds` docstring for the per-scheme admissibility
+        # rationale.
+        eta_lo, eta_hi = self._eta_bounds(model, prior, scheme=scheme)
 
         if self.objective == "static_width":
             objective_fn = self._make_static_width_objective(
@@ -273,13 +272,53 @@ class NumericalEtaSelector:
                 prior=prior,
             )
 
-        result = optimize.minimize_scalar(
-            objective_fn,
-            bounds=(eta_lo, eta_hi),
-            method="bounded",
-            options={"xatol": 1e-3},
-        )
-        return float(result.x)
+        # Step 1: coarse-grid scan to find the min-finite-value region.
+        # This is plateau-robust — survives the +inf plateaus that
+        # `scipy.optimize.minimize_scalar(method='bounded')` (Brent) gets
+        # stuck on (e.g. OT static_width at extrapolated η: the BracketingFailed
+        # sentinel raised by tilted_confidence_interval outside the
+        # admissible window produces a +inf plateau spanning most of the
+        # widened bracket, and Brent on bounded returns the bracket upper
+        # endpoint ≈ +50 instead of finding the interior minimum).
+        n_coarse = 51  # ~1-unit resolution over (-50, 50)
+        coarse_etas = np.linspace(eta_lo, eta_hi, n_coarse)
+        coarse_vals = np.array([objective_fn(eta) for eta in coarse_etas])
+        finite_mask = np.isfinite(coarse_vals)
+        if not finite_mask.any():
+            # No finite values found in the whole bracket — fall back to
+            # η = scheme.param_space.eta_identity (the no-op tilt). Very
+            # rare in practice; the +inf-on-failure mechanism normally
+            # leaves at least the admissible interior reachable.
+            return float(scheme.param_space.eta_identity)
+        coarse_argmin = int(np.argmin(np.where(finite_mask, coarse_vals, np.inf)))
+        eta_coarse = float(coarse_etas[coarse_argmin])
+
+        # Step 2: local refine via bounded-Brent in a small window around
+        # the coarse argmin (~2x grid spacing on either side).
+        window_half = 2.0 * (eta_hi - eta_lo) / max(n_coarse - 1, 1)
+        local_lo = max(eta_lo, eta_coarse - window_half)
+        local_hi = min(eta_hi, eta_coarse + window_half)
+        if local_hi - local_lo < 1e-6:
+            # Degenerate refine window (e.g. coarse argmin at bracket
+            # boundary): fall back to the coarse value.
+            return eta_coarse
+        try:
+            result = optimize.minimize_scalar(
+                objective_fn,
+                bounds=(local_lo, local_hi),
+                method="bounded",
+                options={"xatol": 1e-6},
+            )
+            if (
+                result.success
+                and np.isfinite(result.fun)
+                and result.fun <= coarse_vals[coarse_argmin] + 1e-12
+            ):
+                return float(result.x)
+            return eta_coarse
+        except (ValueError, RuntimeError):
+            # Brent failure → use the coarse value.
+            return eta_coarse
 
     def _make_static_width_objective(self, *, scheme, statistic, D, model, prior, alpha):
         from .._errors import BracketingFailed
@@ -540,11 +579,9 @@ _CLAMP_FAIL_THRESHOLD = 1.0
 # cross-experiment guard's class-match check.
 _CANONICAL_PRIOR_CLASS_NAMES: dict[str, str] = {
     "normal": "NormalDistribution",
-    "beta":   "BetaDistribution",
 }
 _CANONICAL_MODEL_CLASS_NAMES: dict[str, str] = {
     "normal_normal": "NormalNormalModel",
-    "bernoulli":     "BernoulliModel",
 }
 
 
@@ -774,8 +811,8 @@ class LearnedDynamicEtaSelector:
         cross-experiment use. The historical w-derived check (NN
         only) and the NN-only model/prior gate are kept conditional
         on ``trained_model_fp[0] == "normal_normal"`` and ``w is not
-        None``, so non-NN experiments (Bernoulli + Beta) can train
-        and load checkpoints through the same selector.
+        None``, so future non-NN experiments can train and load
+        checkpoints through the same selector.
 
         Phase 4 skeptic #6 (defense-in-depth on subclass collisions):
         when the inference-time ``model`` / ``prior`` are passed and
@@ -1054,9 +1091,9 @@ class LearnedDynamicEtaSelector:
                        structural sigmoid bound; tighter than PL's window)
         - other      : ``(-w/(1-w) + buffer, 1/(1-w) - buffer)`` (power_law)
 
-        For non-Normal-Normal experiments (``w is None``, e.g.
-        Bernoulli + Beta), the admissibility region is learned by
-        ``ValidityNet`` during training; the closed-form clamp is
+        For non-Normal-Normal experiments (``w is None``), the
+        admissibility region is learned by ``ValidityNet`` during
+        training; the closed-form clamp is
         not applicable. We fall back to the ``eta_explore_box`` recorded
         in the checkpoint's ``experiment_config`` metadata, with a
         small interior buffer.

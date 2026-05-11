@@ -494,9 +494,9 @@ def _generic_tilted_mc_reference_batch_ot(
 
     # Single shared θ-window covering all rows. For OT we want the
     # likelihood-as-distribution to be well-resolved — its support
-    # widens with the observed data (Normal: ~D ± 6σ; Bernoulli: [0, 1]).
-    # Take the union of (mu_post ± 8 σ_post) ∪ (D_means ± 8 σ) clipped
-    # to model support.
+    # widens with the observed data (Normal: ~D ± 6σ; future bounded
+    # models: their support window). Take the union of
+    # (mu_post ± 8 σ_post) ∪ (D_means ± 8 σ) clipped to model support.
     finite = np.isfinite(mu_post_arr) & np.isfinite(sigma_post_arr)
     if not np.any(finite):
         return np.zeros(int(n_mc), dtype=np.float64), int(n_mc)
@@ -519,7 +519,7 @@ def _generic_tilted_mc_reference_batch_ot(
 
     # 5. Per-row posterior inverse-CDF at u01 (numpy or scipy under
     #    the hood — `model.posterior_quantile_batch` for NN uses
-    #    scipy.special.ndtri, for Bernoulli uses scipy.special.betaincinv).
+    #    scipy.special.ndtri).
     F_post_inv = _posterior_quantile_batch(model, D_batch, prior, u01_np)
 
     # 6. Hand off to the jit-compiled XLA kernel for the post-loglik
@@ -861,8 +861,7 @@ class OTTilting:
         - **Generic numerical (Phase 3d)**: when neither path applies.
           Constructs `q` as a `GridDistribution` from `log L(theta)`
           on the model support; returns `QuantileMixturePath(p=posterior,
-          q=q, t=eta)`. Works for `(BernoulliModel, BetaDistribution)`
-          and other (model, prior) pairs.
+          q=q, t=eta)`. Works for arbitrary (model, prior) pairs.
 
         ``data`` is required for the generic path (to evaluate
         `log L(theta)`). Callers from `confidence_regions` etc.

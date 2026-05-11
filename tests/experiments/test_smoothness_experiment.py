@@ -123,6 +123,12 @@ class TestSmoothnessExperimentEndToEnd:
         eta = result.arrays["eta_star"]
         finite = eta[np.isfinite(eta)]
         assert finite.size > 0
-        # admissible_range for w=0.5: (-1 + buffer, 2 - buffer) approximately.
-        assert finite.min() > -1.0
-        assert finite.max() < 1.001  # capped at 1 - buffer in the selector
+        # Updated 2026-05-11: spurious -w/(1-w) lower bound removed per
+        # deriver A.3 (PL admissibility on NN is upper-only η < 1/(1-w));
+        # the η-bracket is now the scheme-neutral wide default (-50, 50).
+        # At small |Δ| where the prior dominates the integrated-p loss,
+        # the optimizer drives η toward the lower bracket boundary; at
+        # large |Δ| η → 1 (Wald regime). We assert the bracket bounds
+        # (-50 + buffer, 50 - buffer) and the PL admissibility (η < 2 for w=0.5).
+        assert finite.min() >= -50.0
+        assert finite.max() < 2.0  # PL upper bound 1/(1-w) for w=0.5

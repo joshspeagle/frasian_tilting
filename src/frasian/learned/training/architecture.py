@@ -148,8 +148,7 @@ class EtaNet(eqx.Module):
     prior_dim : int
         ``prior.hyperparam_dim`` — e.g. 2 for NormalDistribution.
     lik_dim : int
-        ``model.hyperparam_dim`` — 1 for NormalNormalModel,
-        0 for BernoulliModel.
+        ``model.hyperparam_dim`` — 1 for NormalNormalModel.
     hidden_sizes : tuple of int
         Hidden layer widths. Defaults to ``(128, 128, 128)``.
     key : jax.Array

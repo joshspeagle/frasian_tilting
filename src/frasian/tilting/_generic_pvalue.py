@@ -58,14 +58,12 @@ def _resolve_support(
     """
     import warnings
 
-    from ..models.distributions import BernoulliLikelihood, GaussianLikelihood
+    from ..models.distributions import GaussianLikelihood
 
     if hasattr(model, "support"):
         lo, hi = tuple(model.support())
         return float(lo), float(hi)
     likelihood = model.likelihood(data)
-    if isinstance(likelihood, BernoulliLikelihood):
-        return (0.0, 1.0)
     if isinstance(likelihood, GaussianLikelihood):
         return (-float("inf"), float("inf"))
     # Skeptic finding (Phase 3d review #2): fallthrough silently
@@ -77,7 +75,7 @@ def _resolve_support(
     warnings.warn(
         f"_resolve_support: model lacks `support()` and likelihood "
         f"{type(likelihood).__name__!r} is not a known class "
-        f"(BernoulliLikelihood / GaussianLikelihood). Falling back to "
+        f"(GaussianLikelihood). Falling back to "
         f"(-inf, +inf); the generic-path mle±6σ window heuristic may "
         f"produce a bad integration grid. Add a `support()` method to "
         f"the model or extend this resolver.",
@@ -122,12 +120,11 @@ def likelihood_as_distribution(
     """Build a `Distribution`-conforming view of the likelihood.
 
     Used as the second endpoint of OTTilting's W2 geodesic when the
-    likelihood is not natively a Distribution (e.g. BernoulliLikelihood
-    only has `loglik`, not `pdf`/`cdf`/`quantile`). The likelihood
+    likelihood is not natively a Distribution. The likelihood
     treated as a function of θ — `L(θ) = exp(loglik(θ))` — is
     integrable on the model support for any common likelihood class
-    (Beta-shaped on [0,1] for Bernoulli, Gaussian-shaped on R for
-    Normal location). Normalisation is via trapezoidal Z on a fine
+    (Gaussian-shaped on R for Normal location). Normalisation is via
+    trapezoidal Z on a fine
     θ-grid; bounded supports use the support window directly,
     unbounded supports use a heuristic mean ± 6·σ window centred on
     the MLE.

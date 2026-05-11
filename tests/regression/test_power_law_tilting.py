@@ -91,32 +91,44 @@ class TestPowerLawDomain:
 
     def test_numerical_selector_eta_bounds_brackets_finite_window(self):
         """Phase 3a-1.5: η-bounds moved out of the public protocol into
-        `NumericalEtaSelector._eta_bounds(model, prior)` (internal). This
-        replaces the old `scheme.admissible_range(context)` test.
+        `NumericalEtaSelector._eta_bounds(model, prior, scheme=...)`
+        (internal). This replaces the old `scheme.admissible_range(context)`
+        test.
+
+        Updated 2026-05-11: bracket is now scheme-neutral (-50, 50) per
+        the deriver agents' formal admissibility derivations
+        (docs/superpowers/specs/2026-05-11-{pl,ot,fr}-admissibility-derivation.md);
+        PL upper-only, OT lower-only, FR geodesically complete — no shared
+        NN-formula captures all three.
         """
         sigma, mu0, w = 1.0, 0.0, 0.5
         sigma0 = float(np.sqrt(w / (1.0 - w)) * sigma)
         model = NormalNormalModel(sigma=sigma)
         prior = NormalDistribution(loc=mu0, scale=sigma0)
         sel = NumericalEtaSelector()
-        lo, hi = sel._eta_bounds(model, prior)
         scheme = PowerLawTilting()
+        lo, hi = sel._eta_bounds(model, prior, scheme=scheme)
         assert lo < scheme.param_space.eta_identity < hi
 
-    def test_numerical_selector_eta_bounds_validates_w(self):
-        """w outside (0, 1) cannot be derived from a NormalDistribution
-        prior with finite scale; the selector's `_normal_normal_w`
-        guards by construction. This pins the closed-form admissibility
-        condition still being enforced after the refactor.
+    def test_numerical_selector_eta_bounds_finite_at_extreme_w(self):
+        """η-bracket remains finite + ordered regardless of (model, prior)
+        scale parameters.
+
+        Updated 2026-05-11: previously asserted the closed-form NN
+        `_normal_normal_w` raised for non-NN inputs and produced a
+        w-dependent bracket. Per deriver A.3 the spurious lower bound
+        from PL's NN formula is removed; the new bracket is the
+        scheme-neutral wide default (-50, 50), self-correcting via
+        +inf-on-failure inside the optimizer.
         """
         sigma, mu0 = 1.0, 0.0
-        # w → 1 corresponds to sigma0 → ∞: any moderately large sigma0
-        # gives w very close to 1 but still strictly < 1.
+        # Extreme prior scale used to push the legacy `_normal_normal_w`
+        # path; the new bracket is independent of (sigma, sigma0).
         sigma0 = 1e6
         model = NormalNormalModel(sigma=sigma)
         prior = NormalDistribution(loc=mu0, scale=sigma0)
         sel = NumericalEtaSelector()
-        lo, hi = sel._eta_bounds(model, prior)
+        lo, hi = sel._eta_bounds(model, prior, scheme=PowerLawTilting())
         # Bounds should still be finite + ordered.
         assert np.isfinite(lo) and np.isfinite(hi)
         assert lo < hi

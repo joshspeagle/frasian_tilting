@@ -237,8 +237,9 @@ def _make_step_fns(
     is_generic = config.model_cls.__name__ != "NormalNormalModel"
     if is_generic:
         # Build a representative (model, prior) at the midpoint of the
-        # hyperparam ranges. The support is constant for Bernoulli; the
-        # log_p_prior is approximated at the midpoint.
+        # hyperparam ranges. The support is constant for models with
+        # bounded fixed support; the log_p_prior is approximated at the
+        # midpoint.
         prior_midpoint = {
             n: 0.5 * (s.low + s.high)
             for n, s in config.hyperparam_distribution.prior_specs.items()
@@ -455,7 +456,7 @@ def _training_step(
             )
         # Per-element model varies; use representative (first element) since
         # batched_loglik_grid uses sufficient stats independent of individual
-        # model state for the Bernoulli + power_law case.
+        # model state for the generic + power_law case.
         rep_model = config.model_cls.from_hyperparams(lik_hp_batch_np[0])
         log_p_lik_grid_np = compute_log_p_lik_grid_np(
             rep_model, D_batch_np, args.support_theta_grid_np,

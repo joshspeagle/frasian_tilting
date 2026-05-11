@@ -9,10 +9,10 @@ Two panels:
             clamp — contrast with `power_law_demo.py` where the family
             crowds at low |Delta|.
 
-  Panel B — General 1D quantile-mixture. W2 geodesic between Beta(2, 5)
-            and Beta(5, 2) computed via QuantileMixturePath. Demonstrates
-            that the OT machinery is endpoint-agnostic: it runs on any
-            two distributions exposing `quantile`, not just Gaussians.
+  Panel B — General 1D quantile-mixture. W2 geodesic between two
+            Gaussians with very different (loc, scale) computed via
+            QuantileMixturePath. Demonstrates that the OT machinery is
+            endpoint-agnostic at the quantile-function level.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from frasian.models.distributions import BetaDistribution, GaussianLikelihood, NormalDistribution
+from frasian.models.distributions import GaussianLikelihood, NormalDistribution
 from frasian.models.normal_normal import NormalNormalModel
 from frasian.tilting.ot import OTTilting
 from frasian.tilting.quantile_mixture import QuantileMixturePath
@@ -69,22 +69,23 @@ def main(smoke: bool = False, out: Path | None = None) -> Path:
     )
     ax_a.legend(loc="upper right", frameon=False, fontsize=8)
 
-    # Panel B: General 1D quantile-mixture between two Betas.
-    p = BetaDistribution(alpha=2.0, beta=5.0)
-    q = BetaDistribution(alpha=5.0, beta=2.0)
+    # Panel B: General 1D quantile-mixture between two Gaussians with
+    # very different (loc, scale).
+    p = NormalDistribution(loc=-1.0, scale=0.4)
+    q = NormalDistribution(loc=2.0, scale=1.5)
     for i, t in enumerate(etas):
         path = QuantileMixturePath(p=p, q=q, t=float(t))
         color = cmap(i / max(1, len(etas) - 1))
         # Plot the quantile function rather than the pdf for visual
-        # clarity on Beta endpoints — pdf computation requires numerical
-        # CDF inversion at every theta and is ~1000x slower than quantile.
+        # clarity — pdf computation requires numerical CDF inversion at
+        # every theta and is ~1000x slower than quantile.
         u = np.linspace(0.001, 0.999, 201)
         ax_b.plot(u, path.quantile(u), color=color, lw=1.6, label=rf"$t={t:.1f}$")
     ax_b.set_xlabel(r"$u$ (uniform parameter)")
     ax_b.set_ylabel(r"$F_t^{-1}(u)$")
     ax_b.set_title(
         r"OT (general 1D): quantile-mixture $F_t^{-1}(u) = (1-t)F_p^{-1}(u) + tF_q^{-1}(u)$"
-        "\nendpoints: Beta(2,5) and Beta(5,2)"
+        "\nendpoints: N(-1, 0.4) and N(2, 1.5)"
     )
     ax_b.legend(loc="upper left", frameon=False, fontsize=8)
 
