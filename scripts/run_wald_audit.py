@@ -192,7 +192,9 @@ def _build_cell(flavor: str):
     if flavor == "fr_dyn_numerical":
         return (FisherRaoTilting(selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)),
                 WaldoStatistic(force_generic=False), fr_bare)
-    # fr_dyn_numerical_generic added in Stage B (requires generic machinery).
+    if flavor == "fr_dyn_numerical_generic":
+        return (FisherRaoTilting(selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)),
+                WaldoStatistic(force_generic=True), fr_bare)
     if flavor == "fr_learned_intp":
         return (FisherRaoTilting(selector=_learned_selector("integrated_p", scheme="fisher_rao")),
                 WaldoStatistic(force_generic=False), fr_bare)
@@ -224,8 +226,10 @@ _FLAVORS = [
     # See `docs/notes/2026-05-10-mixture-cd-variance-instability.md`.
     "mx_learned_intp", "mx_learned_cd_var", "mx_learned_static_w",
     # Fisher-Rao (Levi-Civita / information-geometric geodesic) variants.
-    # fr_dyn_numerical_generic deferred to Stage B (generic machinery).
-    "fr_dyn_numerical",
+    # fr_dyn_numerical_generic exercises the Stage B generic-MC machinery
+    # (_generic_tilt_fr + _generic_tilted_pvalue_fr + diffrax shooting BVP)
+    # against the Stage A closed-form half-plane geodesic path.
+    "fr_dyn_numerical", "fr_dyn_numerical_generic",
     "fr_learned_intp", "fr_learned_cd_var", "fr_learned_static_w",
 ]
 

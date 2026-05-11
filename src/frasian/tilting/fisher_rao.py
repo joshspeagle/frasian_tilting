@@ -1204,10 +1204,85 @@ class FisherRaoTilting:
         sigma0 = float(prior.scale)
         w = sigma0 ** 2 / (sigma ** 2 + sigma0 ** 2)
         statistic_name = getattr(statistic, "name", type(statistic).__name__.lower())
-        if getattr(statistic, "force_generic", False):
+        force_generic = bool(getattr(statistic, "force_generic", False))
+        if force_generic:
+            # Stage B.7: route through the generic-MC machinery
+            # (_generic_tilt_fr + _generic_tilted_pvalue_fr +
+            # _generic_tilted_confidence_interval_fr) instead of the
+            # Stage A closed-form half-plane path. This validates the
+            # autodiff/diffrax pipeline on NN where the closed-form
+            # serves as ground truth.
+            data_arr = np.atleast_1d(np.asarray(data, dtype=np.float64))
+            stat_n_mc = int(getattr(statistic, "n_mc", _GENERIC_TILTED_PVALUE_N_MC))
+            if isinstance(self.selector, FixedEtaSelector):
+                eta_resolved = float(self.selector.eta)
+                lo, hi = _generic_tilted_confidence_interval_fr(
+                    alpha, data_arr, model, prior, eta_resolved,
+                    statistic_name, n_mc=stat_n_mc,
+                )
+                return [(float(lo), float(hi))]
+            if isinstance(self.selector, NumericalEtaSelector):
+                eta_resolved = float(self.selector.select(
+                    self, data=data, model=model, prior=prior,
+                    alpha=alpha, statistic=statistic,
+                ))
+                lo, hi = _generic_tilted_confidence_interval_fr(
+                    alpha, data_arr, model, prior, eta_resolved,
+                    statistic_name, n_mc=stat_n_mc,
+                )
+                return [(float(lo), float(hi))]
+            if isinstance(self.selector, (DynamicNumericalEtaSelector, LearnedDynamicEtaSelector)):
+                n_grid = int(getattr(self.selector, "n_grid", 401))
+                coarse_n = int(getattr(self.selector, "coarse_n", 25))
+                search_mult = float(getattr(self.selector, "search_mult", 8.0))
+
+                def _generic_tilted_pvalue_fn(theta_v: float, eta_v: float) -> float:
+                    return _generic_tilted_pvalue_fr(
+                        float(theta_v), data_arr, model, prior,
+                        float(eta_v), statistic_name, n_mc=stat_n_mc,
+                        alpha=alpha,
+                    )
+
+                def _generic_tilted_pvalue_vec_fn(
+                    theta_arr: np.ndarray, eta_arr: np.ndarray
+                ) -> np.ndarray:
+                    out = np.empty(theta_arr.shape, dtype=np.float64)
+                    for i in range(theta_arr.shape[0]):
+                        out[i] = _generic_tilted_pvalue_fr(
+                            float(theta_arr[i]), data_arr, model, prior,
+                            float(eta_arr[i]), statistic_name,
+                            n_mc=stat_n_mc, alpha=alpha,
+                        )
+                    return out
+
+                regions, _, _ = dynamic_ci_scan(
+                    tilted_pvalue_fn=_generic_tilted_pvalue_fn,
+                    tilted_pvalue_vec_fn=_generic_tilted_pvalue_vec_fn,
+                    alpha=alpha,
+                    D=D,
+                    w=w,
+                    mu0=mu0,
+                    sigma=sigma,
+                    eta_selector=self.selector,
+                    scheme=self,
+                    statistic_name=statistic_name,
+                    n_grid=n_grid,
+                    coarse_n=coarse_n,
+                    search_mult=search_mult,
+                    model_fingerprint=model.fingerprint(),
+                    prior_fingerprint=prior.fingerprint(),
+                    model=model,
+                    prior=prior,
+                )
+                if not regions:
+                    raise RuntimeError(
+                        "FisherRaoTilting dynamic generic CI inversion "
+                        f"produced no regions at D={D!r}"
+                    )
+                return regions
             raise NotImplementedError(
-                "FisherRaoTilting.confidence_regions: force_generic=True is "
-                "the Stage B generic numerical path; not implemented in Stage A."
+                f"FisherRaoTilting force_generic=True: selector "
+                f"{type(self.selector).__name__} not yet wired."
             )
         if isinstance(self.selector, FixedEtaSelector):
             eta_resolved = float(self.selector.eta)
@@ -1338,11 +1413,7 @@ class FisherRaoTilting:
             raise NotImplementedError(
                 "FisherRaoTilting.pvalue currently requires NormalNormalModel."
             )
-        if getattr(statistic, "force_generic", False):
-            raise NotImplementedError(
-                "FisherRaoTilting.pvalue: force_generic=True is the Stage B "
-                "generic numerical path; not implemented in Stage A."
-            )
+        force_generic = bool(getattr(statistic, "force_generic", False))
         D = float(np.asarray(data).mean())
         sigma = float(model.sigma)
         mu0 = float(prior.loc)
@@ -1362,6 +1433,19 @@ class FisherRaoTilting:
             etas = np.full_like(thetas, float(eta_single))
         etas_arr = np.asarray(etas, dtype=np.float64)
         pvals = np.empty_like(thetas, dtype=np.float64)
+        if force_generic:
+            # Stage B.7: route per-θ scalar p-values through the generic-MC
+            # pipeline (_generic_tilted_pvalue_fr → _generic_tilt_fr via the
+            # diffrax shooting BVP). Slow (each call ~50ms+); used only by
+            # the parity audit, not by production code paths.
+            data_arr = np.atleast_1d(np.asarray(data, dtype=np.float64))
+            stat_n_mc = int(getattr(statistic, "n_mc", _GENERIC_TILTED_PVALUE_N_MC))
+            for i, (th, et) in enumerate(zip(thetas, etas_arr)):
+                pvals[i] = _generic_tilted_pvalue_fr(
+                    float(th), data_arr, model, prior, float(et),
+                    statistic_name, n_mc=stat_n_mc,
+                )
+            return pvals
         for i, (th, et) in enumerate(zip(thetas, etas_arr)):
             pvals[i] = _fr_tilted_pvalue_numpy_scalar(
                 theta_f=float(th), eta_f=float(et), D_f=D, w=w, mu0=mu0, sigma=sigma,
