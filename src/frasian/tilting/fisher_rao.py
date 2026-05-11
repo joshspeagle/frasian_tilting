@@ -173,7 +173,7 @@ def _fr_geodesic_arc_length_numerical(
 # the accept intervals. Machine precision; one brentq per boundary.
 
 
-_FR_COARSE_GRID_N: int = 64           # coarse grid for sign-change discovery
+_FR_COARSE_GRID_N: int = 256          # coarse grid for sign-change discovery
 _FR_X_RANGE: float = 12.0             # X grid spans theta +/- X_RANGE * sigma
 _FR_BRENTQ_TOL: float = 1e-12         # brentq xtol
 
@@ -216,7 +216,11 @@ def _fr_tilted_pvalue_numpy_scalar(
     each ~20 evaluations, so ~10x scalar geodesic + a coarse-grid sweep).
 
     n_grid: number of points in the coarse sign-change search grid.
-    Default 64 is sufficient for typical (theta, eta, D) combinations.
+    **The coarse-grid default n_grid=256 is sufficient to catch sign
+    changes across typical (theta, eta, D) regimes; at extreme eta
+    (close to 0 or 1) the rapid tau_rep variation near the boundary
+    may require denser grids — pass n_grid=1024 for safety in
+    adversarial regimes.**
 
     Derivation: docs/methods/fisher_rao.md Derivation (rev 1) Steps 7-9.
     """
@@ -313,13 +317,13 @@ def _fr_tilted_pvalue_numpy_scalar(
 #
 # Used by the learned-eta training loop (loss gradients through the
 # p-value need a differentiable, jit-traceable kernel). Brentq inside
-# JIT is hard, so we use fine-grain trapezoidal (n_grid=2000) rather
-# than the numpy-scalar's adaptive boundary finding. Precision ~5e-5
-# at n=2000 is sufficient for gradient signal. The numpy scalar path
+# JIT is hard, so we use fine-grain trapezoidal (n_grid=8000) rather
+# than the numpy-scalar's adaptive boundary finding. Precision ~4e-4
+# at n=8000 is sufficient for gradient signal. The numpy scalar path
 # (adaptive brentq) is the production-precision route for audit CIs.
 
 
-_FR_JAX_N_GRID_DEFAULT: int = 2000
+_FR_JAX_N_GRID_DEFAULT: int = 8000
 
 
 def _fr_geodesic_gaussian_jax(
@@ -372,10 +376,10 @@ def _fr_tilted_pvalue_kernel(
     Wald: closed-form ``2 * jsp_stats.norm.sf(|D - theta|/sigma)``.
 
     WALDO: trapezoidal quadrature over X under H_0 (no closed form at
-    interior eta; rev 1 finding). Fine-grain n_grid=2000 default for
-    ~5e-5 precision. Endpoints (eta=0, eta=1) go through quadrature
-    too for jit-stability — they agree with closed-form bare-WALDO /
-    bare-Wald to quadrature truncation.
+    interior eta; rev 1 finding). **~4e-4 precision at n_grid=8000**
+    (O(1/n) trap-rule on discontinuous indicator). Endpoints (eta=0,
+    eta=1) go through quadrature too for jit-stability — they agree
+    with closed-form bare-WALDO / bare-Wald to quadrature truncation.
     """
     if statistic_name == "wald":
         z = jnp.abs(D - theta) / sigma
