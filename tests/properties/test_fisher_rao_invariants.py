@@ -441,13 +441,25 @@ class TestFisherRaoChristoffel:
     All other entries zero.
     """
 
-    @pytest.mark.parametrize("sigma", [0.5, 1.0, 1.5, 2.0])
-    def test_christoffel_gaussian_closed_form(self, sigma):
+    @pytest.mark.parametrize(
+        "mu, sigma",
+        [
+            # Original: mu=0 (Γ is mu-independent on Gaussian)
+            (0.0, 0.5), (0.0, 1.0), (0.0, 1.5), (0.0, 2.0),
+            # Span mu so an einsum/transpose bug masked by mu-symmetry
+            # (vanishing at mu=0) would surface (finding #7 from Stage B
+            # skeptic review). The Gaussian metric is mu-independent so
+            # the closed-form Christoffel values are mu-independent too;
+            # all parametrise points produce identical expected values.
+            (-1.0, 0.5), (1.0, 1.5), (5.0, 0.3),
+        ],
+    )
+    def test_christoffel_gaussian_closed_form(self, mu, sigma):
         from frasian.tilting.fisher_rao import (
             _christoffel_from_metric, _gaussian_fisher_metric,
         )
         import jax.numpy as jnp
-        theta = jnp.array([0.0, sigma])  # mu=0 (Γ is mu-independent)
+        theta = jnp.array([mu, sigma])
         gamma = _christoffel_from_metric(_gaussian_fisher_metric, theta)
         assert gamma.shape == (2, 2, 2)
         # Indexing: gamma[k, i, j] with k, i, j ∈ {0=mu, 1=sigma}.
@@ -659,6 +671,64 @@ class TestFisherRaoGeodesicNumerical:
         theta_t = _fr_geodesic_numerical(theta_a, theta_b, 0.5)
         assert np.all(np.isfinite(theta_t))
         assert theta_t[1] > 0.0, f"sigma_t = {theta_t[1]} not positive at Delta={Delta_scaled}"
+
+    @pytest.mark.parametrize(
+        "theta_a, theta_b",
+        [
+            # Near-vertical geodesics, σ ratio ~10
+            (np.array([0.0, 0.1]), np.array([0.0, 1.0])),
+            (np.array([0.0, 1.0]), np.array([0.0, 10.0])),
+            # σ ratio ~10 combined with μ gap — KNOWN-FAILING; the
+            # xfail surfaces a real BVP-shooting convergence boundary
+            # documented in the Stage B skeptic-fix pass (finding #8).
+            pytest.param(
+                np.array([0.0, 0.1]), np.array([2.0, 1.0]),
+                marks=pytest.mark.xfail(
+                    reason=(
+                        "Stage B skeptic finding #8 surfaced a real "
+                        "convergence boundary: at "
+                        "(theta_a=[0, 0.1], theta_b=[2, 1]) — σ ratio 10 "
+                        "combined with a μ gap of 2 — the damped Newton "
+                        "shooting in `_shoot_bvp` fails the backtracking "
+                        "line search (|r|=2.009 stuck after "
+                        "_BVP_NEWTON_MAX_ITERS). Documented as a known "
+                        "limitation of the Stage B `_shoot_bvp` "
+                        "globalisation; a follow-up patch (e.g. "
+                        "continuation in θ_b, or a better initial-"
+                        "velocity heuristic for high-curvature starts) "
+                        "is required to clear this regime. The production "
+                        "fr_dyn_numerical (Stage A closed-form) path is "
+                        "unaffected."
+                    ),
+                    strict=True,
+                ),
+            ),
+            # Large μ + σ gap (large-arc geodesic)
+            (np.array([0.0, 1.0]), np.array([5.0, 5.0])),
+        ],
+    )
+    def test_shooting_converges_at_extreme_regimes(self, theta_a, theta_b):
+        """Shooting BVP converges at extreme σ-ratio and μ-gap regimes.
+
+        Extends `test_shooting_converges_at_typical_conflict_regimes`
+        which spans Δ_scaled at (sigma=1, sigma0=1) — insufficient
+        parameter coverage. This test exercises:
+        - near-vertical geodesics (σ ratio 10 with small or zero μ gap)
+        - large-arc geodesics (μ gap with σ gap)
+        These regimes stress the Newton damping / line-search globalisation
+        in `_shoot_bvp`. Finding #8 from the Stage B skeptic review.
+
+        One xfail case documents a real convergence failure at
+        (σ ratio 10 + μ gap 2); the Stage A production path is
+        unaffected.
+        """
+        from frasian.tilting.fisher_rao import _fr_geodesic_numerical
+        theta_t = _fr_geodesic_numerical(theta_a, theta_b, 0.5)
+        assert np.all(np.isfinite(theta_t))
+        assert theta_t[1] > 0.0, (
+            f"sigma_t = {theta_t[1]} not positive at "
+            f"theta_a={theta_a}, theta_b={theta_b}"
+        )
 
 
 @pytest.mark.L1

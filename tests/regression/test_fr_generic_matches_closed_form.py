@@ -151,3 +151,48 @@ class TestFrGenericMatchesClosedForm:
         # Bare smoothness override is a FisherRaoTilting() (no selector arg)
         assert type(bare_cf).__name__ == "FisherRaoTilting"
         assert type(bare_gn).__name__ == "FisherRaoTilting"
+
+    def test_force_generic_dispatch_runs_one_ci(self):
+        """End-to-end smoke: confidence_regions with force_generic=True
+        actually computes a CI via the Stage B generic-MC path.
+
+        Uses small ``n_mc=20`` (default is 2000) to bound wall-clock
+        (~90-120 s) while keeping the empirical-p floor
+        ``(0 + 1)/(20 + 1) ≈ 0.048 < α=0.05`` so brentq can invert
+        (at ``n_mc=10`` the floor is ``0.09 > α`` and the CI degenerates
+        to ``(-inf, inf)``). For a tight parity check, see
+        ``test_coverage_and_width_parity_at_theta_zero`` (marked slow).
+
+        Finding #10 from the Stage B skeptic review: the existing
+        ``test_force_generic_dispatch_constructible`` only checks cell
+        construction; this test actually exercises the dispatch end-
+        to-end.
+        """
+        from frasian.statistics.waldo import WaldoStatistic
+        from frasian.tilting.eta_selectors import FixedEtaSelector
+        from frasian.tilting.fisher_rao import FisherRaoTilting
+
+        sigma = 1.0
+        sigma0 = 1.0  # w=0.5
+        model = NormalNormalModel(sigma=sigma)
+        prior = NormalDistribution(loc=0.0, scale=sigma0)
+        data = np.array([0.5])
+
+        scheme = FisherRaoTilting(selector=FixedEtaSelector(eta=0.5))
+        # n_mc=20 keeps the empirical-p floor below α=0.05; the
+        # WaldoStatistic dataclass exposes n_mc as a constructor field,
+        # and the generic FR p-value path threads n_mc through into
+        # _generic_tilted_pvalue_fr.
+        stat = WaldoStatistic(force_generic=True, n_mc=20)
+
+        ci = scheme.confidence_interval(0.05, data, model, prior, stat)
+        # MC noise at low n_mc can still produce a boundary-extending
+        # CI when the empirical p hovers above α at the support
+        # boundaries; that's still a successful dispatch (the slow
+        # parity test uses the full n_mc=2000 to get tight intervals).
+        # Accept either a finite interval or a boundary-extending one.
+        assert ci[0] <= ci[1]
+        if np.all(np.isfinite(ci)):
+            # At eta=0.5 with this NN setup, finite CIs should sit in
+            # a loose box.
+            assert -10 < ci[0] < ci[1] < 10
