@@ -453,11 +453,14 @@ def _fr_geodesic_numerical(
         g_fn = _gaussian_fisher_metric
     theta_a_j = jnp.asarray(theta_a, dtype=jnp.float64)
     theta_b_j = jnp.asarray(theta_b, dtype=jnp.float64)
-    v0 = _shoot_bvp(g_fn, theta_a_j, theta_b_j)
+    # Endpoint shortcuts — avoid the BVP shoot entirely when t ∈ {0, 1}.
+    # The geodesic is anchored at theta_a / theta_b by construction
+    # (finding #3 from Stage B skeptic review).
     if t == 0.0:
         return np.asarray(theta_a_j)
     if t == 1.0:
         return np.asarray(theta_b_j)
+    v0 = _shoot_bvp(g_fn, theta_a_j, theta_b_j)
     # Forward-integrate to time t.
     state0 = jnp.concatenate([theta_a_j, v0])
     term = diffrax.ODETerm(_geodesic_ode_rhs)
@@ -473,8 +476,20 @@ def _fr_geodesic_numerical(
         ),
         max_steps=_DIFFRAX_MAX_STEPS,
     )
-    D = theta_a_j.shape[0]
-    return np.asarray(sol.ys[0, :D])
+    D_dim = theta_a_j.shape[0]
+    theta_t_np = np.asarray(sol.ys[0, :D_dim])
+    # Defensive: at extrapolated η or extreme conflict, the geodesic may
+    # numerically drift toward σ = 0 (the half-plane boundary). Raise
+    # rather than return junk; mirrors the closed-form path's
+    # `s_sigma <= _SIGMA_FLOOR` guard at line ~118 of this file
+    # (finding #12 from Stage B skeptic review).
+    if theta_t_np.shape[0] >= 2 and theta_t_np[1] <= _SIGMA_FLOOR:
+        raise TiltingDomainError(
+            f"_fr_geodesic_numerical: σ_t = {float(theta_t_np[1])!r} non-positive "
+            f"at t={t!r} (geodesic crossed σ=0 boundary; should not happen for "
+            f"finite t on Gaussian — verify diffrax solver settings if you hit this)."
+        )
+    return theta_t_np
 
 
 # ----------------------------------------------------------------------
@@ -647,7 +662,11 @@ def _generic_tilted_pvalue_fr(
             )
             mu_i = float(tilted_i.loc)
             var_i = float(tilted_i.scale) ** 2
-        except (TiltingDomainError, ValueError):
+        except (TiltingDomainError, ValueError, RuntimeError):
+            # RuntimeError catches _shoot_bvp Newton non-convergence /
+            # line-search failure; without this, a single failing replicate
+            # crashed the whole CI computation (finding #4 from Stage B
+            # skeptic review).
             n_collapsed += 1
             t_samples[i] = 0.0
             continue

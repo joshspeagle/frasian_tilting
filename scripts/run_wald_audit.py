@@ -230,7 +230,10 @@ _FLAVORS = [
     # (_generic_tilt_fr + _generic_tilted_pvalue_fr + diffrax shooting BVP)
     # against the Stage A closed-form half-plane geodesic path.
     "fr_dyn_numerical", "fr_dyn_numerical_generic",
-    "fr_learned_intp", "fr_learned_cd_var", "fr_learned_static_w",
+    # Pending Stage C training; will land with the v4 artifacts
+    # (finding #5 from Stage B skeptic review). The `_build_cell`
+    # branches below stay so these are easy to re-enable.
+    # "fr_learned_intp", "fr_learned_cd_var", "fr_learned_static_w",
 ]
 
 
