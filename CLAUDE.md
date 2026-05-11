@@ -96,15 +96,12 @@ diagnostics, and writes a `manifest.json` with relative cache paths.
 | Name           | Status        | Notes                                     |
 |----------------|---------------|-------------------------------------------|
 | `normal_normal`| implemented   | 1D conjugate Gaussian; framework's sandbox |
-| `bernoulli`    | implemented   | Beta-conjugate; non-Normal protocol check  |
 
-Pairings of `bernoulli` with `Wald` and `WALDO` now run via the
-**generic numerical paths** added in Phase 2 (see `docs/methods/wald.md`
-and `waldo.md`): Wald uses `tau = (mle - theta)^2 * I(theta)` with
-chi^2_1 calibration; WALDO uses an MC reference distribution under
-H_0 sampled via `model.sample_data`. Pairings of `bernoulli` with
-`power_law` still raise `NotImplementedError` — generic tilting is
-Phase 3 work, separately tracked.
+The framework's research focus is the Normal-Normal sandbox. A prior
+Bernoulli + Beta-conjugate model was shelved (see commit
+`chore: shelve Bernoulli ...`); the generic model-agnostic paths
+in `power_law`, `mixture`, and `ot` remain and stay useful for any
+future non-NN model that lands.
 
 ## Tilting Schemes (status)
 
@@ -261,9 +258,8 @@ src/frasian/
   models/
     base.py                  # Model, Prior, Posterior, Likelihood protocols (incl. fingerprint())
     _dispatch.py             # require_model decorator (Normal-only gating)
-    distributions.py         # NormalDistribution, BetaDistribution, Gaussian/Bernoulli likelihoods
+    distributions.py         # NormalDistribution, GaussianLikelihood, Gaussian/MixtureDistribution
     normal_normal.py         # NormalNormalModel + math primitives
-    bernoulli.py             # BernoulliModel + Beta-conjugate posterior
 
   tilting/
     __init__.py              # Re-exports `TiltingScheme` / `EtaSelector` / `TiltingDomainError` only; concrete schemes are imported via `frasian._registry_bootstrap`.
@@ -350,7 +346,7 @@ tests/
 docs/
   methods/                   # one .md brief per registered method
     _template.md             # the skeleton /propose-method writes against
-    {normal_normal,bernoulli,wald,waldo,power_law,...}.md
+    {normal_normal,wald,waldo,power_law,...}.md
   notes/                     # dated empirical findings (results, diagnoses)
     README.md                # convention: when to add a note, naming, format
     YYYY-MM-DD-<slug>.md     # one per finding
@@ -370,7 +366,7 @@ scripts/
 experiments/
   canonical_normal_normal_powerlaw_v4.yaml  # Phase G v4 conditional fixture (NN + power_law)
   canonical_normal_normal_ot_v4.yaml        # Phase G v4 conditional fixture (NN + ot)
-  canonical_bernoulli_powerlaw_v4.yaml      # Phase G v4 conditional fixture (Bernoulli + power_law)
+  canonical_normal_normal_mixture_v4.yaml   # Phase G v4 conditional fixture (NN + mixture)
 
 artifacts/                   # trained Phase G v4 checkpoints; gitignored — train locally
 

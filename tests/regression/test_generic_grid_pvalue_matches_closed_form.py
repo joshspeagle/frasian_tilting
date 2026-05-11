@@ -193,31 +193,3 @@ def test_generic_grid_jit_traceable():
     assert np.asarray(p).shape == (1, 11)
 
 
-@pytest.mark.L0
-def test_generic_grid_bernoulli_smoke():
-    """Smoke: kernel runs end-to-end on Bernoulli + Beta inputs.
-
-    Verifies the marquee Phase 4 capability — JAX-traceable tilted
-    pvalue against a non-Normal-Normal pair.
-    """
-    from frasian.models.bernoulli import BernoulliModel
-    from frasian.models.distributions import BetaDistribution
-
-    model = BernoulliModel()
-    prior = BetaDistribution(alpha=2.0, beta=2.0)
-    data = np.asarray([1.0, 0.0, 1.0, 1.0])
-    n_grid = 512
-    theta_grid = jnp.linspace(0.01, 0.99, n_grid)  # avoid exact boundary
-    likelihood = model.likelihood(data)
-    log_p_lik_grid = likelihood.loglik(theta_grid)[None, :]  # (1, N_grid)
-    log_p_prior_grid = prior.logpdf(theta_grid)
-
-    theta_test = jnp.linspace(0.1, 0.9, 11)[None, :]
-    eta_b = jnp.full(theta_test.shape, 0.3)
-    p = generic_grid_tilted_pvalue(
-        theta_test, eta_b, log_p_lik_grid, log_p_prior_grid, theta_grid, "waldo"
-    )
-    p_arr = np.asarray(p)
-    assert p_arr.shape == (1, 11)
-    assert np.all(np.isfinite(p_arr))
-    assert np.all(p_arr >= 0.0) and np.all(p_arr <= 1.0)

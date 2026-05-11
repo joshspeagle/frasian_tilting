@@ -128,16 +128,6 @@ class TestWaldoNGreaterThanOneRoutesGeneric:
         # n=8 NN data: must NOT take the closed form path.
         assert _is_normal_normal_n1(model, prior, np.asarray([0.5] * 8)) is False
 
-    def test_non_normal_pair_routes_to_generic(self):
-        from frasian.models.bernoulli import BernoulliModel
-        from frasian.models.distributions import BetaDistribution
-        from frasian.statistics.waldo import _is_normal_normal_n1
-
-        model = BernoulliModel()
-        prior = BetaDistribution(alpha=2.0, beta=2.0)
-        assert _is_normal_normal_n1(model, prior, np.asarray([1.0])) is False
-
-
 @pytest.mark.L2
 class TestWaldoDegenerateVarianceFloorAgreement:
     """The variance-floor for `_generic_evaluate` and `_generic_mc_reference`

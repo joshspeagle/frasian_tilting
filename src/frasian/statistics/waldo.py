@@ -25,11 +25,11 @@ single seed is derived from the *call's* inputs (data + fingerprints
 + alpha + self.seed) — NOT from the candidate theta — via
 `hashlib.blake2b` for cross-process stability. A fresh
 `np.random.default_rng(seed)` is constructed at every brentq probe;
-same seed ⇒ same internal uniform stream ⇒ same Bernoulli/Normal
-inverse-CDF draws across theta. The result is that `f(theta)` is a
-piecewise-constant (Bernoulli) or smooth (Normal) function of theta
-— brentq actually converges instead of locking onto a re-randomised
-staircase.
+same seed ⇒ same internal uniform stream ⇒ same Normal inverse-CDF
+draws across theta. The result is that `f(theta)` is a smooth (or,
+for future non-NN models with discrete support, piecewise-constant)
+function of theta — brentq actually converges instead of locking
+onto a re-randomised staircase.
 
 The empirical p-value uses the conservative `(k+1)/(n+1)` continuity
 correction. This biases coverage upward by O(1/n_mc) — explicitly a
@@ -347,9 +347,8 @@ class WaldoStatistic:
 
         CRN: a fresh `np.random.default_rng(derived_seed)` per call. Same
         seed ⇒ same internal uniform stream ⇒ same inverse-CDF mappings
-        to D' across theta probes. On Bernoulli, this piecewise-constant
-        property of `binomial(1, theta, ...)` w.r.t. `theta` survives the
-        batch (single rng call still draws the same uniforms internally).
+        to D' across theta probes (the property survives the batch since
+        a single rng call draws the same uniforms internally).
 
         Degenerate-variance handling: rows with `var <= 0` or non-finite
         var produce NaN t. `_generic_pvalue` filters NaN downstream.
@@ -405,7 +404,7 @@ class WaldoStatistic:
         if data_arr.ndim != 1:
             raise NotImplementedError(
                 "WaldoStatistic.pvalue currently expects 1-D data (n=1 sandbox "
-                "or n trials of a single Bernoulli/Normal scalar); got "
+                "or n trials of a single scalar); got "
                 f"data.ndim={data_arr.ndim}. Multi-dim data requires the model "
                 "to expose an `n_obs(data) -> int` accessor (latent skeptic vector #7)."
             )
@@ -488,9 +487,9 @@ class WaldoStatistic:
         # of alpha (audit P1 G.3). Threading this seed into every brentq
         # probe makes the MC pvalue use the same internal uniform stream
         # at each theta — `f(theta)` becomes a deterministic function of
-        # theta (piecewise-constant for Bernoulli, smooth for Normal)
-        # instead of a fresh stochastic process, so brentq actually
-        # converges (skeptic finding #1+#13). Dropping alpha makes two
+        # theta (smooth for Normal) instead of a fresh stochastic
+        # process, so brentq actually converges (skeptic finding
+        # #1+#13). Dropping alpha makes two
         # cross-call invocations at different alphas (e.g. 0.05 and
         # 0.10) share the same MC reference draws — the resulting CIs
         # then nest cleanly (broader α → wider CI) instead of jumping
@@ -510,9 +509,10 @@ class WaldoStatistic:
 
         def f(theta: float) -> float:
             # Clamp to model support: brentq's bracket-doubling can
-            # probe values outside the parameter space (e.g. theta>1
-            # for Bernoulli), where `model.sample_data(theta, ...)`
-            # would raise. Clamping makes f flat outside support so
+            # probe values outside the parameter space (e.g. theta
+            # outside a bounded support), where
+            # `model.sample_data(theta, ...)` would raise. Clamping
+            # makes f flat outside support so
             # brentq returns BracketingFailed cleanly when the CI
             # truly extends to the boundary; the caller's
             # `except BracketingFailed` then yields support_lo / hi.

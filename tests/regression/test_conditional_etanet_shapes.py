@@ -33,7 +33,7 @@ class TestConditionalEtaNetShapes:
             EtaNet(theta_dim=1, key=key)   # missing prior_dim, lik_dim
 
     def test_zero_lik_dim_works(self):
-        """Bernoulli has hyperparam_dim=0 — net must accept lik_dim=0."""
+        """A model with hyperparam_dim=0 — net must accept lik_dim=0."""
         key = jax.random.PRNGKey(0)
         net = EtaNet(theta_dim=1, prior_dim=2, lik_dim=0, key=key)
         N = 4

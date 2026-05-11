@@ -3,7 +3,7 @@
 **Normal-Normal-only by construction** (audit P1 K.4 / Path A). The
 experiment hard-codes `model = NormalNormalModel(sigma=self.sigma)` and
 the `(theta, w)` grid maps to a Gaussian prior; same caveat as
-`CoverageExperiment`. Bernoulli / Beta does not enter this experiment.
+`CoverageExperiment`. Non-NN models do not enter this experiment.
 
 For each cell (TiltingScheme x TestStatistic) and each (theta_true, w):
   1. Generate `n_reps` samples D ~ N(theta_true, sigma).

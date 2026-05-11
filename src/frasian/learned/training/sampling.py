@@ -234,19 +234,16 @@ def _build_theta_distribution_from_dict(
 
 _PRIOR_CLASSES: dict[str, type | None] = {
     "normal": None,
-    "beta":   None,
 }
 _MODEL_CLASSES: dict[str, type | None] = {
     "normal_normal": None,
-    "bernoulli":     None,
 }
 
 
 def _resolve_prior_class(type_str: str) -> type:
     if _PRIOR_CLASSES["normal"] is None:
-        from ...models.distributions import BetaDistribution, NormalDistribution
+        from ...models.distributions import NormalDistribution
         _PRIOR_CLASSES["normal"] = NormalDistribution
-        _PRIOR_CLASSES["beta"] = BetaDistribution
     if type_str not in _PRIOR_CLASSES or _PRIOR_CLASSES[type_str] is None:
         raise ValueError(
             f"Unknown prior_class {type_str!r}; known: {sorted(_PRIOR_CLASSES)}"
@@ -256,10 +253,8 @@ def _resolve_prior_class(type_str: str) -> type:
 
 def _resolve_model_class(type_str: str) -> type:
     if _MODEL_CLASSES["normal_normal"] is None:
-        from ...models.bernoulli import BernoulliModel
         from ...models.normal_normal import NormalNormalModel
         _MODEL_CLASSES["normal_normal"] = NormalNormalModel
-        _MODEL_CLASSES["bernoulli"] = BernoulliModel
     if type_str not in _MODEL_CLASSES or _MODEL_CLASSES[type_str] is None:
         raise ValueError(
             f"Unknown model_class {type_str!r}; known: {sorted(_MODEL_CLASSES)}"
@@ -391,8 +386,7 @@ class ExperimentConfig:
         if self.n_data > 1 and self.model_cls.__name__ == "NormalNormalModel":
             raise ValueError(
                 f"ExperimentConfig with NormalNormalModel requires "
-                f"n_data == 1; got n_data={self.n_data}. Use a non-NN "
-                f"model (e.g. BernoulliModel) if you need n_data > 1."
+                f"n_data == 1; got n_data={self.n_data}."
             )
 
     @cached_property

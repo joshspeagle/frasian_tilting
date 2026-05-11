@@ -192,7 +192,7 @@ def _denom(w: float, eta: float) -> float:
 # Default grid parameters per the deriver's recommendation
 # (`/root/.claude/plans/...`, validated atol 1e-7 at N=1024 against
 # Theorem 6 on Normal-Normal). N=2048 + k=8 are mildly more conservative;
-# the suite picks N=1024 to keep per-call cost ~1 ms on Bernoulli.
+# the suite picks N=1024 to keep per-call cost ~1 ms.
 _GENERIC_TILT_N_GRID: int = 1024
 _GENERIC_TILT_HALF_WIDTH_K: float = 8.0
 _GENERIC_TILT_QUANTILE_EPS: float = 1e-4
@@ -207,11 +207,10 @@ def _generic_tilt_grid_window(
     """Pick the (theta_lo, theta_hi) integration window for `_generic_tilt`.
 
     Strategy: union of the posterior's and prior's near-quantile windows,
-    clipped to `model.support()`. Quantile-based on bounded supports
-    (Bernoulli's `[0, 1]`, etc.) so we don't pick an arbitrary k·std
-    interval that overruns the support; ``mean ± k * std`` fallback
-    on unbounded supports where quantile inversion can be expensive
-    on a non-Gaussian posterior.
+    clipped to `model.support()`. Quantile-based on bounded supports so
+    we don't pick an arbitrary k·std interval that overruns the support;
+    ``mean ± k * std`` fallback on unbounded supports where quantile
+    inversion can be expensive on a non-Gaussian posterior.
 
     The window must contain enough mass of *both* the prior and the
     likelihood-shaped posterior so the η ∈ [0, 1] sweep stays well-
@@ -315,13 +314,13 @@ def _generic_tilt(
     # than silently returning a `GridDistribution` of a non-normalisable
     # density. (The first/last index check has a 1-bin tolerance for
     # legitimate cases where the prior pulls the mode to a support
-    # boundary on bounded models — e.g. Beta(1, 1) on Bernoulli.)
+    # boundary on bounded models.)
     finite_mask = np.isfinite(log_lik) & np.isfinite(log_prior)
     if np.any(finite_mask):
         idx_max = int(np.argmax(np.where(finite_mask, log_q, -np.inf)))
-        # On bounded supports (Bernoulli + Beta), the boundary may be
-        # the legitimate mode — only flag the divergence when the
-        # boundary log-density is BIGGER than the next interior point.
+        # On bounded supports, the boundary may be the legitimate mode —
+        # only flag the divergence when the boundary log-density is
+        # BIGGER than the next interior point.
         # That signals the truncation, not a real boundary mode.
         if idx_max == 0 and log_q[0] > log_q[1] + 1e-9:
             raise TiltingDomainError(
@@ -662,8 +661,8 @@ def _generic_tilted_pvalue_vec(
     CRN: a fresh `np.random.default_rng(derived_seed + chunk_offset)`
     per chunk so the MC stream is reproducible AND deterministic w.r.t.
     chunking. Within a chunk, all (theta_i, mc_j) pairs draw from a
-    single big `rng.normal/binomial` call shifted by the per-theta
-    location parameter (NN/Bernoulli sampling vectorises naturally).
+    single big `rng.normal` call shifted by the per-theta location
+    parameter (NN sampling vectorises naturally).
     """
     from ..models.base import (
         batch_loglik_grid as _batch_loglik_grid,
@@ -827,12 +826,10 @@ def _sample_data_batch_per_theta(
     """Draw `n_mc × n_obs` observations under H_0:theta_arr[i] for each i.
 
     Returns shape ``(n_theta, n_mc, n_obs)``. Vectorised for NN
-    (single rng.normal call shifted per theta) and Bernoulli (single
-    rng.binomial call with broadcast probability). Falls back to a
-    Python loop over theta for models without these properties.
+    (single rng.normal call shifted per theta). Falls back to a
+    Python loop over theta for models without this property.
     """
     from ..models.normal_normal import NormalNormalModel
-    from ..models.bernoulli import BernoulliModel
 
     n_theta = int(theta_arr.size)
     n_mc, n_obs = int(n_mc), int(n_obs)
@@ -841,12 +838,6 @@ def _sample_data_batch_per_theta(
         # ~50x faster than n_theta separate rng.normal calls.
         z = rng.normal(loc=0.0, scale=model.sigma, size=(n_theta, n_mc, n_obs))
         return z + theta_arr[:, None, None]
-    if isinstance(model, BernoulliModel):
-        # rng.binomial accepts an n-shape `p` argument that broadcasts.
-        # Broadcast theta to (n_theta, 1, 1) and rely on numpy's
-        # broadcasting to fill the (n_theta, n_mc, n_obs) tensor.
-        theta_b = np.broadcast_to(theta_arr[:, None, None], (n_theta, n_mc, n_obs))
-        return rng.binomial(1, theta_b).astype(np.float64)
     # Generic fallback — Python loop. Slow but correct for any model.
     out = np.empty((n_theta, n_mc, n_obs), dtype=np.float64)
     from ..models.base import sample_data_batch as _sample_data_batch
@@ -891,7 +882,6 @@ def _generic_tilted_pvalue(
     stream and `f(theta)` is a deterministic function of theta.
     """
     from ..statistics.wald import WaldStatistic
-    from ..models.distributions import BernoulliLikelihood, GaussianLikelihood
 
     if statistic_name == "wald":
         # Wald is eta-independent; delegate to the Phase 2 generic path.
@@ -1198,10 +1188,8 @@ class PowerLawTilting:
         # Generic numerical fallback. Centralised support resolution
         # via `_resolve_support` (works for any model that conforms to
         # the protocol's `support()` plus a likelihood-class fallback).
-        from ..models.distributions import BernoulliLikelihood, GaussianLikelihood
-        if isinstance(likelihood, BernoulliLikelihood):
-            support_attr = (0.0, 1.0)
-        elif isinstance(likelihood, GaussianLikelihood):
+        from ..models.distributions import GaussianLikelihood
+        if isinstance(likelihood, GaussianLikelihood):
             support_attr = (-float("inf"), float("inf"))
         else:
             support_attr = (-float("inf"), float("inf"))

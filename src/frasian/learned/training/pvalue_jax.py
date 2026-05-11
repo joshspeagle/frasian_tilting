@@ -375,7 +375,7 @@ def mixture_grid_tilted_pvalue(
 
     Same calibration caveat as the PL generic kernel: this is a moment-
     matching surrogate intended for differentiable training only.
-    Inference-time generic on Bernoulli + mixture uses
+    Inference-time generic on non-NN + mixture uses
     ``MixtureTilting._generic_tilted_pvalue`` (numpy MC) for exact
     calibration.
 
@@ -533,18 +533,16 @@ def generic_grid_tilted_pvalue(
     `power_law_tilted_pvalue_jax` (Theorem 8 exact) via the
     `("power_law", "normal_normal")` registry key — the surrogate is
     NEVER on the NN training path. The grid kernel is registered ONLY
-    under `("power_law", "generic")` for non-NN models (Bernoulli +
-    future), where computing `b` and `ν` exactly would require Monte
-    Carlo over D' under H_0 — the inference-time
-    `power_law._generic_tilted_pvalue` does this at n_mc=200, but it
-    is too expensive for per-step training. The surrogate is the
-    cheapest differentiable proxy that preserves moment-level
-    agreement with Theorem 6.
+    under `("power_law", "generic")` for future non-NN models, where
+    computing `b` and `ν` exactly would require Monte Carlo over D'
+    under H_0 — the inference-time `power_law._generic_tilted_pvalue`
+    does this at n_mc=200, but it is too expensive for per-step
+    training. The surrogate is the cheapest differentiable proxy that
+    preserves moment-level agreement with Theorem 6.
 
-    Inference-time calibration on Bernoulli is verified separately
-    against the MC reference path (see
-    `tests/regression/test_bernoulli_coverage.py`), so the surrogate's
-    bias is an η-target shift, not a calibration error.
+    Inference-time calibration for future non-NN models would be
+    verified against the MC reference path; the surrogate's bias is
+    an η-target shift, not a calibration error.
 
     Bias is pinned by `tests/regression/test_grid_surrogate_vs_theorem8.py`
     as a regression that catches future widening.

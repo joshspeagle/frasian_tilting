@@ -2,9 +2,6 @@
 
 Pins the audit P1 fixes:
 
-  H.1 — `power_law._generic_tilt` raises `TiltingDomainError` when the
-        chosen η drives the tilted log-density to diverge at the grid
-        edge (boundary mode without a corresponding bounded support).
   H.2 — `_check_experiment` refuses None fingerprints. Pre-fix the
         None case silently skipped the cross-experiment safety net.
   H.3 — `_check_experiment` accepts optional `n_data` and
@@ -24,52 +21,15 @@ Pins the audit P1 fixes:
 
 from __future__ import annotations
 
-import numpy as np
 import pytest
 
-from frasian._errors import BracketingFailed, MissingArtifactError, TiltingDomainError
-from frasian.models.bernoulli import BernoulliModel
+from frasian._errors import BracketingFailed, MissingArtifactError
 from frasian.models.distributions import (
-    BetaDistribution,
     GaussianLikelihood,
     NormalDistribution,
 )
-from frasian.models.normal_normal import NormalNormalModel
 from frasian.tilting._solvers import brentq_with_doubling
 from frasian.tilting.ot import OTTilting
-from frasian.tilting.power_law import _generic_tilt
-
-
-# --- H.1 power_law._generic_tilt admissibility --------------------------
-
-
-@pytest.mark.L2
-class TestPowerLawGenericTiltAdmissibility:
-    """Generic power-law tilt on Bernoulli + Beta with extreme η that
-    drives the tilted log-density to diverge at a grid edge raises
-    `TiltingDomainError` instead of silently returning a non-normalisable
-    `GridDistribution`."""
-
-    def test_bounded_support_legitimate_boundary_mode_does_not_raise(self):
-        # Beta(1, 1) on Bernoulli: uniform prior, mode-on-boundary is
-        # legitimate (the posterior maximum may sit at θ=0 or θ=1 for
-        # all-zero / all-one data). The audit-H.1 check tolerates this
-        # via the "boundary > next-interior" condition: a flat boundary
-        # is fine.
-        model = BernoulliModel()
-        prior = BetaDistribution(alpha=1.0, beta=1.0)
-        rng = np.random.default_rng(0)
-        data = model.sample_data(0.5, rng, n=8)
-        likelihood = model.likelihood(data)
-        # Mild η inside [0, 1]: should not trigger the divergence guard.
-        tilted = _generic_tilt(
-            posterior=model.posterior(data, prior),
-            prior=prior,
-            likelihood=likelihood,
-            eta=0.5,
-            support=model.support(),
-        )
-        assert tilted is not None  # constructed without raise
 
 
 # --- H.2 _check_experiment refuses None fingerprints --------------------

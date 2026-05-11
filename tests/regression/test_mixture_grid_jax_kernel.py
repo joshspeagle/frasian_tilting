@@ -1,9 +1,8 @@
 """Generic-grid JAX kernel for MixtureTilting (m-geodesic).
 
 Companion to ``test_mixture_jax_kernel.py`` (which tests the
-NN-channel closed-form). The generic grid kernel is for non-NN models
-(Bernoulli + future); analogous to ``generic_grid_tilted_pvalue`` for
-power_law.
+NN-channel closed-form). The generic grid kernel is for non-NN
+models; analogous to ``generic_grid_tilted_pvalue`` for power_law.
 
 Endpoint sanity:
 - η=0 → mixture moments = posterior moments → bare WALDO normal-approx
@@ -162,7 +161,7 @@ def test_mixture_grid_vmap_jit_compatible():
 @pytest.mark.L1
 def test_mixture_grid_registered_in_jax_tilted_pvalue():
     """The (mixture, generic) cell must be registered so the runner
-    can route bernoulli + mixture training through the JAX path."""
+    can route non-NN + mixture training through the JAX path."""
     from frasian.learned.training.pvalue_jax import (
         JAX_TILTED_PVALUE,
         get_jax_tilted_pvalue,
@@ -173,4 +172,4 @@ def test_mixture_grid_registered_in_jax_tilted_pvalue():
     assert JAX_TILTED_PVALUE[("mixture", "generic")] is mixture_grid_tilted_pvalue
     # Resolver fallback path: an unknown model_kind on mixture should
     # land on the generic kernel.
-    assert get_jax_tilted_pvalue("mixture", "bernoulli") is mixture_grid_tilted_pvalue
+    assert get_jax_tilted_pvalue("mixture", "unknown_model") is mixture_grid_tilted_pvalue

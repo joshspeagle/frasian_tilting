@@ -27,11 +27,10 @@ time (n_mc=200) — at training time it is too expensive.
 (``WIDTH_LOSS_DISPATCH[("power_law", "generic")]``). NN training
 routes through ``_call_normal_normal_pvalue`` → ``power_law_tilted_pvalue_jax``,
 which IS Theorem 8 exactly. So the bias documented here only
-affects Bernoulli (and any future non-NN model). On Bernoulli the
-inference-time path uses the MC reference (correct), and the
-trained selector's calibration is verified against that
-(``tests/regression/test_bernoulli_coverage.py``) — not against the
-surrogate.
+affects any future non-NN model. For such models the inference-time
+path would use the MC reference (correct), and the trained
+selector's calibration would be verified against that — not against
+the surrogate.
 
 These tests therefore PIN the bias as a regression: a future
 implementation that closes the gap should tighten the bounds and

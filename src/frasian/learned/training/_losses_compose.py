@@ -132,7 +132,7 @@ def precompute_generic_grids(
 
     Phase G note: both model and prior now vary per batch element; this
     helper is kept for the case where a representative (rep_model,
-    rep_prior) is used (e.g. Bernoulli where support is constant).
+    rep_prior) is used (e.g. a future model with constant support).
     Caller is responsible for warming this up per-step if hyperparams
     differ across the batch.
     """

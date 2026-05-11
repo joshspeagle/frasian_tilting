@@ -540,11 +540,9 @@ _CLAMP_FAIL_THRESHOLD = 1.0
 # cross-experiment guard's class-match check.
 _CANONICAL_PRIOR_CLASS_NAMES: dict[str, str] = {
     "normal": "NormalDistribution",
-    "beta":   "BetaDistribution",
 }
 _CANONICAL_MODEL_CLASS_NAMES: dict[str, str] = {
     "normal_normal": "NormalNormalModel",
-    "bernoulli":     "BernoulliModel",
 }
 
 
@@ -774,8 +772,8 @@ class LearnedDynamicEtaSelector:
         cross-experiment use. The historical w-derived check (NN
         only) and the NN-only model/prior gate are kept conditional
         on ``trained_model_fp[0] == "normal_normal"`` and ``w is not
-        None``, so non-NN experiments (Bernoulli + Beta) can train
-        and load checkpoints through the same selector.
+        None``, so future non-NN experiments can train and load
+        checkpoints through the same selector.
 
         Phase 4 skeptic #6 (defense-in-depth on subclass collisions):
         when the inference-time ``model`` / ``prior`` are passed and
@@ -1054,9 +1052,9 @@ class LearnedDynamicEtaSelector:
                        structural sigmoid bound; tighter than PL's window)
         - other      : ``(-w/(1-w) + buffer, 1/(1-w) - buffer)`` (power_law)
 
-        For non-Normal-Normal experiments (``w is None``, e.g.
-        Bernoulli + Beta), the admissibility region is learned by
-        ``ValidityNet`` during training; the closed-form clamp is
+        For non-Normal-Normal experiments (``w is None``), the
+        admissibility region is learned by ``ValidityNet`` during
+        training; the closed-form clamp is
         not applicable. We fall back to the ``eta_explore_box`` recorded
         in the checkpoint's ``experiment_config`` metadata, with a
         small interior buffer.

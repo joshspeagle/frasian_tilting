@@ -6,9 +6,9 @@ experiment hard-codes `model = NormalNormalModel(sigma=self.sigma)` and
 `(theta, w)` grid is well-defined only on the conjugate Gaussian
 sandbox: `w = sigma0^2/(sigma^2 + sigma0^2)` is a Gaussian-only
 quantity, and the data-generating distribution is `N(theta_true, sigma)`.
-Bernoulli / Beta and other non-NN models do not enter this experiment;
-extending requires a model-protocol-level abstraction over the
-"prior axis" (out of scope today).
+Non-NN models do not enter this experiment; extending requires a
+model-protocol-level abstraction over the "prior axis" (out of
+scope today).
 
 For each cell (TiltingScheme x TestStatistic) and each (theta_true, w):
   1. Generate `n_reps` samples D ~ N(theta_true, sigma).

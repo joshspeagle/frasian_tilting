@@ -21,10 +21,10 @@ Pins the audit P1 fixes:
   K.4 / Path A — `CoverageExperiment` and `WidthExperiment` are
         documented as Normal-Normal-only by construction. The
         experiment classes hard-code `NormalNormalModel(sigma)` and
-        a `NormalDistribution` prior derived from `w`; Bernoulli /
-        Beta does not enter these experiments. Pinned by reading
-        the docstrings + verifying the experiment instances build
-        an NN model.
+        a `NormalDistribution` prior derived from `w`; non-NN models
+        do not enter these experiments. Pinned by reading the
+        docstrings + verifying the experiment instances build an NN
+        model.
 """
 
 from __future__ import annotations

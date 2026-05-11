@@ -16,7 +16,7 @@ import textwrap
 
 import pytest
 
-from frasian.models.distributions import BetaDistribution, NormalDistribution
+from frasian.models.distributions import NormalDistribution
 from frasian.models.normal_normal import NormalNormalModel
 
 
@@ -42,14 +42,6 @@ def test_normal_distribution_fingerprint_is_pure() -> None:
     # Differing loc OR scale -> differing fingerprint.
     assert a.fingerprint() != NormalDistribution(loc=0.6, scale=1.0).fingerprint()
     assert a.fingerprint() != NormalDistribution(loc=0.5, scale=1.1).fingerprint()
-
-
-@pytest.mark.L1
-def test_beta_distribution_fingerprint_is_pure() -> None:
-    a = BetaDistribution(alpha=2.0, beta=3.0)
-    b = BetaDistribution(alpha=2.0, beta=3.0)
-    assert a.fingerprint() == b.fingerprint()
-    assert a.fingerprint() != BetaDistribution(alpha=2.5, beta=3.0).fingerprint()
 
 
 @pytest.mark.L1

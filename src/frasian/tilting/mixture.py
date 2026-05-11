@@ -51,7 +51,6 @@ from .._registry import register_tilting
 from ..models._dispatch import is_normal_normal
 from ..models.base import Likelihood, Model, Posterior, Prior
 from ..models.distributions import (
-    BernoulliLikelihood,
     GaussianLikelihood,
     GaussianMixtureDistribution,
     MixtureDistribution,

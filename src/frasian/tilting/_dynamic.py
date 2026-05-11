@@ -13,10 +13,10 @@ only the `tilted_pvalue` callback is scheme-specific. Concrete
 `dynamic_tilted_confidence_interval` to `dynamic_ci_scan` here,
 passing in their own `tilted_pvalue` closure.
 
-Future non-Gaussian schemes (e.g. on a `BernoulliModel`) would need
-either a generalisation of the `|Δ|`-formula (`abs_delta(theta)`
-callback would have to be parametrised) or a sibling helper. The
-current contract bakes in the Normal-Normal sandbox.
+Future non-Gaussian schemes would need either a generalisation of
+the `|Δ|`-formula (`abs_delta(theta)` callback would have to be
+parametrised) or a sibling helper. The current contract bakes in the
+Normal-Normal sandbox.
 
 Originally duplicated across `power_law.py` and `ot.py`; extracted
 here so the algorithm has a single source of truth and so future

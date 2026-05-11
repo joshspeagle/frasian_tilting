@@ -42,12 +42,12 @@ from ..._errors import TiltingDomainError
 _FP_SLACK = 1e-9
 
 # Per-sample MC budget when routing through the scheme-specific generic
-# tilted-pvalue path (Bernoulli + any non-Normal-Normal model). The
-# validity labeller only needs to know whether the p-value is in [0, 1]
-# and finite — it does not need the high-precision MC reference of
+# tilted-pvalue path (for any non-Normal-Normal model). The validity
+# labeller only needs to know whether the p-value is in [0, 1] and
+# finite — it does not need the high-precision MC reference of
 # inference-time CI inversion. n_mc=32 keeps per-step cost tractable
 # while still producing reliable validity labels (< ~3% disagreement
-# vs n_mc=200 on Bernoulli + Beta smoke at training-typical (θ, η)).
+# vs n_mc=200 at training-typical (θ, η)).
 #
 # Audit P2 (Cluster G): exposed via the env var ``FRASIAN_N_MC_VALIDITY``
 # for sweeps that want tighter agreement with the n_mc=200 reference.
@@ -101,10 +101,10 @@ def _admissibility_mask(
     Branches on (scheme, model_kind):
 
     - power_law + normal_normal: denom = 1 - eta(1-w) > 0  ⟺  eta < 1/(1-w).
-    - power_law + non-NN (Bernoulli): finite η only — the generic
-      grid path's `log L + (1-η) log π` is well-defined for any
-      finite η on a compact support, so the per-element exception
-      path catches the residual edge cases (improper moments, etc.).
+    - power_law + non-NN: finite η only — the generic grid path's
+      `log L + (1-η) log π` is well-defined for any finite η on a
+      compact support, so the per-element exception path catches the
+      residual edge cases (improper moments, etc.).
     - ot:        eta in [0, 1] (η-box check, model-independent).
 
     For unrecognised schemes returns an all-True mask, falling back
@@ -139,9 +139,9 @@ def _admissibility_mask(
             # the strict raise bound (what `tilted_pvalue` actually
             # enforces), NOT the buffered selector bound.
             return finite & (eta_arr < 1.0 / (1.0 - w))
-        # Generic (Bernoulli, future non-conjugate models): the grid
-        # path is well-defined for any finite η on a compact support;
-        # the per-element exception path catches edge cases (improper
+        # Generic (future non-conjugate models): the grid path is
+        # well-defined for any finite η on a compact support; the
+        # per-element exception path catches edge cases (improper
         # moments, var_tilted ≈ 0).
         return finite
     if name == "ot":
@@ -199,10 +199,11 @@ def compute_pvalues_per_sample(
     Shape contract: ``theta.shape == eta.shape == (N,)``. ``D`` can
     be either 1D ``(N,)`` (one observation per θ — Normal-Normal
     historical contract) or 2D ``(N, n_data)`` (Phase 4c: a vector
-    of ``n_data`` observations per θ; required for Bernoulli where
-    a single Bernoulli flip carries no posterior signal). The 2D
-    path skips the bulk fast-path and routes per-sample so each
-    row's ``D[i]`` reaches ``scheme.tilted_pvalue`` as a 1-D dataset.
+    of ``n_data`` observations per θ; required for future non-NN
+    models where a single observation carries no posterior signal).
+    The 2D path skips the bulk fast-path and routes per-sample so
+    each row's ``D[i]`` reaches ``scheme.tilted_pvalue`` as a 1-D
+    dataset.
     """
     if not hasattr(scheme, "tilted_pvalue"):
         raise AttributeError(
@@ -251,8 +252,8 @@ def compute_pvalues_per_sample(
         return out
 
     # 2D D path or non-Normal-Normal model: drop to the per-sample
-    # loop. The closed-form NN bulk path expects a scalar D and
-    # raises on Bernoulli; routing straight to the loop avoids the
+    # loop. The closed-form NN bulk path expects a scalar D and raises
+    # on non-NN models; routing straight to the loop avoids the
     # raise/catch noise. The loop dispatches to the scheme's generic
     # MC pvalue for non-NN models.
     model_fp = getattr(model, "fingerprint", None)
@@ -322,10 +323,10 @@ def _generic_validity_fast_path_p(
     prior log-pdf on the explore box, the generic MC tilted-pvalue
     *empirically* returns a finite value in [0, 1] for every (θ, η)
     drawn from the training-time exploration distribution — the
-    validity rate is structurally ~1 (measured at 1.0000 across
-    n_mc ∈ {8, 32, 200} on canonical_bernoulli_powerlaw at n=64).
-    Running n_mc=32 MC reference draws to recover that label is
-    11+ seconds per step on Bernoulli + Beta — entirely wasted cost.
+    validity rate is structurally ~1 (historically measured at 1.0000
+    across n_mc ∈ {8, 32, 200}). Running n_mc=32 MC reference draws
+    to recover that label is 11+ seconds per step on a bounded-support
+    non-NN model — entirely wasted cost.
 
     Fast path: skip MC and return p ≡ 0.5 (any value in (0, 1)
     works; 0.5 is the median under H_0). The validity_mask then
@@ -459,8 +460,8 @@ def compute_pvalues_per_sample_with_hp(
     Constructs ``prior_i`` and ``model_i`` per element via
     ``from_hyperparams``, then calls the scheme's ``tilted_pvalue``
     (NN closed-form fast path) or the scheme's generic-MC pvalue
-    (Bernoulli + other non-NN models, where the closed-form path
-    raises ``NotImplementedError``).
+    (future non-NN models, where the closed-form path raises
+    ``NotImplementedError``).
     Returns NaN on failure (matching ``_compute_pvalues_per_sample_loop``).
     """
     n = theta_arr.shape[0]
