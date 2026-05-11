@@ -478,6 +478,296 @@ def _fr_geodesic_numerical(
 
 
 # ----------------------------------------------------------------------
+# Generic numerical path (Stage B.6) — diffrax shooting + MC reference
+# ----------------------------------------------------------------------
+#
+# Same `_GENERIC_TILTED_PVALUE_BASE_SEED` re-export as PowerLaw / OT so
+# CRN seeds align across schemes at fixed (data, prior, eta, alpha).
+from ._generic_pvalue import _GENERIC_TILTED_PVALUE_BASE_SEED  # noqa: F401
+
+_GENERIC_TILTED_PVALUE_N_MC: int = 200
+
+
+def _generic_tilt_fr(
+    posterior,
+    prior,
+    likelihood,
+    eta: float,
+    *,
+    model,
+) -> "NormalDistribution":
+    """Generic FR-tilt via the diffrax shooting machinery (Stage B.5).
+
+    Builds the FR-tilted distribution at η as a NormalDistribution at
+    ``(mu_t, sigma_t) = _fr_geodesic_numerical(theta_a, theta_b, eta)``
+    where ``theta_a = (mu_n, sigma_n)`` is the posterior parameter point
+    and ``theta_b = (D, sigma)`` is the likelihood-as-Gaussian. This
+    forces the autodiff/diffrax pipeline rather than the closed-form
+    half-plane formula, even on Normal-Normal — used by the
+    ``fr_dyn_numerical_generic`` audit flavor (B.7) to validate the
+    machinery against the Stage A closed-form path.
+
+    Currently only Gaussian endpoints are supported (rev 2 spec: FR is
+    NN-only in this PR). Non-Gaussian endpoints raise
+    ``NotImplementedError``. The diffrax/autodiff core operates on a
+    ``g_fn`` metric callable, so future non-Gaussian families plug in
+    by passing a different metric to ``_fr_geodesic_numerical``.
+    """
+    if not (
+        isinstance(posterior, NormalDistribution)
+        and isinstance(likelihood, GaussianLikelihood)
+    ):
+        raise NotImplementedError(
+            "_generic_tilt_fr currently only supports Gaussian endpoints. "
+            "Non-Gaussian endpoint pairings are out of scope for this PR "
+            "(rev 2 spec: FR is NN-only). Future PRs introducing non-Gaussian "
+            "models can plug their family's Fisher metric into "
+            "_fr_geodesic_numerical via the `g_fn` parameter."
+        )
+    theta_a = np.array([float(posterior.loc), float(posterior.scale)])
+    theta_b = np.array([float(likelihood.D), float(likelihood.sigma)])
+    theta_t = _fr_geodesic_numerical(theta_a, theta_b, float(eta))
+    mu_t = float(theta_t[0])
+    sigma_t = float(theta_t[1])
+    if sigma_t <= 0.0:
+        raise TiltingDomainError(
+            f"_generic_tilt_fr: sigma_t={sigma_t!r} non-positive at eta={eta!r} "
+            f"(geodesic crossed sigma=0 boundary; should not happen for finite "
+            f"eta on Gaussian — verify diffrax solver settings if you hit this)."
+        )
+    return NormalDistribution(loc=mu_t, scale=sigma_t)
+
+
+def _generic_tilted_pvalue_fr(
+    theta: float,
+    data: NDArray[np.float64],
+    model: object,
+    prior: Prior,
+    eta: float,
+    statistic_name: str,
+    *,
+    n_mc: int = _GENERIC_TILTED_PVALUE_N_MC,
+    derived_seed: int | None = None,
+    alpha: float = 0.0,
+    base_seed: int = _GENERIC_TILTED_PVALUE_BASE_SEED,
+    obs_moments: tuple[float, float] | None = None,
+) -> float:
+    """Generic MC tilted p-value for FisherRaoTilting on any (model, prior).
+
+    Mirrors ``power_law._generic_tilted_pvalue`` / ``ot._generic_tilted_pvalue_ot``:
+    - ``statistic_name="wald"``: eta-independent, delegates to WaldStatistic.
+    - ``statistic_name="waldo"``: MC reference under H_0 via
+      ``model.sample_data_batch(theta, ...)``, recompute t per draw using
+      ``_generic_tilt_fr``. Conservative ``(k+1)/(n+1)`` smoothing.
+      CRN-seeded via blake2b stable hash.
+
+    Implementation differences vs OT:
+    - ``_generic_tilt_fr`` returns a ``NormalDistribution`` directly
+      (Gaussian endpoints → Gaussian geodesic), so we read
+      ``(loc, scale)`` instead of running OT's Gauss-Legendre quadrature
+      on a quantile-mixture path. Simpler, no ``n_grid`` knob.
+    - No ``_resolve_support`` window or ``likelihood_as_distribution``
+      construction — FR operates on parameter points, not densities.
+    - Per-replicate Python loop over n_mc rather than a batched XLA
+      kernel: each replicate requires a diffrax BVP solve (~100-500 ms),
+      so n_mc * solve cost dominates and a batched kernel is a follow-up
+      optimisation (Stage B.6 priority: correctness; B.7 audits then
+      decide if perf is worth the engineering).
+
+    Rev 2 spec: FR is NN-only in this PR — _generic_tilt_fr raises
+    NotImplementedError on non-Gaussian endpoints.
+    """
+    from ..statistics.wald import WaldStatistic
+    from ._generic_pvalue import _stable_tilted_pvalue_seed
+
+    if statistic_name == "wald":
+        return float(np.asarray(WaldStatistic()._generic_pvalue(theta, data, model)))
+    if statistic_name != "waldo":
+        raise NotImplementedError(
+            f"FisherRaoTilting generic tilted_pvalue not implemented for "
+            f"statistic={statistic_name!r}; supported: 'wald', 'waldo'."
+        )
+
+    data_arr = np.atleast_1d(np.asarray(data, dtype=np.float64))
+    if data_arr.ndim != 1:
+        raise NotImplementedError(
+            f"FisherRaoTilting generic tilted_pvalue expects 1-D data; "
+            f"got data.ndim={data_arr.ndim}."
+        )
+
+    theta_f = float(theta)
+    eta_f = float(eta)
+    if not np.isfinite(eta_f):
+        raise TiltingDomainError(
+            f"FisherRaoTilting requires finite eta, got {eta_f!r}."
+        )
+
+    if derived_seed is None:
+        derived_seed = _stable_tilted_pvalue_seed(
+            data_arr, model, prior, eta_f, alpha, base_seed
+        )
+
+    # Observed tilted moments (theta-independent given the data) —
+    # hoist for the brentq caller, same pattern as PL/OT.
+    if obs_moments is not None:
+        mu_obs, var_obs = obs_moments
+    else:
+        posterior_obs = model.posterior(data_arr, prior)
+        likelihood_obs = model.likelihood(data_arr)
+        tilted_obs = _generic_tilt_fr(
+            posterior_obs, prior, likelihood_obs, eta_f, model=model
+        )
+        mu_obs = float(tilted_obs.loc)
+        var_obs = float(tilted_obs.scale) ** 2
+    var_obs_safe = max(var_obs, 1e-300)
+    diff_obs = mu_obs - theta_f
+    t_obs = diff_obs * diff_obs / var_obs_safe
+
+    # MC reference under H_0: theta_f. Per-replicate loop because each
+    # iteration requires a diffrax shooting solve (no batched diffrax
+    # path exists yet — see docstring).
+    rng = np.random.default_rng(derived_seed)
+    n_obs = int(data_arr.size)
+    n_mc_int = int(n_mc)
+    if hasattr(model, "sample_data_batch"):
+        D_batch = model.sample_data_batch(theta_f, rng, n_mc_int, n_obs)
+    else:
+        from ..models.base import sample_data_batch as _sample_data_batch
+        D_batch = _sample_data_batch(model, theta_f, rng, n_mc_int, n_obs)
+
+    t_samples = np.empty(n_mc_int, dtype=np.float64)
+    n_collapsed = 0
+    for i in range(n_mc_int):
+        data_i = np.atleast_1d(np.asarray(D_batch[i], dtype=np.float64))
+        try:
+            posterior_i = model.posterior(data_i, prior)
+            likelihood_i = model.likelihood(data_i)
+            tilted_i = _generic_tilt_fr(
+                posterior_i, prior, likelihood_i, eta_f, model=model
+            )
+            mu_i = float(tilted_i.loc)
+            var_i = float(tilted_i.scale) ** 2
+        except (TiltingDomainError, ValueError):
+            n_collapsed += 1
+            t_samples[i] = 0.0
+            continue
+        if not (np.isfinite(mu_i) and np.isfinite(var_i) and var_i > 0.0):
+            n_collapsed += 1
+            t_samples[i] = 0.0
+            continue
+        diff = mu_i - theta_f
+        t_samples[i] = diff * diff / var_i
+
+    if n_collapsed > n_mc_int // 2:
+        import warnings
+        warnings.warn(
+            f"FisherRaoTilting._generic_tilted_pvalue: {n_collapsed}/{n_mc_int} "
+            f"MC samples collapsed (theta={theta_f}, eta={eta_f}); empirical p "
+            f"is strongly biased upward.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
+    # +1 smoothing: conservative empirical p-value (matches PL/OT).
+    p = (float(np.sum(t_samples >= t_obs)) + 1.0) / (float(n_mc_int) + 1.0)
+    return float(p)
+
+
+def _generic_tilted_confidence_interval_fr(
+    alpha: float,
+    data: NDArray[np.float64],
+    model: object,
+    prior: Prior,
+    eta: float,
+    statistic_name: str,
+    *,
+    n_mc: int = _GENERIC_TILTED_PVALUE_N_MC,
+    base_seed: int = _GENERIC_TILTED_PVALUE_BASE_SEED,
+) -> tuple[float, float]:
+    """Generic CI inversion for FisherRaoTilting via brentq + CRN.
+
+    Mirrors ``power_law._generic_tilted_confidence_interval`` /
+    ``ot._generic_tilted_confidence_interval_ot`` structurally,
+    including explicit boundary detection and hoisted observed
+    moments. Inner kernel is ``_generic_tilted_pvalue_fr``.
+    """
+    from .._errors import BracketingFailed
+    from ._generic_pvalue import _resolve_support, _stable_tilted_pvalue_seed
+
+    data_arr = np.atleast_1d(np.asarray(data, dtype=np.float64))
+    eta_f = float(eta)
+    if not np.isfinite(eta_f):
+        raise TiltingDomainError(
+            f"FisherRaoTilting requires finite eta, got {eta_f!r}."
+        )
+    derived_seed = _stable_tilted_pvalue_seed(
+        data_arr, model, prior, eta_f, alpha, base_seed
+    )
+
+    support = _resolve_support(model, data_arr)
+    support_lo, support_hi = support
+
+    # Hoist observed moments (theta-independent given data).
+    posterior_at_obs = model.posterior(data_arr, prior)
+    likelihood_at_obs = model.likelihood(data_arr)
+    tilted_obs = _generic_tilt_fr(
+        posterior_at_obs, prior, likelihood_at_obs, eta_f, model=model
+    )
+    mu_obs = float(tilted_obs.loc)
+    var_obs = float(tilted_obs.scale) ** 2
+    var_obs_safe = max(var_obs, 1e-300)
+    sigma_tilted = float(np.sqrt(var_obs_safe))
+
+    def f(theta_val: float) -> float:
+        theta_safe = max(support_lo, min(support_hi, float(theta_val)))
+        return _generic_tilted_pvalue_fr(
+            theta_safe,
+            data_arr,
+            model,
+            prior,
+            eta_f,
+            statistic_name,
+            n_mc=n_mc,
+            derived_seed=derived_seed,
+            alpha=alpha,
+            base_seed=base_seed,
+            obs_moments=(mu_obs, var_obs),
+        ) - alpha
+
+    half = max(4.0 * sigma_tilted, 1e-3)
+
+    # Explicit boundary detection (mirrors PL/OT Phase 3c-fix1).
+    if np.isfinite(support_lo):
+        ci_extends_below = (f(support_lo) >= 0.0)
+    else:
+        ci_extends_below = False
+    if np.isfinite(support_hi):
+        ci_extends_above = (f(support_hi) >= 0.0)
+    else:
+        ci_extends_above = False
+
+    if ci_extends_below:
+        lower = support_lo
+    else:
+        try:
+            lower = brentq_with_doubling(
+                f, midpoint=mu_obs, initial_half_width=half, direction=-1
+            )
+        except BracketingFailed:
+            lower = support_lo
+    if ci_extends_above:
+        upper = support_hi
+    else:
+        try:
+            upper = brentq_with_doubling(
+                f, midpoint=mu_obs, initial_half_width=half, direction=+1
+            )
+        except BracketingFailed:
+            upper = support_hi
+    return (max(lower, support_lo), min(upper, support_hi))
+
+
+# ----------------------------------------------------------------------
 # Tilted-WALDO p-value (adaptive quadrature with brentq boundary finding)
 # ----------------------------------------------------------------------
 #

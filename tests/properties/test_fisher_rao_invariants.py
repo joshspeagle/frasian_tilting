@@ -659,3 +659,70 @@ class TestFisherRaoGeodesicNumerical:
         theta_t = _fr_geodesic_numerical(theta_a, theta_b, 0.5)
         assert np.all(np.isfinite(theta_t))
         assert theta_t[1] > 0.0, f"sigma_t = {theta_t[1]} not positive at Delta={Delta_scaled}"
+
+
+@pytest.mark.L1
+@pytest.mark.properties
+class TestFisherRaoGenericTilt:
+    """_generic_tilt_fr builds the FR-tilted distribution via diffrax shooting.
+
+    Validates that the autodiff/diffrax-based generic tilt agrees with
+    the closed-form half-plane formula on Gaussian endpoints to atol 1e-7
+    on (mu_t, sigma_t). This is the same closed-form-vs-numerical check
+    as TestFisherRaoGeodesicNumerical (B.5), but at the higher
+    Distribution-level API rather than the raw geodesic helper.
+    """
+
+    @pytest.mark.parametrize(
+        "sigma, sigma0, mu0, D, eta",
+        [
+            (1.0, 1.0, 0.0, 0.5, 0.3),
+            (2.0, 0.5, 1.0, -1.0, 0.7),
+            (0.5, 2.0, 0.0, 1.0, 0.5),
+        ],
+    )
+    def test_generic_tilt_matches_closed_form_on_normal(
+        self, sigma, sigma0, mu0, D, eta
+    ):
+        from frasian.tilting.fisher_rao import (
+            FisherRaoTilting, _generic_tilt_fr,
+        )
+        from frasian.models.normal_normal import NormalNormalModel
+        model = NormalNormalModel(sigma=sigma)
+        prior = NormalDistribution(loc=mu0, scale=sigma0)
+        lik = GaussianLikelihood(D=D, sigma=sigma)
+        post = model.posterior(np.asarray([D]), prior)
+
+        # Closed-form via the FisherRaoTilting.tilt() public API
+        scheme = FisherRaoTilting()
+        cf_dist = scheme.tilt(post, prior, lik, eta)
+        # Generic numerical via diffrax shooting
+        gen_dist = _generic_tilt_fr(post, prior, lik, eta, model=model)
+
+        assert np.isclose(gen_dist.loc, cf_dist.loc, atol=1e-7), (
+            f"mu mismatch: generic {gen_dist.loc:.8f} vs closed {cf_dist.loc:.8f}"
+        )
+        assert np.isclose(gen_dist.scale, cf_dist.scale, atol=1e-7), (
+            f"sigma mismatch: generic {gen_dist.scale:.8f} vs closed {cf_dist.scale:.8f}"
+        )
+
+    def test_generic_tilt_rejects_non_gaussian(self):
+        """_generic_tilt_fr raises NotImplementedError for non-Gaussian endpoints
+        (rev 2 spec: FR is NN-only in this PR).
+        """
+        from frasian.tilting.fisher_rao import _generic_tilt_fr
+        from frasian.models.normal_normal import NormalNormalModel
+        model = NormalNormalModel(sigma=1.0)
+        prior = NormalDistribution(loc=0.0, scale=1.0)
+        lik = GaussianLikelihood(D=0.5, sigma=1.0)
+        post = model.posterior(np.asarray([0.5]), prior)
+
+        # Simulate a non-Gaussian posterior by passing a non-NormalDistribution
+        class FakeNonNormalDistribution:
+            loc = 0.5
+            scale = 0.7
+            def pdf(self, x): return np.exp(-x**2)
+        non_normal_post = FakeNonNormalDistribution()
+
+        with pytest.raises(NotImplementedError, match="Gaussian endpoints"):
+            _generic_tilt_fr(non_normal_post, prior, lik, 0.5, model=model)
