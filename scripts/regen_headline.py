@@ -1,23 +1,33 @@
-"""Regenerate the headline empirical CI-width table.
+"""Regenerate the headline empirical CI-width table across schemes.
 
-Reproduces the table cited in ``CLAUDE.md`` and
-``docs/methods/learned_eta.md`` (post-Phase-F JAX/Equinox numbers
-from the v4 checkpoint):
+Reproduces and generalises the table cited in ``CLAUDE.md`` and
+``docs/methods/learned_eta.md``. The default invocation (all 4 schemes,
+all 3 learned heads) produces an 18-row table:
 
 ```
-                            θ=0    θ=1    θ=2    θ=3    θ=4
-Wald                        3.92   3.92   3.92   3.92   3.92
-bare WALDO                  3.33   3.43   3.75   4.23   4.78
-power_law[numerical]        3.36   3.49   3.91   4.54   5.24
-power_law[learned]          3.63   3.64   3.68   3.75   3.82
+                                              θ=0    θ=1    θ=2    θ=3    θ=4
+Wald                                          3.92   3.92   3.92   3.92   3.92
+bare WALDO                                    3.33   3.43   3.75   4.23   4.78
+power_law[numerical]                          ...
+power_law[learned_intp]                       ...
+power_law[learned_cd_var]                     ...
+power_law[learned_static_w]                   ...
+ot[numerical]                                 ...
+ot[learned_intp]                              ...
+... etc.
 ```
 
-Numbers above are NOT bit-equal to the pre-port torch numbers — JAX's
-PRNG primitive differs from torch's even at the same nominal seed, so
-re-trained Equinox weights drift within ~1× MC standard error (~0.05
-across α=0.05 narrowness MC repeats). The qualitative pattern
-(power_law[learned] calibrated AND ≤ Wald, narrow at conflict) is
-preserved.
+Numbers are NOT bit-equal to pre-port torch numbers — JAX's PRNG
+primitive differs. The qualitative pattern (`<scheme>[learned_intp]`
+calibrated AND ≤ Wald, narrow at conflict) is preserved.
+
+The ``[numerical]`` rows use ``DynamicNumericalEtaSelector`` —
+calibrated dynamic-η (η = η(θ), no D dependence → exact 1-α coverage),
+NOT the post-selection static ``NumericalEtaSelector``. Each scheme's
+dynamic-numerical η(θ) lookup is **disk-cached** at
+``artifacts/eta_lookups/dyn_numerical_<hash>.npz`` (gitignored,
+parallels NN artifacts). First run computes & saves; subsequent runs
+load instantly.
 
 jax + equinox required; the script lazily imports them and prints a
 clear error if either is unavailable. See ``docs/methods/learned_eta.md``
@@ -25,24 +35,19 @@ for the wider methodology.
 
 Usage::
 
-    python -m scripts.regen_headline                # default Config
-    python -m scripts.regen_headline --fast         # smaller grid
-    python -m scripts.regen_headline --n-reps 200   # custom reps
-
-The script loads the v4 checkpoints from ``artifacts/``,
-runs the canonical Normal-Normal width sweep at θ ∈ {0, 1, 2, 3, 4}
-with w=0.5, α=0.05, and prints the table in the same format as the
-docs. The OT learned cell is included for completeness even though
-the v4 OT checkpoint is undertrained (Head B accuracy ~0.67).
+    python -m scripts.regen_headline                                # all 4 schemes × all 3 heads
+    python -m scripts.regen_headline --fast                         # smaller MC grid
+    python -m scripts.regen_headline --schemes power_law            # one scheme only
+    python -m scripts.regen_headline --learned-heads intp           # one head only
+    python -m scripts.regen_headline --n-jobs -1                    # all cores
 """
-
-# jax + equinox required; see docs/methods/learned_eta.md
 
 from __future__ import annotations
 
 import argparse
 import os
 import sys
+from functools import partial
 from pathlib import Path
 
 
@@ -70,12 +75,7 @@ def _require_hash_seed_pinned() -> None:
 
 
 def _check_jax_available() -> None:
-    """Lazy jax/equinox availability check with a clear error path.
-
-    Avoids a hard import-time dependency so this module can be at least
-    imported (and listed by `python -m scripts.regen_headline --help`)
-    in environments without jax installed.
-    """
+    """Lazy jax/equinox availability check with a clear error path."""
     try:
         import jax  # noqa: F401
         import equinox  # noqa: F401
@@ -89,47 +89,107 @@ def _check_jax_available() -> None:
         raise SystemExit(1) from exc
 
 
-def _check_artifacts_present() -> None:
-    """Verify the local v4 checkpoints exist before running.
+_SCHEME_ARTIFACT_SUFFIX = {
+    "power_law": "powerlaw",
+    "ot": "ot",
+    "mixture": "mixture",
+    "fisher_rao": "fisher_rao",
+}
 
-    Phase G v4 fixtures are not committed (gitignored as conditional
-    fixtures are large and re-trainable from the YAMLs). Train them
-    via ``python -m scripts.train_learned_eta --config
-    experiments/canonical_*_v4.yaml``.
-    """
+_TILTING_CLASS = {
+    "power_law": "frasian.tilting.power_law:PowerLawTilting",
+    "ot": "frasian.tilting.ot:OTTilting",
+    "mixture": "frasian.tilting.mixture:MixtureTilting",
+    "fisher_rao": "frasian.tilting.fisher_rao:FisherRaoTilting",
+}
+
+_HEAD_FILE_TOKEN = {
+    "intp": "integrated_p",
+    "cd_var": "cd_variance",
+    "static_w": "static_width",
+}
+
+
+def _learned_fixture_path(scheme: str, head: str) -> Path:
     project_root = Path(__file__).resolve().parents[1]
-    artifacts = [
-        project_root / "artifacts" / "learned_eta_canonical_normal_normal_powerlaw_v4.eqx",
-        project_root / "artifacts" / "learned_eta_canonical_normal_normal_ot_v4.eqx",
-    ]
-    missing = [p for p in artifacts if not p.exists()]
-    if missing:
-        sys.stderr.write(
-            "\nERROR: missing v4 checkpoint(s):\n  "
-            + "\n  ".join(str(p) for p in missing)
-            + "\nRun `python -m scripts.train_learned_eta --config "
-            "experiments/<config>_v4.yaml` to (re)train. Phase G v4\n"
-            "checkpoints are gitignored — trained locally per developer.\n\n"
-        )
-        raise SystemExit(1)
+    suffix = _SCHEME_ARTIFACT_SUFFIX[scheme]
+    return (
+        project_root
+        / "artifacts"
+        / f"learned_eta_canonical_normal_normal_{suffix}_phaseC_{_HEAD_FILE_TOKEN[head]}_v4.eqx"
+    )
 
 
-def _compute_table(theta_grid: list[float], n_reps: int) -> dict[str, list[float]]:
-    """Run the four cells (Wald, bare WALDO, power_law[numerical],
-    power_law[learned]) at each θ in ``theta_grid`` and return a dict
-    mapping cell name to mean CI width per θ.
+def _import_tilting_class(scheme: str):
+    import importlib
 
-    Imports happen here (after the jax availability check) so the
-    module is inspectable without jax installed.
+    mod_name, cls_name = _TILTING_CLASS[scheme].split(":")
+    return getattr(importlib.import_module(mod_name), cls_name)
+
+
+def _per_d_widths(
+    D: float,
+    *,
+    alpha: float,
+    model,
+    prior,
+    identity,
+    wald_stat,
+    waldo_stat,
+    cells: list,  # list of (label, tilt) tuples; statistic is always waldo
+) -> dict[str, float]:
+    """Compute CI widths for one D sample across all cells.
+
+    Top-level for joblib pickling. NaN signals an exception; the
+    aggregator counts NaNs as failures and aborts if any cell exceeds
+    the failure threshold.
+    """
+    import numpy as np
+
+    data = np.array([D])
+    out: dict[str, float] = {}
+
+    def _safe(label, tilt, stat):
+        try:
+            lo, hi = tilt.confidence_interval(alpha, data, model, prior, stat)
+            out[label] = float(hi - lo)
+        except Exception:
+            out[label] = float("nan")
+
+    _safe("Wald", identity, wald_stat)
+    _safe("bare WALDO", identity, waldo_stat)
+    for label, tilt in cells:
+        _safe(label, tilt, waldo_stat)
+    return out
+
+
+def _compute_table(
+    theta_grid: list[float],
+    n_reps: int,
+    schemes: list[str],
+    learned_heads: list[str],
+    n_jobs: int,
+) -> tuple[list[str], dict[str, list[float]]]:
+    """Compute mean CI width per (cell, θ_true) across multiple schemes.
+
+    Row order: Wald → bare WALDO → for each scheme: <scheme>[numerical]
+    then <scheme>[learned_<head>] for each available head. Missing
+    learned-head artifacts are skipped with a log line.
     """
     import numpy as np
 
     from frasian import Config
+    from frasian._parallel import parallel_map
     from frasian._registry_bootstrap import bootstrap
+    from frasian.learned.eta_artifact import EtaArtifact
     from frasian.models.distributions import NormalDistribution
     from frasian.models.normal_normal import NormalNormalModel
     from frasian.statistics.wald import WaldStatistic
     from frasian.statistics.waldo import WaldoStatistic
+    from frasian.tilting.eta_selectors import (
+        DynamicNumericalEtaSelector,
+        LearnedDynamicEtaSelector,
+    )
     from frasian.tilting.identity import IdentityTilting
 
     bootstrap()
@@ -144,68 +204,71 @@ def _compute_table(theta_grid: list[float], n_reps: int) -> dict[str, list[float
     wald = WaldStatistic()
     identity = IdentityTilting()
 
-    # Build power_law cells with numerical and learned dynamic selectors.
-    # The env-var dispatch in default_cells handles both modes; we
-    # explicitly switch via FRASIAN_DEFAULT_DYNAMIC_ETA.
-    from frasian._default_cells import default_tiltings  # local import
+    cells: list[tuple[str, object]] = []
+    for scheme in schemes:
+        TiltingCls = _import_tilting_class(scheme)
+        # Numerical row: shared DynamicNumerical selector instance per scheme
+        # (cache reuse across repeated invocations is via the disk L2 layer).
+        cells.append(
+            (f"{scheme}[numerical]", TiltingCls(selector=DynamicNumericalEtaSelector()))
+        )
+        # Learned rows: one per available head.
+        for head in learned_heads:
+            path = _learned_fixture_path(scheme, head)
+            if not path.exists():
+                print(f"[skip] {scheme}[learned_{head}]: artifact missing at {path}")
+                continue
+            cells.append(
+                (
+                    f"{scheme}[learned_{head}]",
+                    TiltingCls(
+                        selector=LearnedDynamicEtaSelector(
+                            artifact=EtaArtifact(artifact_path=path),
+                        )
+                    ),
+                )
+            )
 
-    os.environ["FRASIAN_DEFAULT_DYNAMIC_ETA"] = "numerical"
-    pl_numerical = next(
-        t
-        for t in default_tiltings()
-        if getattr(t, "cell_name", "") == "power_law[dynamic_numerical]"
-    )
+    # Prime each cell once in the main process so the in-memory state
+    # (DynNumerical's dict + L2 disk write; LearnedDynamic's `_loaded`
+    # latch + JAX) is set before workers pickle copies. Without this,
+    # every worker would pay the same first-call cost independently.
+    dummy_data = np.array([0.0])
+    for label, tilt in cells:
+        try:
+            tilt.confidence_interval(cfg.alpha, dummy_data, model, prior, waldo)
+        except Exception:
+            pass
 
-    os.environ["FRASIAN_DEFAULT_DYNAMIC_ETA"] = "learned"
-    pl_learned = next(
-        t
-        for t in default_tiltings()
-        if "learned" in getattr(t, "cell_name", "")
-        and getattr(t, "cell_name", "").startswith("power_law")
+    row_labels = ["Wald", "bare WALDO", *[label for label, _ in cells]]
+    out: dict[str, list[float]] = {label: [] for label in row_labels}
+
+    max_fail_fraction = 0.05
+
+    worker = partial(
+        _per_d_widths,
+        alpha=cfg.alpha,
+        model=model,
+        prior=prior,
+        identity=identity,
+        wald_stat=wald,
+        waldo_stat=waldo,
+        cells=cells,
     )
 
     rng = np.random.default_rng(cfg.seed)
-    out: dict[str, list[float]] = {
-        "Wald": [],
-        "bare WALDO": [],
-        "power_law[numerical]": [],
-        "power_law[learned]": [],
-    }
-
-    # Abort if more than this fraction of reps fail at any θ for any cell.
-    # Silent NaN in headline regen defeats the script's purpose; a small
-    # number of failures (<5%) at the conflict band can be tolerated, but
-    # any larger fraction means the cell is broken or the data are
-    # outside the calibrated regime — surface, don't silently emit NaN.
-    max_fail_fraction = 0.05
-
     for theta_true in theta_grid:
         D_samples = rng.normal(loc=theta_true, scale=sigma, size=cfg.n_reps)
+        per_d_results = parallel_map(worker, D_samples.tolist(), n_jobs=n_jobs)
 
-        widths: dict[str, list[float]] = {k: [] for k in out}
-        fails: dict[str, int] = {k: 0 for k in out}
-        for D in D_samples:
-            data = np.array([D])
-            try:
-                lo, hi = identity.confidence_interval(cfg.alpha, data, model, prior, wald)
-                widths["Wald"].append(hi - lo)
-            except Exception:
-                fails["Wald"] += 1
-            try:
-                lo, hi = identity.confidence_interval(cfg.alpha, data, model, prior, waldo)
-                widths["bare WALDO"].append(hi - lo)
-            except Exception:
-                fails["bare WALDO"] += 1
-            try:
-                lo, hi = pl_numerical.confidence_interval(cfg.alpha, data, model, prior, waldo)
-                widths["power_law[numerical]"].append(hi - lo)
-            except Exception:
-                fails["power_law[numerical]"] += 1
-            try:
-                lo, hi = pl_learned.confidence_interval(cfg.alpha, data, model, prior, waldo)
-                widths["power_law[learned]"].append(hi - lo)
-            except Exception:
-                fails["power_law[learned]"] += 1
+        widths: dict[str, list[float]] = {k: [] for k in row_labels}
+        fails: dict[str, int] = {k: 0 for k in row_labels}
+        for r in per_d_results:
+            for cell, w in r.items():
+                if np.isnan(w):
+                    fails[cell] += 1
+                else:
+                    widths[cell].append(w)
 
         for cell, n_fail in fails.items():
             frac = n_fail / max(cfg.n_reps, 1)
@@ -221,15 +284,18 @@ def _compute_table(theta_grid: list[float], n_reps: int) -> dict[str, list[float
         for cell, ws in widths.items():
             out[cell].append(float(np.mean(ws)) if ws else float("nan"))
 
-    return out
+    return row_labels, out
 
 
-def _print_table(theta_grid: list[float], rows: dict[str, list[float]]) -> None:
-    header = "                            " + "    ".join(f"θ={int(t)}" for t in theta_grid)
+def _print_table(
+    theta_grid: list[float], row_labels: list[str], rows: dict[str, list[float]]
+) -> None:
+    label_width = max(28, max(len(label) for label in row_labels) + 2)
+    header = " " * label_width + "    ".join(f"θ={int(t)}" for t in theta_grid)
     print(header)
-    for label in ("Wald", "bare WALDO", "power_law[numerical]", "power_law[learned]"):
+    for label in row_labels:
         vals = "   ".join(f"{v:.2f}" for v in rows[label])
-        print(f"{label:<28}{vals}")
+        print(f"{label:<{label_width}}{vals}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -240,16 +306,53 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--n-reps", type=int, default=200, help="MC reps per θ (default 200, matches headline)"
     )
+    parser.add_argument(
+        "--schemes",
+        nargs="*",
+        choices=tuple(_SCHEME_ARTIFACT_SUFFIX),
+        default=list(_SCHEME_ARTIFACT_SUFFIX),
+        help=(
+            "tilting schemes supplying the [numerical] and [learned_*] rows. "
+            "Default: all four (power_law, ot, mixture, fisher_rao)."
+        ),
+    )
+    parser.add_argument(
+        "--learned-heads",
+        nargs="*",
+        choices=tuple(_HEAD_FILE_TOKEN),
+        default=list(_HEAD_FILE_TOKEN),
+        help=(
+            "trained heads to include as separate rows per scheme. Default: "
+            "all three (intp, cd_var, static_w). Missing artifacts are "
+            "skipped with a log line."
+        ),
+    )
+    parser.add_argument(
+        "--n-jobs",
+        type=int,
+        default=1,
+        help=(
+            "Worker processes for the per-D-sample inner loop (joblib loky). "
+            "Default 1 (serial). -1 = all available cores. JAX state stays "
+            "per-worker; expect ~1-2s startup per worker. Use with --n-reps "
+            ">= 200 to amortise."
+        ),
+    )
     args = parser.parse_args(argv)
 
     _require_hash_seed_pinned()
     _check_jax_available()
-    _check_artifacts_present()
 
     theta_grid = [0.0, 1.0, 2.0, 3.0, 4.0]
     n_reps = 50 if args.fast else args.n_reps
-    rows = _compute_table(theta_grid, n_reps=n_reps)
-    _print_table(theta_grid, rows)
+    row_labels, rows = _compute_table(
+        theta_grid,
+        n_reps=n_reps,
+        schemes=list(args.schemes),
+        learned_heads=list(args.learned_heads),
+        n_jobs=args.n_jobs,
+    )
+    _print_table(theta_grid, row_labels, rows)
     return 0
 
 
