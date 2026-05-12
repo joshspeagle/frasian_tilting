@@ -480,10 +480,14 @@ class DynamicNumericalEtaSelector:
     # (gitignored, parallels the trained EtaArtifacts). Set False to
     # disable disk persistence; the in-memory L1 still applies.
     use_disk_cache: bool = True
-    # Cache version string: bump when the inner solver's behaviour
-    # changes so on-disk artifacts from older versions are invalidated
-    # (their hashes differ). Currently "v1".
-    cache_version: ClassVar[str] = "v1"
+    # Cache version: derived dynamically from the source code of the
+    # inner solver methods (`NumericalEtaSelector.select_grid` and
+    # `NumericalEtaSelector._eta_bounds`). When either changes, the
+    # source hash changes, the cache key changes, and old `.npz` files
+    # silently miss instead of returning stale numbers. Manual override
+    # via `cache_version_override` (e.g. for tests or forced
+    # invalidation).
+    cache_version_override: str | None = None
     # In-memory L1 cache. Excluded from `__eq__` / `__hash__` / `__repr__`
     # via `compare=False, repr=False, hash=False` so two selectors with
     # the same configuration but different cache populations are equal
@@ -520,6 +524,30 @@ class DynamicNumericalEtaSelector:
         )
         return float(out[0])
 
+    @staticmethod
+    def _inner_solver_version() -> str:
+        """8-char SHA-256 of the inner-solver source code.
+
+        Bumps automatically when `NumericalEtaSelector.select_grid` or
+        `_eta_bounds` change, invalidating on-disk caches that were
+        produced by older code. Without this, an unrelated future commit
+        to the inner solver could silently change cached η-values without
+        anyone noticing the headline numbers drifted.
+        """
+        import hashlib
+        import inspect
+
+        try:
+            src = (
+                inspect.getsource(NumericalEtaSelector.select_grid)
+                + inspect.getsource(NumericalEtaSelector._eta_bounds)
+            )
+        except (OSError, TypeError):
+            # Source unavailable (zipped install, REPL); fall back to a
+            # safe constant — caches will be sticky but cross-version.
+            return "src_unavailable"
+        return hashlib.sha256(src.encode()).hexdigest()[:8]
+
     def _cache_key(
         self,
         scheme_name: str,
@@ -529,11 +557,15 @@ class DynamicNumericalEtaSelector:
         prior_fp: tuple | None,
     ) -> str:
         """24-char SHA-256 of the cache key. Excludes endpoints and request
-        resolution — those are absorbed by the wide stored grid + np.interp."""
+        resolution — those are absorbed by the wide stored grid + np.interp.
+        Includes a source-derived version so inner-solver changes auto-
+        invalidate stale on-disk caches.
+        """
         import hashlib
 
+        version = self.cache_version_override or self._inner_solver_version()
         components = (
-            self.cache_version,
+            version,
             scheme_name,
             statistic_name,
             f"{alpha:.10g}",
@@ -558,22 +590,56 @@ class DynamicNumericalEtaSelector:
         try:
             data = np.load(path)
             return (np.asarray(data["theta"]), np.asarray(data["eta"]))
-        except Exception:
-            # Corrupt or schema-mismatched file — pretend it's missing.
+        except Exception as exc:
+            # Corrupt or schema-mismatched file — warn, unlink, recompute.
+            # Silent recovery would mask cache corruption (e.g. from a
+            # truncated write under concurrent boundary-retry without the
+            # atomic-write guarantee); the warning makes "cache slow today"
+            # observable as "cache broken today".
+            import warnings
+
+            warnings.warn(
+                f"DynamicNumerical: corrupt eta_lookup at {path} "
+                f"({type(exc).__name__}: {exc}); deleting and recomputing.",
+                RuntimeWarning,
+                stacklevel=3,
+            )
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                pass
             return None
 
     def _save_to_disk(self, key: str, theta: np.ndarray, eta: np.ndarray) -> None:
         path = self._disk_cache_path(key)
         path.parent.mkdir(parents=True, exist_ok=True)
-        # Non-atomic write: the headline / experiment use case primes the
-        # cache once in the main process before any parallel dispatch, so
-        # workers never race on these writes. `path` already ends in
-        # `.npz` so `np.savez` doesn't auto-append. Failures here are
-        # swallowed; the in-memory L1 cache still serves correct values.
+        # Atomic write: write to a unique tmp path with `.npz` suffix
+        # (so `np.savez` doesn't auto-append), then `os.replace` to the
+        # final path. Atomic on POSIX (and on WSL drvfs for files in the
+        # same directory). Required because workers can recompute
+        # concurrently when `dynamic_ci_scan`'s boundary-retry path
+        # overflows the originally-primed cache extent (see _dynamic.py).
+        # Failures are swallowed; the in-memory L1 cache still serves
+        # correct values for this process.
+        import os
+        import tempfile
+
+        tmp_path: Path | None = None
         try:
-            np.savez(path, theta=theta, eta=eta)
+            fd, tmp_name = tempfile.mkstemp(
+                prefix="tmp_", suffix=".npz", dir=str(path.parent)
+            )
+            os.close(fd)
+            tmp_path = Path(tmp_name)
+            np.savez(tmp_path, theta=theta, eta=eta)
+            os.replace(str(tmp_path), str(path))
+            tmp_path = None
         except Exception:
-            pass
+            if tmp_path is not None:
+                try:
+                    tmp_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
 
     def select_grid(
         self,
@@ -1197,6 +1263,25 @@ class LearnedDynamicEtaSelector:
         ``experiment_config`` metadata, with a small interior buffer.
         """
         del alpha  # bounds are α-independent
+        # NaN/Inf guard: clamp logic below uses comparisons that silently
+        # return False on NaN, so non-finite η would pass through and
+        # corrupt the dynamic CI scan. Raise loudly instead.
+        if not np.all(np.isfinite(eta)):
+            from .._errors import MissingArtifactError
+
+            n_bad = int((~np.isfinite(eta)).sum())
+            raise MissingArtifactError(
+                f"{self.artifact.name}: {n_bad}/{eta.size} predicted η values "
+                f"are non-finite (NaN or Inf). The trained network is broken or "
+                f"extrapolating into a numerically degenerate region; refuse "
+                f"rather than silently corrupt the dynamic CI scan."
+            )
+        # Fisher-Rao first: scheme-level invariant (geodesically complete on
+        # the half-plane, Cartan-Hadamard) — no clamp regardless of the
+        # NN/non-NN dispatch below. Returning η as-is here also short-circuits
+        # the eta_explore_box fallback in the `w is None` branch.
+        if scheme.name == "fisher_rao":
+            return eta
         if w is None:
             # Phase G non-NN: no closed-form admissibility window;
             # ValidityNet learned the boundary. Read the training-time
@@ -1219,11 +1304,7 @@ class LearnedDynamicEtaSelector:
                 if not (0.0 < w < 1.0):
                     raise ValueError(f"w must lie in (0, 1); got {w!r}")
                 buffer = 1e-3
-                if scheme.name == "fisher_rao":
-                    # Geodesically complete; no closed-form bound applies.
-                    # Return η as-is (no clamp, no warning).
-                    return eta
-                elif scheme.name == "mixture":
+                if scheme.name == "mixture":
                     lo, hi = 0.0 + buffer, 1.0 - buffer
                 elif scheme.name == "ot":
                     sqrt_w = float(np.sqrt(w))
