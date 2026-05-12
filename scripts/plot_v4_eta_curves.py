@@ -99,13 +99,24 @@ def _numerical_eta(scheme: str, theta_grid, mu0, sigma0, sigma):
 def _admissibility_bounds(scheme: str, w: float) -> tuple[float, float] | None:
     """Return (eta_min, eta_max) for display, or None if scheme is unbounded.
 
-    Fisher-Rao is geodesically complete on the half-plane (η ∈ ℝ); the
-    other three schemes have finite admissibility and benefit from an
-    explicit clip + axhlines on the demo plot.
+    Per the deriver-produced admissibility (PL/OT briefs, see
+    `docs/methods/{power_law,ot}.md` and the corrected runtime clamp at
+    `tilting/eta_selectors.py:_maybe_clamp_eta`):
+
+    - power_law:  η < 1/(1-w)             (upper-only; no finite lower)
+    - ot:         η > -√w/(1-√w)          (lower-only; no finite upper)
+    - mixture:    η ∈ [0, 1]              (structural sigmoid at training)
+    - fisher_rao: η ∈ ℝ                   (geodesically complete; no bounds)
+
+    `np.inf` / `-np.inf` mark the unbounded side; callers should skip
+    clip + axhline on those sides.
     """
     if scheme == "power_law":
-        return (-w / (1.0 - w), 1.0 / (1.0 - w))
-    if scheme in ("ot", "mixture"):
+        return (-np.inf, 1.0 / (1.0 - w))
+    if scheme == "ot":
+        sqrt_w = float(np.sqrt(w))
+        return (-sqrt_w / (1.0 - sqrt_w), np.inf)
+    if scheme == "mixture":
         return (0.0, 1.0)
     if scheme == "fisher_rao":
         return None
@@ -129,11 +140,16 @@ def main(scheme: str = "power_law", out: Path | None = None) -> Path:
     eta_num = _numerical_eta(scheme, theta_grid, mu0_a, sigma0_a, sigma_a)
     if bounds_a is not None:
         eta_min_a, eta_max_a = bounds_a
-        # Display-clip the numerical curve to keep it from squashing the plot.
-        # The actual selector clips at admissibility too; we show a slightly
-        # tighter window for legibility.
-        eta_num_disp = np.clip(eta_num, eta_min_a + 0.02, eta_max_a - 0.02)
-        num_label = "numerical optimum (clipped to admissibility)"
+        # Display-clip only on bounded sides — PL/OT have one-sided bounds
+        # (`-inf` / `+inf` on the unbounded side); FR is `None` (handled in
+        # the `else` branch); mixture is two-sided [0, 1].
+        clip_lo = (eta_min_a + 0.02) if np.isfinite(eta_min_a) else -np.inf
+        clip_hi = (eta_max_a - 0.02) if np.isfinite(eta_max_a) else np.inf
+        eta_num_disp = np.clip(eta_num, clip_lo, clip_hi)
+        if np.isfinite(eta_min_a) and np.isfinite(eta_max_a):
+            num_label = "numerical optimum (clipped to admissibility)"
+        else:
+            num_label = "numerical optimum (clipped on bounded side only)"
     else:
         eta_num_disp = eta_num
         num_label = "numerical optimum"
@@ -152,13 +168,20 @@ def main(scheme: str = "power_law", out: Path | None = None) -> Path:
     ax_a.axhline(1.0, color="red", lw=0.6, alpha=0.5, ls="--", label="η=1 (Wald)")
     ax_a.axhline(0.0, color="green", lw=0.6, alpha=0.5, ls="--", label="η=0 (WALDO)")
     if bounds_a is not None:
-        ax_a.axhline(bounds_a[0], color="grey", lw=0.5, alpha=0.5)
-        ax_a.axhline(bounds_a[1], color="grey", lw=0.5, alpha=0.5)
+        # Only draw axhlines for finite bounds (PL has +inf upper invisible;
+        # OT has -inf lower invisible — represent the unbounded sides as
+        # missing axhlines, which is honest about the scheme structure).
+        if np.isfinite(bounds_a[0]):
+            ax_a.axhline(bounds_a[0], color="grey", lw=0.5, alpha=0.5)
+        if np.isfinite(bounds_a[1]):
+            ax_a.axhline(bounds_a[1], color="grey", lw=0.5, alpha=0.5)
     ax_a.axvline(mu0_a, color="purple", lw=0.5, alpha=0.4, ls=":")
     ax_a.set_xlabel("θ")
     ax_a.set_ylabel("η(θ)")
     if bounds_a is not None:
-        admiss_line = f"admissibility: ({bounds_a[0]:+.2f}, {bounds_a[1]:+.2f})"
+        lo_s = f"{bounds_a[0]:+.2f}" if np.isfinite(bounds_a[0]) else "−∞"
+        hi_s = f"{bounds_a[1]:+.2f}" if np.isfinite(bounds_a[1]) else "+∞"
+        admiss_line = f"admissibility: ({lo_s}, {hi_s})"
     else:
         admiss_line = "admissibility: η ∈ ℝ (geodesically complete)"
     ax_a.set_title(

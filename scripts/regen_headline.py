@@ -29,6 +29,18 @@ dynamic-numerical η(θ) lookup is **disk-cached** at
 parallels NN artifacts). First run computes & saves; subsequent runs
 load instantly.
 
+Per-scheme admissibility (per the deriver work — see PL/OT briefs and
+``tilting/eta_selectors.py:_maybe_clamp_eta``):
+
+  - power_law:  η < 1/(1-w)              (upper-only; no finite lower)
+  - ot:         η > -√w/(1-√w)           (lower-only; no finite upper)
+  - mixture:    η ∈ [0, 1]               (structural sigmoid bound)
+  - fisher_rao: η ∈ ℝ                    (geodesically complete; no clamp)
+
+The runtime LearnedDynamicEtaSelector enforces these bounds; the
+[numerical] rows compute their η inside admissibility by construction
+(width-minimisation over the admissible range).
+
 jax + equinox required; the script lazily imports them and prints a
 clear error if either is unavailable. See ``docs/methods/learned_eta.md``
 for the wider methodology.
