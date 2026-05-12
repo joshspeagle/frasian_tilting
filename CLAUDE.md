@@ -110,7 +110,7 @@ future non-NN model that lands.
 | `identity`   | implemented   | No-op tilting; identity element of the matrix                                        |
 | `power_law`  | implemented   | e-geodesic / log-linear (geometric mean); Theorem 6 closed form on Normal-Normal     |
 | `ot`         | implemented   | W2 geodesic; general 1D quantile-mixture, Gaussian fast path; posterior↔likelihood   |
-| `mixture`    | stub          | m-geodesic / linear-density (arithmetic mean); dual partner of `power_law`           |
+| `mixture`    | implemented   | m-geodesic / linear-density (arithmetic mean); dual partner of `power_law`. Closed-form NN tilt + WALDO p-value, structural sigmoid (0,1) bound on EtaNet output (row 13c). |
 | `fisher_rao` | implemented   | Levi-Civita / Riemannian geodesic on the Gaussian half-plane; closed-form NN tilt + WALDO p-value (Stage A), generic autodiff path via diffrax shooting BVP (Stage B), Phase G v4 learned-η fixtures for all 3 heads (Stage C). Smoothness comparison vs PL/OT/MX in Stage D. |
 
 These four cover the canonical geodesic taxonomy: e-/m-geodesics
@@ -273,8 +273,8 @@ src/frasian/
     power_law.py             # PowerLawTilting (e-geodesic / Theorem 6)
     ot.py                    # OTTilting (W2 geodesic, general 1D + Gaussian fast path)
     quantile_mixture.py      # QuantileMixturePath: 1D W2-geodesic Distribution wrapper
-    fisher_rao.py            # planned stub
-    mixture.py               # planned stub
+    fisher_rao.py            # FisherRaoTilting (Levi-Civita geodesic on the Gaussian half-plane; Stages A-D)
+    mixture.py               # MixtureTilting (m-geodesic / dual partner of power_law)
 
   statistics/
     base.py                  # TestStatistic + AsymptoticDistribution
@@ -299,8 +299,8 @@ src/frasian/
     confidence_distribution.py  # ConfidenceDistributionExperiment
     illustrations/           # one demo per registered method
       identity_demo.py, wald_demo.py, waldo_demo.py,
-      power_law_demo.py, ot_demo.py, learned_eta_demo.py,
-      smoothness_demo.py, confidence_distribution_demo.py
+      power_law_demo.py, ot_demo.py, mixture_demo.py, fisher_rao_demo.py,
+      learned_eta_demo.py, smoothness_demo.py, confidence_distribution_demo.py
 
   diagnostics/
     base.py                  # Diagnostic + DiagnosticTable
@@ -364,9 +364,10 @@ scripts/
   plot_v4_eta_curves.py      # η(θ) diagnostic plot for trained v4 fixtures
 
 experiments/
-  canonical_normal_normal_powerlaw_v4.yaml  # Phase G v4 conditional fixture (NN + power_law)
-  canonical_normal_normal_ot_v4.yaml        # Phase G v4 conditional fixture (NN + ot)
-  canonical_normal_normal_mixture_v4.yaml   # Phase G v4 conditional fixture (NN + mixture)
+  canonical_normal_normal_powerlaw_v4.yaml   # Phase G v4 conditional fixture (NN + power_law)
+  canonical_normal_normal_ot_v4.yaml         # Phase G v4 conditional fixture (NN + ot)
+  canonical_normal_normal_mixture_v4.yaml    # Phase G v4 conditional fixture (NN + mixture)
+  canonical_normal_normal_fisher_rao_v4.yaml # Phase G v4 conditional fixture (NN + fisher_rao)
 
 artifacts/                   # trained Phase G v4 checkpoints; gitignored — train locally
 
@@ -518,7 +519,7 @@ edit a checkpoint file in place — replace atomically. Pinned by
 | 13a  | done   | MixtureTilting (m-geodesic) Stage A+B: closed-form NN tilt + WALDO p-value via quadratic-roots branching + GaussianMixtureDistribution / MixtureDistribution + generic-MC path + 4 selectors + 9 mx_* audit flavors. Briefs + tests + minimal illustration. See `docs/methods/mixture.md` and `docs/notes/2026-05-09-mixture-smoothness-and-learned-eta-tails.md`. |
 | 13b  | partial limitation | Phase G v4 `integrated_p` training produces near-constant per-cell η across all four schemes (median per-cell std ~5e-4, cross-cell spread 0.10-0.20). Other losses (`cd_variance`, `static_width`) can produce stronger adaptation on specific scheme combinations (FR cd_variance: spread 1.43; PL static_width: spread 0.78) but most non-integrated_p fixtures still show modest per-cell stds (1e-3 to 4e-3). The architecture **is** capable of input-sensitive learning; the limitation is loss-specific to integrated_p, not architectural. See [`docs/notes/2026-05-11-row-13b-loss-specificity-cross-scheme.md`](docs/notes/2026-05-11-row-13b-loss-specificity-cross-scheme.md). |
 | 13c  | done   | Mixture EtaNet structural sigmoid bound. EtaNet supports `output_bounds: tuple[float, float] \| None`; `train.py` dispatches `(0.0, 1.0)` for `scheme=="mixture"`, `None` otherwise (no-op for PL/OT). Fixes the cd_variance boundary-attractor pathology: pre-bound mx_learned_cd_var had coverage 0.22-0.93 (catastrophic), post-bound 0.955-0.965 (calibrated). cd_var val 13.57 → 1.25, η_valid 0.811 → 1.000. Bound is no-op for mx intp/static_w (their optima already in [0, 1]). See [`docs/notes/2026-05-10-mixture-cd-variance-instability.md`](docs/notes/2026-05-10-mixture-cd-variance-instability.md). |
-| 14   | done   | FisherRaoTilting (Levi-Civita / Riemannian geodesic on the Gaussian half-plane) implemented end-to-end across Stages A-D: closed-form NN tilt + WALDO p-value via half-plane geodesic (Stage A), generic autodiff path via diffrax shooting BVP (Stage B), Phase G v4 learned-η training across 3 heads with FR cd_var hyperparam regime fix (Stage C), and 4×4 schemes-vs-selectors smoothness comparison (`scripts/compare_geodesic_smoothness.py` + 32-row CSV; Stage D). Headline finding: FR/MX/OT all produce smoother CI-width(D) than PL on Lipschitz/TV/spectral metrics by 3-100×, but FR `dyn_numerical` collapses to bare WALDO at w=0.5 (per-θ static optimum η=0). See [`docs/notes/2026-05-11-fisher-rao-vs-others-smoothness.md`](docs/notes/2026-05-11-fisher-rao-vs-others-smoothness.md). |
+| 14   | done   | FisherRaoTilting (Levi-Civita / Riemannian geodesic on the Gaussian half-plane) implemented end-to-end across Stages A-D: closed-form NN tilt + WALDO p-value via half-plane geodesic (Stage A), generic autodiff path via diffrax shooting BVP (Stage B), Phase G v4 learned-η training across all 3 loss heads (integrated_p / cd_variance / static_width) with FR cd_var hyperparam regime fix (Stage C), and 4×4 schemes-vs-selectors smoothness comparison (`scripts/compare_geodesic_smoothness.py` + 32-row CSV; Stage D). Headline finding: FR/MX/OT all produce smoother CI-width(D) than PL on Lipschitz/TV/spectral metrics by 3-100×, but FR `dyn_numerical` collapses to bare WALDO at w=0.5 (per-θ static optimum η=0). See [`docs/notes/2026-05-11-fisher-rao-vs-others-smoothness.md`](docs/notes/2026-05-11-fisher-rao-vs-others-smoothness.md). Post-merge `run_wald_audit` populated all 16 (4 schemes × 4 selectors) cells: all calibrated (mean cov 0.953-0.959); on tail-max CI-width at the conflict band, **OT learned cells are tightest** (`ot[learned_cd_var]` at +13% over Wald; OT occupies 3 of the top 4 ranks) followed by `pl[learned_cd_var]` (+18%) and `fr[learned_static_w]` (+25%). `fr[learned_cd_var]` is pathological (+135% — trained negative-η produces wide CIs even unclamped); `fr[dyn_numerical]` reproduces bare WALDO. Full table in [`docs/notes/2026-05-12-cross-scheme-wald-audit.md`](docs/notes/2026-05-12-cross-scheme-wald-audit.md). |
 
 ## Easily-Conflated Distinctions (read before diagnostic work)
 

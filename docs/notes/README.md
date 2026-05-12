@@ -112,3 +112,38 @@ changed" section if they care to.
   / coverage 0.22-0.93 → post-bound val=1.25 / η_valid=1.000 /
   coverage 0.955-0.965. No-op for intp/static_w (their optima
   already in [0, 1]).
+- [2026-05-11-fisher-rao-cd-var-hyperparams.md](./2026-05-11-fisher-rao-cd-var-hyperparams.md) —
+  Stage C.4 finding: FR cd_var training diverges under default
+  hyperparams (22/34 non-finite skipped steps; val peaks at ep 2 then
+  climbs). Cause: Head B's boundary penalty is structurally inert for
+  FR (geodesically complete → all η valid → BCE class-degenerate).
+  Fix: `--lr-a 1e-4 --grad-clip-max-norm 0.5` regime gives clean 47%
+  val descent + strongest per-θ + cross-cell adaptation of any FR
+  head (spread 1.43, η range [-1.98, 0.03]). Documents the
+  OOD-θ override that masks negative-η outside the σ₀-anchored box.
+- [2026-05-11-row-13b-loss-specificity-cross-scheme.md](./2026-05-11-row-13b-loss-specificity-cross-scheme.md) —
+  Stage C.5 cross-scheme probe of all 12 Phase G v4 fixtures:
+  row-13b's "near-constant per-cell" pattern is **loss-specific to
+  integrated_p**, not architectural. Median per-cell std 5.5e-4 for
+  integrated_p across all 4 schemes; cd_variance/static_width can
+  show stronger adaptation on specific (scheme, loss) combinations
+  (FR cd_variance spread 1.43; PL static_width spread 0.78) but
+  most non-integrated_p cells stay modest. CLAUDE.md row 13b
+  softened to "partial limitation" per the proposed replacement text.
+- [2026-05-11-fisher-rao-vs-others-smoothness.md](./2026-05-11-fisher-rao-vs-others-smoothness.md) —
+  Stage D headline: 16-cell smoothness comparison across PL/OT/MX/FR ×
+  4 selectors at the canonical NN sandbox. FR/MX/OT beat PL on
+  Lipschitz/TV/spectral at dyn_numerical CI-width by 3-100×, but FR's
+  win at w=0.5 is **degenerate** (per-θ static optimum collapses to
+  η=0 → bare WALDO). discontinuity_count ranking reverses (MX 32 <
+  PL 40 < OT 46 < FR 52). Pinned by 4 regression tests in
+  `tests/regression/test_smoothness_comparison.py`.
+- [2026-05-12-cross-scheme-wald-audit.md](./2026-05-12-cross-scheme-wald-audit.md) —
+  Post-FR-merge `run_wald_audit` populated all 16 (4 schemes × 4
+  selectors) cells. All calibrated (mean cov 0.953-0.959); on
+  tail-max CI-width at the conflict band, OT occupies 3 of the top
+  4 ranks (`ot[learned_cd_var]` +13% over Wald). `fr[learned_cd_var]`
+  is pathological at +135% (negative-η on FR's unbounded
+  admissibility); `fr[dyn_numerical]` reproduces bare WALDO at w=0.5.
+  `fr_dyn_numerical_generic` deferred (~5h to run; math-validation
+  infrastructure per the FR brief).
