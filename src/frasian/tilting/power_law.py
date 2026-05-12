@@ -460,6 +460,7 @@ def _generic_tilted_mc_reference_batch(
     n_mc: int,
     n_grid: int,
     rng: np.random.Generator,
+    statistic_name: str = "waldo",
 ) -> tuple[NDArray[np.float64], int]:
     """Vectorised MC reference for the power-law tilted p-value.
 
@@ -539,11 +540,42 @@ def _generic_tilted_mc_reference_batch(
     finite_row = finite_z & finite_var
     n_collapsed = int(np.sum(~finite_row))
 
-    diff = mean_arr - float(theta_f)
-    with np.errstate(invalid="ignore", divide="ignore"):
-        t = diff * diff / np.where(finite_row, var_tilted, 1.0)
-    t_samples = np.where(finite_row, t, 0.0)
-    return t_samples, n_collapsed
+    if statistic_name == "waldo":
+        diff = mean_arr - float(theta_f)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            t = diff * diff / np.where(finite_row, var_tilted, 1.0)
+        t_samples = np.where(finite_row, t, 0.0)
+        return t_samples, n_collapsed
+
+    if statistic_name in ("lrto", "scoreo"):
+        # Reuse the existing per-row tilted log-density:
+        # log q normalised = log_q - log_q_max - log(Z). Iterate row-
+        # wise (n_mc is bounded ≤ a few hundred; the per-row τ call is
+        # a constant-time grid op so the loop is cheap).
+        log_Z = np.where(finite_z, np.log(np.maximum(Z, 1e-300)), 0.0)
+        log_pdf_rows = log_q - log_q_max - log_Z[:, None]  # (n_mc, n_grid)
+        t_samples = np.zeros(int(n_mc), dtype=np.float64)
+        tau_fn = _grid_tau_lrto if statistic_name == "lrto" else _grid_tau_scoreo
+        # Recount collapsed to include rows where τ comes back non-finite
+        # (e.g. SCOREO's I≤0 → NaN; or LRTO/SCOREO returning +inf when
+        # the theta_f falls outside the row's grid window).
+        n_collapsed_stat = n_collapsed
+        for j in range(int(n_mc)):
+            if not finite_z[j]:
+                continue  # already counted in n_collapsed; t=0
+            tau_j = tau_fn(log_pdf_rows[j], theta_grid, float(theta_f))
+            if not np.isfinite(tau_j):
+                # Conservative: treat as not-more-extreme, count as collapsed.
+                t_samples[j] = 0.0
+                n_collapsed_stat += 1
+            else:
+                t_samples[j] = float(tau_j)
+        return t_samples, int(n_collapsed_stat)
+
+    raise NotImplementedError(
+        f"_generic_tilted_mc_reference_batch not implemented for "
+        f"statistic={statistic_name!r}; supported: 'waldo', 'lrto', 'scoreo'."
+    )
 
 
 def _compute_obs_moments_per_eta_vec(
@@ -695,10 +727,32 @@ def _generic_tilted_pvalue_vec(
             for t in theta_arr_np
         ], dtype=np.float64)
 
+    if statistic_name in ("lrto", "scoreo"):
+        # lrto/scoreo on the vec path: the per-replicate τ is a per-row
+        # grid op (max / interp / central-difference), not a closed-form
+        # quadratic, so the triple-batched vectorisation buys little here.
+        # Fall back to the scalar generic path per (theta_i, eta_i).
+        # Used only by dynamic-η fine scans for non-NN models — niche
+        # enough that the per-theta Python loop is acceptable.
+        return np.asarray([
+            _generic_tilted_pvalue(
+                float(theta_arr_np[i]),
+                data,
+                model,
+                prior,
+                float(eta_arr_np[i]),
+                statistic_name,
+                n_mc=int(n_mc),
+                alpha=float(alpha),
+                base_seed=int(base_seed),
+            )
+            for i in range(n_theta)
+        ], dtype=np.float64)
+
     if statistic_name != "waldo":
         raise NotImplementedError(
             f"_generic_tilted_pvalue_vec not implemented for "
-            f"statistic={statistic_name!r}; supported: 'wald', 'waldo'."
+            f"statistic={statistic_name!r}; supported: 'wald', 'waldo', 'lrto', 'scoreo'."
         )
 
     data_arr = np.atleast_1d(np.asarray(data, dtype=np.float64))
@@ -858,6 +912,49 @@ def float_(x: NDArray) -> NDArray[np.float64]:
     return np.asarray(x, dtype=np.float64)
 
 
+def _grid_tau_lrto(
+    log_pdf_row: NDArray[np.float64],
+    theta_grid: NDArray[np.float64],
+    theta_test: float,
+) -> float:
+    """τ_LRTO = -2 [log q(θ_test) - max_θ log q(θ)] from a grid log-pdf.
+
+    Linear-interpolates `log q` at `θ_test`. If `θ_test` is outside
+    the grid, returns +inf (the test θ is implausible under q_η).
+    """
+    if not (theta_grid[0] <= theta_test <= theta_grid[-1]):
+        return float("inf")
+    ll_max = float(np.max(log_pdf_row))
+    ll_theta = float(np.interp(theta_test, theta_grid, log_pdf_row))
+    return max(-2.0 * (ll_theta - ll_max), 0.0)
+
+
+def _grid_tau_scoreo(
+    log_pdf_row: NDArray[np.float64],
+    theta_grid: NDArray[np.float64],
+    theta_test: float,
+) -> float:
+    """τ_SCOREO = U(θ)² / I(θ) via central differences on grid log-pdf.
+
+    h = 2 × grid spacing (3-point stencil). If `θ_test` falls outside
+    the inner grid (i.e. closer than one cell to either edge), uses
+    the nearest interior point. Returns NaN if observed-info I≤0
+    (non-concave log-density at θ_test — degenerate).
+    """
+    if theta_grid.size < 3:
+        return float("nan")
+    if not (theta_grid[1] <= theta_test <= theta_grid[-2]):
+        return float("inf")
+    i = int(np.searchsorted(theta_grid, theta_test))
+    i = max(1, min(theta_grid.size - 2, i))
+    h = theta_grid[i + 1] - theta_grid[i - 1]
+    U = (log_pdf_row[i + 1] - log_pdf_row[i - 1]) / h
+    I = -(log_pdf_row[i + 1] - 2.0 * log_pdf_row[i] + log_pdf_row[i - 1]) / ((h / 2.0) ** 2)
+    if I <= 0 or not np.isfinite(I):
+        return float("nan")
+    return float(U * U / I)
+
+
 def _generic_tilted_pvalue(
     theta: float,
     data: NDArray[np.float64],
@@ -894,10 +991,10 @@ def _generic_tilted_pvalue(
         # `data` is already a numpy array.
         return float(np.asarray(WaldStatistic()._generic_pvalue(theta, data, model)))
 
-    if statistic_name != "waldo":
+    if statistic_name not in ("waldo", "lrto", "scoreo"):
         raise NotImplementedError(
             f"Generic tilted_pvalue not implemented for statistic={statistic_name!r}; "
-            f"supported: 'wald', 'waldo'."
+            f"supported: 'wald', 'waldo', 'lrto', 'scoreo'."
         )
 
     data_arr = np.atleast_1d(np.asarray(data, dtype=np.float64))
@@ -917,22 +1014,63 @@ def _generic_tilted_pvalue(
             data_arr, model, prior, eta_f, alpha, base_seed
         )
 
-    # Observed tilted moments are theta-INDEPENDENT given the data;
-    # callers in a hot loop (CI inversion, per-theta pvalue) should
-    # hoist them and pass via `obs_moments` to skip the redundant
-    # recomputation per call. (Skeptic Phase 3 finding #3.)
-    if obs_moments is not None:
-        mu_obs, var_obs = obs_moments
+    # Observed tilted τ at (data, theta_f, eta_f).
+    if statistic_name == "waldo":
+        # Observed tilted moments are theta-INDEPENDENT given the data;
+        # callers in a hot loop (CI inversion, per-theta pvalue) should
+        # hoist them and pass via `obs_moments` to skip the redundant
+        # recomputation per call. (Skeptic Phase 3 finding #3.)
+        if obs_moments is not None:
+            mu_obs, var_obs = obs_moments
+        else:
+            posterior_obs = model.posterior(data_arr, prior)
+            likelihood_obs = model.likelihood(data_arr)
+            mu_obs, var_obs = _generic_tilted_moments(
+                posterior_obs, prior, likelihood_obs, eta_f,
+                support=support, n_grid=_GENERIC_TILT_N_GRID,
+            )
+        var_obs_safe = max(var_obs, 1e-300)
+        diff_obs = mu_obs - theta_f
+        t_obs = diff_obs * diff_obs / var_obs_safe
     else:
+        # lrto / scoreo: need the full normalised observed tilted log-pdf
+        # grid (not just first two moments). Use the same grid window as
+        # the MC reference for consistency with τ_rep — but a fresh
+        # _generic_tilt-style materialisation since this is "observed".
         posterior_obs = model.posterior(data_arr, prior)
         likelihood_obs = model.likelihood(data_arr)
-        mu_obs, var_obs = _generic_tilted_moments(
-            posterior_obs, prior, likelihood_obs, eta_f,
-            support=support, n_grid=_GENERIC_TILT_N_GRID,
+        theta_lo_obs, theta_hi_obs = _generic_tilt_grid_window(
+            posterior_obs, prior, support=support
         )
-    var_obs_safe = max(var_obs, 1e-300)
-    diff_obs = mu_obs - theta_f
-    t_obs = diff_obs * diff_obs / var_obs_safe
+        if not (theta_lo_obs < theta_hi_obs):
+            # Degenerate window: conservative p=1 (no replicates more extreme).
+            return 1.0
+        theta_grid_obs = np.linspace(
+            theta_lo_obs, theta_hi_obs, _GENERIC_TILTED_PVALUE_N_GRID_MC
+        )
+        log_lik_obs = np.asarray(
+            likelihood_obs.loglik(theta_grid_obs), dtype=np.float64
+        )
+        log_prior_obs = np.asarray(
+            prior.logpdf(theta_grid_obs), dtype=np.float64
+        )
+        log_q_obs = log_lik_obs + (1.0 - eta_f) * log_prior_obs
+        log_q_obs = np.where(np.isfinite(log_q_obs), log_q_obs, -1e300)
+        log_q_obs_max = float(np.max(log_q_obs))
+        pdf_unnorm_obs = np.exp(log_q_obs - log_q_obs_max)
+        Z_obs = float(np.trapezoid(pdf_unnorm_obs, theta_grid_obs))
+        if not (Z_obs > 0) or not np.isfinite(Z_obs):
+            return 1.0
+        log_pdf_obs = log_q_obs - log_q_obs_max - np.log(Z_obs)
+        tau_fn = _grid_tau_lrto if statistic_name == "lrto" else _grid_tau_scoreo
+        t_obs = tau_fn(log_pdf_obs, theta_grid_obs, theta_f)
+        if not np.isfinite(t_obs):
+            # τ_obs is non-finite (out-of-window LRTO/SCOREO or I≤0):
+            # observed sits in the implausible tail → conservative p=0+
+            # smoothing. With (k+1)/(n+1) and all replicates ≤ t_obs,
+            # p = 1/(n_mc+1) but we'd need to run the MC. Simpler: return
+            # the smallest possible smoothed value.
+            return 1.0 / (float(n_mc) + 1.0)
 
     # MC reference under H_0: theta_0 = theta — vectorised.
     # Replaces the per-iteration Python loop (each iteration:
@@ -951,6 +1089,7 @@ def _generic_tilted_pvalue(
         n_mc=int(n_mc),
         n_grid=_GENERIC_TILTED_PVALUE_N_GRID_MC,
         rng=rng,
+        statistic_name=statistic_name,
     )
     if n_collapsed > n_mc // 2:
         # More than half the MC samples collapsed — the conservative-
