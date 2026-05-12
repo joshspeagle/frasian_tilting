@@ -1,7 +1,34 @@
 """CLI for the Phase G learned-η selector training.
 
 Drives the dual-head training loop (``EtaNet`` + ``ValidityNet``) off
-an ``ExperimentConfig`` v4 YAML file.
+an ``ExperimentConfig`` v4 YAML file. The full flag set is large (28
+flags at commit time covering loss head, optimizer, regularizers,
+schedules, output bounds, device, and diagnostics); run with
+``--help`` for the canonical list. The most commonly-tuned ones:
+
+  --config <yaml>           Required. ExperimentConfig v4 YAML file.
+  --out <path>              Required. Output .eqx checkpoint path.
+  --loss <head>             Loss head: integrated_p (default) /
+                            cd_variance / static_width.
+  --alpha <float>           α for static_width head (required iff
+                            ``--loss static_width``).
+  --lr-a <float>            EtaNet (Head A) learning rate; default 3e-4.
+  --lr-b <float>            ValidityNet (Head B) learning rate; default 3e-4.
+  --grad-clip-max-norm <f>  Per-step gradient clip norm; default 1.0.
+  --lambda-max <float>      Max boundary-penalty weight; default 10.0.
+  --n-epochs N              Training epochs; default 30.
+  --patience N              Early-stop patience; default 8.
+
+Per-loss hyperparameter regimes worth knowing:
+
+  - integrated_p, static_width: defaults work for all 4 schemes.
+  - cd_variance on Fisher-Rao: requires ``--lr-a 1e-4
+    --grad-clip-max-norm 0.5`` (defaults diverge — 22/34 non-finite
+    skipped steps; see
+    ``docs/notes/2026-05-11-fisher-rao-cd-var-hyperparams.md``).
+  - cd_variance on mixture: relies on the row-13c structural sigmoid
+    bound (``training_output_bounds=(0, 1)`` dispatched automatically
+    via ``mixture.param_space``).
 
 Example:
     python -m scripts.train_learned_eta \\

@@ -60,8 +60,15 @@ Matches ``scripts.regen_headline``'s seed pin so any code path using
 
 CLI:
     --schemes power_law ot mixture fisher_rao
+                  (nargs="*", default = all 4)
     --selectors dyn_numerical learned_intp learned_cd_var learned_static_w
+                  (nargs="*", default = all 4)
     --n-jobs N    (1 = serial; -1 = all cores; uses frasian._parallel.parallel_map)
+    --n-theta N   (default 200; θ-grid resolution in [-6, 6])
+    --n-D N       (default 200; D-grid resolution in [-6, 6])
+    --plot-selector S
+                  (default 'learned_intp'; which selector slice gets the
+                  panel-A/B detail plot)
 """
 
 from __future__ import annotations

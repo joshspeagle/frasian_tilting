@@ -1,25 +1,43 @@
 """Regenerate the headline empirical CI-width table across schemes.
 
 Reproduces and generalises the table cited in ``CLAUDE.md`` and
-``docs/methods/learned_eta.md``. The default invocation (all 4 schemes,
-all 3 learned heads) produces an 18-row table:
+``docs/methods/learned_eta.md``. The default invocation runs all 4
+schemes with ``--learned-heads intp`` — a 10-row table (Wald + bare
+WALDO + 4 schemes × 2 cells {numerical, learned_intp}). Pass
+``--learned-heads intp cd_var static_w`` for the full 18-row table.
+
+Reference 18-row output at commit time (2026-05-11, post-FR-merge),
+run with ``--learned-heads intp cd_var static_w --n-jobs -1``:
 
 ```
-                                              θ=0    θ=1    θ=2    θ=3    θ=4
-Wald                                          3.92   3.92   3.92   3.92   3.92
-bare WALDO                                    3.33   3.43   3.75   4.23   4.78
-power_law[numerical]                          ...
-power_law[learned_intp]                       ...
-power_law[learned_cd_var]                     ...
-power_law[learned_static_w]                   ...
-ot[numerical]                                 ...
-ot[learned_intp]                              ...
-... etc.
+                              θ=0    θ=1    θ=2    θ=3    θ=4
+Wald                          3.92   3.92   3.92   3.92   3.92
+bare WALDO                    3.33   3.43   3.75   4.23   4.78
+power_law[numerical]          3.35   3.50   4.00   4.78   5.65
+power_law[learned_intp]       3.57   3.60   3.70   3.88   4.11
+power_law[learned_cd_var]     3.55   3.58   3.69   3.88   4.13
+power_law[learned_static_w]   3.47   3.51   3.67   3.93   4.26
+ot[numerical]                 3.35   3.50   4.00   4.77   5.64
+ot[learned_intp]              3.54   3.57   3.69   3.89   4.15
+ot[learned_cd_var]            3.52   3.56   3.68   3.90   4.17
+ot[learned_static_w]          3.50   3.54   3.68   3.90   4.20
+mixture[numerical]            3.37   3.49   3.88   4.45   5.10
+mixture[learned_intp]         3.38   3.45   3.69   4.07   4.56
+mixture[learned_cd_var]       3.38   3.45   3.69   4.07   4.54
+mixture[learned_static_w]     3.45   3.50   3.67   3.94   4.29
+fisher_rao[numerical]         3.33   3.43   3.75   4.23   4.78
+fisher_rao[learned_intp]      3.43   3.49   3.68   3.99   4.37
+fisher_rao[learned_cd_var]    6.59   7.28   7.74   6.93   5.69
+fisher_rao[learned_static_w]  3.45   3.50   3.68   3.97   4.33
 ```
 
 Numbers are NOT bit-equal to pre-port torch numbers — JAX's PRNG
 primitive differs. The qualitative pattern (`<scheme>[learned_intp]`
-calibrated AND ≤ Wald, narrow at conflict) is preserved.
+calibrated AND ≤ Wald, narrow at conflict) is preserved for PL/OT/FR;
+mixture inflates more at conflict; FR `[numerical]` collapses to bare
+WALDO at w=0.5 (per-θ static optimum η=0 — the Stage D smoothness
+finding); FR `[learned_cd_var]` is pathological (negative-η on FR's
+unbounded admissibility — Stage C cd_var note).
 
 The ``[numerical]`` rows use ``DynamicNumericalEtaSelector`` —
 calibrated dynamic-η (η = η(θ), no D dependence → exact 1-α coverage),
@@ -332,11 +350,12 @@ def main(argv: list[str] | None = None) -> int:
         "--learned-heads",
         nargs="*",
         choices=tuple(_HEAD_FILE_TOKEN),
-        default=list(_HEAD_FILE_TOKEN),
+        default=["intp"],
         help=(
             "trained heads to include as separate rows per scheme. Default: "
-            "all three (intp, cd_var, static_w). Missing artifacts are "
-            "skipped with a log line."
+            "intp only (the calibrated default head). Pass "
+            "'intp cd_var static_w' to include all three; missing "
+            "artifacts are skipped with a log line."
         ),
     )
     parser.add_argument(

@@ -1,21 +1,53 @@
 """Drive the NN x (tilting × statistic) audit.
 
-Tilting × statistic flavors:
-  * Statistic-only flavors (paired with IdentityTilting):
-      wald, wald_generic, waldo, waldo_generic
-  * power_law × waldo flavors (analytic Theorem-8 vs generic MC):
-      pl_fixed0, pl_fixed05,
-      pl_fixed0_generic, pl_fixed05_generic,
-      pl_numerical, pl_numerical_intp, pl_numerical_generic,
-      pl_dyn_numerical
-        (pl_dyn_numerical_generic blocked by design — dynamic + force_generic
-        raises NotImplementedError)
-  * smoothness gets a `pl_bare` flavor: smoothness sweeps eta internally,
-    so the cell's selector is irrelevant; passing the bare instance avoids
-    duplicate output across the numerical / dyn_numerical variants.
+Flavor families (see ``_FLAVORS`` below for the canonical list; 39
+flavors at commit time):
 
-Each invocation runs the four experiments at Config.fast() with `n_jobs`
-parallelism. Results land at `results/wald_audit/<flavor>/<experiment>/`.
+  * Statistic-only flavors (paired with IdentityTilting):
+      ``wald``, ``wald_generic``, ``waldo``, ``waldo_generic``
+
+  * ``pl_*`` (power_law × waldo) — analytic Theorem-8 vs generic MC:
+      ``pl_fixed{0,05}{,_generic}``,
+      ``pl_numerical``, ``pl_numerical_intp``, ``pl_numerical_generic``,
+      ``pl_dyn_numerical``, ``pl_dyn_numerical_generic``,
+      ``pl_learned_{intp,cd_var,static_w}``,
+      ``pl_learned_intp_generic``.
+      (``pl_dyn_numerical_generic`` historically raised; ``_generic``
+      variants force the generic-MC path through the audit.)
+
+  * ``ot_*`` (W2 geodesic × waldo):
+      ``ot_dyn_numerical{,_generic}``,
+      ``ot_learned_{intp,cd_var,static_w}``.
+
+  * ``mx_*`` (m-geodesic × waldo) — full set including learned heads
+    (mixture's structural sigmoid (0,1) bound makes cd_var stable per
+    row 13c):
+      ``mx_fixed{0,05}{,_generic}``,
+      ``mx_numerical``, ``mx_numerical_intp``, ``mx_numerical_generic``,
+      ``mx_dyn_numerical{,_generic}``,
+      ``mx_learned_{intp,cd_var,static_w}``.
+
+  * ``fr_*`` (Fisher-Rao / Levi-Civita geodesic × waldo, Stages A-D):
+      ``fr_dyn_numerical{,_generic}``,
+      ``fr_learned_{intp,cd_var,static_w}``.
+      The ``fr_*_generic`` variants exercise the Stage B autodiff path
+      (diffrax shooting BVP); ``fr_dyn_numerical_generic`` is
+      documented as math-validation infrastructure (wall-clock-prohibitive;
+      see ``docs/methods/fisher_rao.md``).
+      ``fr_learned_cd_var`` requires the cd_var hyperparam regime per
+      ``docs/notes/2026-05-11-fisher-rao-cd-var-hyperparams.md``.
+
+  * Smoothness gets a ``<scheme>_bare`` flavor where applicable:
+    smoothness sweeps eta internally, so the cell's selector is
+    irrelevant; passing the bare instance avoids duplicate output across
+    the numerical / dyn_numerical variants.
+
+Each invocation runs the four experiments at Config.fast() with
+``n_jobs`` parallelism. Results land at
+``results/wald_audit/<flavor>/<experiment>/``.
+
+See ``docs/notes/2026-05-12-cross-scheme-wald-audit.md`` for the
+post-FR-merge headline summary across all 4 schemes.
 """
 
 from __future__ import annotations
