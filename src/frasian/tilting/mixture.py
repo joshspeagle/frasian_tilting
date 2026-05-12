@@ -102,6 +102,297 @@ def _admissibility_normal_normal(
     return (eta_f <= eta_max), float(eta_max)
 
 
+def _gaussian_logpdf(theta: float, mu: float, sigma_sq: float) -> float:
+    """log N(θ; μ, σ²) scalar."""
+    return -0.5 * np.log(2 * np.pi * sigma_sq) - 0.5 * (theta - mu) ** 2 / sigma_sq
+
+
+def _mixture_components_for_nn(
+    D: float, w: float, mu0: float, sigma: float
+) -> tuple[float, float, float, float]:
+    """Components (μ₁, σ₁², μ₂, σ₂²) for q_η,mix on NN+Normal.
+
+    Component 1: posterior N(μ_n, σ_n²) with μ_n = wD + (1-w)μ₀,
+    σ_n² = wσ². Component 2: likelihood N(D, σ²).
+    """
+    mu_post = w * D + (1.0 - w) * mu0
+    sigma_post_sq = w * sigma * sigma
+    return mu_post, sigma_post_sq, D, sigma * sigma
+
+
+def _mixture_logpdf_2gauss(
+    theta: float, eta: float, mu1: float, s1_sq: float, mu2: float, s2_sq: float
+) -> float:
+    """log q(θ) where q = (1-η)·N(μ₁,σ₁²) + η·N(μ₂,σ₂²). Uses logsumexp."""
+    if eta <= 0.0:
+        return _gaussian_logpdf(theta, mu1, s1_sq)
+    if eta >= 1.0:
+        return _gaussian_logpdf(theta, mu2, s2_sq)
+    l1 = np.log(1.0 - eta) + _gaussian_logpdf(theta, mu1, s1_sq)
+    l2 = np.log(eta) + _gaussian_logpdf(theta, mu2, s2_sq)
+    m = max(l1, l2)
+    return m + np.log(np.exp(l1 - m) + np.exp(l2 - m))
+
+
+def _mixture_score_2gauss(
+    theta: float, eta: float, mu1: float, s1_sq: float, mu2: float, s2_sq: float
+) -> tuple[float, float]:
+    """Score U(θ)=∂log q/∂θ and responsibility r₁ (with r₂=1-r₁)."""
+    if eta <= 0.0:
+        return -(theta - mu1) / s1_sq, 1.0
+    if eta >= 1.0:
+        return -(theta - mu2) / s2_sq, 0.0
+    l1 = np.log(1.0 - eta) + _gaussian_logpdf(theta, mu1, s1_sq)
+    l2 = np.log(eta) + _gaussian_logpdf(theta, mu2, s2_sq)
+    m = max(l1, l2)
+    r1 = np.exp(l1 - m) / (np.exp(l1 - m) + np.exp(l2 - m))
+    u1 = -(theta - mu1) / s1_sq
+    u2 = -(theta - mu2) / s2_sq
+    return r1 * u1 + (1.0 - r1) * u2, r1
+
+
+def _mixture_info_2gauss(
+    theta: float, eta: float, mu1: float, s1_sq: float, mu2: float, s2_sq: float
+) -> float:
+    """Observed info I(θ) = -∂²log q/∂θ² = Σᵢ rᵢ·Iᵢ - Var_r(Uᵢ).
+
+    Where I_i = 1/σᵢ² (constant) and Var_r(Uᵢ) = Σᵢ rᵢ uᵢ² - (Σᵢ rᵢ uᵢ)².
+    """
+    if eta <= 0.0:
+        return 1.0 / s1_sq
+    if eta >= 1.0:
+        return 1.0 / s2_sq
+    _, r1 = _mixture_score_2gauss(theta, eta, mu1, s1_sq, mu2, s2_sq)
+    r2 = 1.0 - r1
+    u1 = -(theta - mu1) / s1_sq
+    u2 = -(theta - mu2) / s2_sq
+    I1, I2 = 1.0 / s1_sq, 1.0 / s2_sq
+    EI = r1 * I1 + r2 * I2
+    EU = r1 * u1 + r2 * u2
+    EU2 = r1 * u1 * u1 + r2 * u2 * u2
+    var_U = max(EU2 - EU * EU, 0.0)
+    return EI - var_U
+
+
+def _mixture_mode_2gauss(
+    eta: float, mu1: float, s1_sq: float, mu2: float, s2_sq: float
+) -> float:
+    """Global argmax of q_η = (1-η)N(μ₁,σ₁²)+ηN(μ₂,σ₂²).
+
+    For 2-Gaussian mixtures, modes are roots of U(θ)=0 (Carreira-Perpiñán
+    2000); up to 2 modes exist. Strategy: 257-point grid over the union
+    of mode-region brackets, take grid argmax, brent-polish.
+    """
+    if eta <= 0.0:
+        return mu1
+    if eta >= 1.0:
+        return mu2
+    from scipy.optimize import minimize_scalar
+
+    s1, s2 = np.sqrt(s1_sq), np.sqrt(s2_sq)
+    lo = min(mu1, mu2) - 4.0 * max(s1, s2)
+    hi = max(mu1, mu2) + 4.0 * max(s1, s2)
+    grid = np.linspace(lo, hi, 257)
+    lq = np.array([
+        _mixture_logpdf_2gauss(g, eta, mu1, s1_sq, mu2, s2_sq) for g in grid
+    ])
+    i_max = int(np.argmax(lq))
+    lo_b = grid[max(i_max - 1, 0)]
+    hi_b = grid[min(i_max + 1, grid.size - 1)]
+    if lo_b == hi_b:
+        return float(grid[i_max])
+    res = minimize_scalar(
+        lambda th: -_mixture_logpdf_2gauss(th, eta, mu1, s1_sq, mu2, s2_sq),
+        bounds=(lo_b, hi_b), method="bounded",
+        options={"xatol": 1e-9},
+    )
+    return float(res.x)
+
+
+def _gaussian_logpdf_vec(
+    theta: NDArray[np.float64], mu: NDArray[np.float64], sigma_sq: float
+) -> NDArray[np.float64]:
+    """log N(θ; μ, σ²) vectorised; theta and mu broadcast together."""
+    return -0.5 * np.log(2 * np.pi * sigma_sq) - 0.5 * (theta - mu) ** 2 / sigma_sq
+
+
+def _mixture_logpdf_2gauss_vec(
+    theta: NDArray[np.float64],
+    eta: float,
+    mu1: NDArray[np.float64],
+    s1_sq: float,
+    mu2: NDArray[np.float64],
+    s2_sq: float,
+) -> NDArray[np.float64]:
+    """Vectorised log q(θ) for arrays of (μ₁, μ₂) component means.
+
+    Returns log[(1-η)·N(θ;μ₁,σ₁²) + η·N(θ;μ₂,σ₂²)] broadcast over the
+    inputs. Handles endpoint η in {0, 1} the same way as the scalar
+    helper.
+    """
+    if eta <= 0.0:
+        return _gaussian_logpdf_vec(theta, mu1, s1_sq)
+    if eta >= 1.0:
+        return _gaussian_logpdf_vec(theta, mu2, s2_sq)
+    l1 = np.log(1.0 - eta) + _gaussian_logpdf_vec(theta, mu1, s1_sq)
+    l2 = np.log(eta) + _gaussian_logpdf_vec(theta, mu2, s2_sq)
+    m = np.maximum(l1, l2)
+    return m + np.log(np.exp(l1 - m) + np.exp(l2 - m))
+
+
+def _mixture_mode_2gauss_vec(
+    eta: float,
+    mu1_arr: NDArray[np.float64],
+    s1_sq: float,
+    mu2_arr: NDArray[np.float64],
+    s2_sq: float,
+    *,
+    n_grid: int = 257,
+) -> NDArray[np.float64]:
+    """Vectorised mode finder over arrays of (μ₁, μ₂).
+
+    For each replicate i, builds a shared grid over the joint support
+    `[min(μ₁,μ₂) − 4σ_max, max(μ₁,μ₂) + 4σ_max]` and returns the grid
+    argmax of `log q_η`. Skips the `minimize_scalar` polish — at
+    n_grid=257 the residual error in the mode is < grid spacing
+    (typically a few × 10⁻²σ), which propagates to a < 10⁻³ error in
+    `log q(θ_MAP)` — well below the MC noise floor of `(k+1)/(n+1)`.
+    """
+    if eta <= 0.0:
+        return np.asarray(mu1_arr, dtype=np.float64)
+    if eta >= 1.0:
+        return np.asarray(mu2_arr, dtype=np.float64)
+
+    mu1_arr = np.asarray(mu1_arr, dtype=np.float64)
+    mu2_arr = np.asarray(mu2_arr, dtype=np.float64)
+    s1 = float(np.sqrt(s1_sq))
+    s2 = float(np.sqrt(s2_sq))
+    s_max = max(s1, s2)
+    lo = np.minimum(mu1_arr, mu2_arr) - 4.0 * s_max  # shape (n,)
+    hi = np.maximum(mu1_arr, mu2_arr) + 4.0 * s_max  # shape (n,)
+    # Per-replicate grid: (n_grid, n_rep)
+    frac = np.linspace(0.0, 1.0, n_grid)[:, None]  # (n_grid, 1)
+    grid = lo[None, :] + frac * (hi - lo)[None, :]  # (n_grid, n_rep)
+    # Evaluate log q on the grid, mu1/mu2 broadcast (1, n_rep).
+    lq = _mixture_logpdf_2gauss_vec(
+        grid, eta, mu1_arr[None, :], s1_sq, mu2_arr[None, :], s2_sq
+    )  # (n_grid, n_rep)
+    idx = np.argmax(lq, axis=0)  # (n_rep,)
+    return grid[idx, np.arange(grid.shape[1])]
+
+
+def _mixture_tau_lrto_2gauss(
+    theta: float, eta: float, mu1: float, s1_sq: float, mu2: float, s2_sq: float
+) -> float:
+    """τ_LRTO = -2 [log q(θ) - log q(θ_MAP)]."""
+    ll_theta = _mixture_logpdf_2gauss(theta, eta, mu1, s1_sq, mu2, s2_sq)
+    theta_map = _mixture_mode_2gauss(eta, mu1, s1_sq, mu2, s2_sq)
+    ll_map = _mixture_logpdf_2gauss(theta_map, eta, mu1, s1_sq, mu2, s2_sq)
+    return max(-2.0 * (ll_theta - ll_map), 0.0)
+
+
+def _mixture_tau_scoreo_2gauss(
+    theta: float, eta: float, mu1: float, s1_sq: float, mu2: float, s2_sq: float
+) -> float:
+    """τ_SCOREO = U(θ)² / I(θ)."""
+    U, _ = _mixture_score_2gauss(theta, eta, mu1, s1_sq, mu2, s2_sq)
+    I = _mixture_info_2gauss(theta, eta, mu1, s1_sq, mu2, s2_sq)
+    if I <= 0 or not np.isfinite(I):
+        return float("nan")
+    return U * U / I
+
+
+def _mixture_tilted_pvalue_lrto_or_scoreo_scalar(
+    theta_f: float,
+    eta_f: float,
+    D_f: float,
+    w: float,
+    mu0: float,
+    sigma: float,
+    statistic_name: str,
+    *,
+    n_mc: int = 2000,
+    derived_seed: int = 0xC0FFEE,
+) -> float:
+    """MC tilted-LRTO / tilted-SCOREO p-value on NN+Normal (2-Gaussian mix).
+
+    No closed-form Φ shortcut: τ is a shape-based functional of q_η,mix
+    and the accept set in D'-space is non-quadratic (see foundations
+    note). Per-replicate τ is analytic via `_mixture_tau_*_2gauss`;
+    the p-value is the empirical tail probability of τ_rep ≥ τ_obs
+    over n_mc draws D' ~ N(θ, σ²), with `(k+1)/(n+1)` continuity
+    correction. CRN seed via the caller — derived_seed must be
+    theta-INDEPENDENT so brentq probes share the uniform stream.
+    """
+    if statistic_name not in ("lrto", "scoreo"):
+        raise ValueError(f"unexpected statistic_name={statistic_name!r}")
+    tau_fn = (
+        _mixture_tau_lrto_2gauss if statistic_name == "lrto"
+        else _mixture_tau_scoreo_2gauss
+    )
+    mu1_obs, s1_sq, mu2_obs, s2_sq = _mixture_components_for_nn(
+        D_f, w, mu0, sigma
+    )
+    tau_obs = tau_fn(theta_f, eta_f, mu1_obs, s1_sq, mu2_obs, s2_sq)
+    if not np.isfinite(tau_obs):
+        return float("nan")
+    rng = np.random.default_rng(int(derived_seed))
+    D_rep = rng.normal(theta_f, sigma, size=int(n_mc))
+    # Per-replicate component means on NN: μ₁ = wD + (1-w)μ₀, μ₂ = D.
+    mu1_rep = w * D_rep + (1.0 - w) * mu0
+    mu2_rep = D_rep.copy()
+    s2_sq_rep = sigma * sigma  # same for all replicates (constant)
+
+    if statistic_name == "lrto":
+        # Vectorised mode-find for q_η; this is the bottleneck for n_mc>>1.
+        theta_map_rep = _mixture_mode_2gauss_vec(
+            eta_f, mu1_rep, s1_sq, mu2_rep, s2_sq_rep
+        )
+        ll_theta = _mixture_logpdf_2gauss_vec(
+            np.full_like(mu1_rep, theta_f), eta_f, mu1_rep, s1_sq,
+            mu2_rep, s2_sq_rep,
+        )
+        ll_map = _mixture_logpdf_2gauss_vec(
+            theta_map_rep, eta_f, mu1_rep, s1_sq, mu2_rep, s2_sq_rep
+        )
+        tau_rep = np.maximum(-2.0 * (ll_theta - ll_map), 0.0)
+    else:  # scoreo: closed-form per replicate, no mode-finding
+        # Vectorised score + info; per-component scores are affine in θ.
+        if eta_f <= 0.0:
+            U = -(theta_f - mu1_rep) / s1_sq
+            I_arr = np.full_like(mu1_rep, 1.0 / s1_sq)
+        elif eta_f >= 1.0:
+            U = -(theta_f - mu2_rep) / s2_sq_rep
+            I_arr = np.full_like(mu2_rep, 1.0 / s2_sq_rep)
+        else:
+            theta_arr = np.full_like(mu1_rep, theta_f)
+            l1 = np.log(1.0 - eta_f) + _gaussian_logpdf_vec(theta_arr, mu1_rep, s1_sq)
+            l2 = np.log(eta_f) + _gaussian_logpdf_vec(theta_arr, mu2_rep, s2_sq_rep)
+            m = np.maximum(l1, l2)
+            e1 = np.exp(l1 - m)
+            e2 = np.exp(l2 - m)
+            r1 = e1 / (e1 + e2)
+            r2 = 1.0 - r1
+            u1 = -(theta_f - mu1_rep) / s1_sq
+            u2 = -(theta_f - mu2_rep) / s2_sq_rep
+            U = r1 * u1 + r2 * u2
+            I1 = 1.0 / s1_sq
+            I2 = 1.0 / s2_sq_rep
+            EI = r1 * I1 + r2 * I2
+            EU = U  # already weighted
+            EU2 = r1 * u1 * u1 + r2 * u2 * u2
+            var_U = np.maximum(EU2 - EU * EU, 0.0)
+            I_arr = EI - var_U
+        with np.errstate(divide="ignore", invalid="ignore"):
+            tau_rep = np.where(I_arr > 0.0, U * U / I_arr, np.nan)
+
+    finite = np.isfinite(tau_rep)
+    n_eff = int(finite.sum())
+    if n_eff == 0:
+        return float("nan")
+    return (float(np.sum(tau_rep[finite] >= tau_obs)) + 1.0) / (float(n_eff) + 1.0)
+
+
 def _mixture_tilted_pvalue_numpy_scalar(
     theta_f: float,
     eta_f: float,
@@ -132,10 +423,29 @@ def _mixture_tilted_pvalue_numpy_scalar(
         z = abs(D_f - theta_f) / sigma
         return float(2.0 * _scalar_scipy_stats.norm.sf(z))
 
+    if statistic_name in ("lrto", "scoreo"):
+        # No closed-form Φ shortcut: q_η,mix is a 2-Gaussian mixture and
+        # LRTO/SCOREO probe its shape, not just its moments. Per-replicate
+        # τ is analytic; H₀ p-value is MC over D'~N(θ,σ²). See
+        # docs/notes/2026-05-12-tilted-trinity-derivation.md.
+        # CRN seed derived from (eta, D, w, mu0, sigma) so brentq probes
+        # nest cleanly; theta-INDEPENDENT by construction.
+        import hashlib
+        h = hashlib.blake2b(digest_size=8)
+        h.update(np.float64(eta_f).tobytes())
+        h.update(np.float64(D_f).tobytes())
+        h.update(np.float64(w).tobytes())
+        h.update(np.float64(mu0).tobytes())
+        h.update(np.float64(sigma).tobytes())
+        seed = int.from_bytes(h.digest()[:4], "little", signed=False)
+        return _mixture_tilted_pvalue_lrto_or_scoreo_scalar(
+            theta_f, eta_f, D_f, w, mu0, sigma, statistic_name,
+            derived_seed=seed,
+        )
     if statistic_name != "waldo":
         raise NotImplementedError(
             f"_mixture_tilted_pvalue_numpy_scalar: statistic={statistic_name!r}; "
-            f"supported: 'wald', 'waldo'."
+            f"supported: 'wald', 'waldo', 'lrto', 'scoreo'."
         )
 
     # Endpoint shortcuts (mathematically redundant; numerically robust).
