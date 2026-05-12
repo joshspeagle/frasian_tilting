@@ -1,34 +1,47 @@
 """Drive the NN x (tilting × statistic) audit.
 
-Flavor families (see ``_FLAVORS`` below for the canonical list; 39
+Flavor families (see ``_FLAVORS`` below for the canonical list; 63
 flavors at commit time):
 
   * Statistic-only flavors (paired with IdentityTilting):
-      ``wald``, ``wald_generic``, ``waldo``, ``waldo_generic``
+      ``wald``, ``wald_generic``, ``waldo``, ``waldo_generic``,
+      ``lrt``, ``lrt_generic``, ``lrto``, ``lrto_generic``,
+      ``score``, ``score_generic``, ``scoreo``, ``scoreo_generic``.
+      The LRT/Score statistics ignore the prior (identity-only); their
+      ``...o`` partners (LRTO/Scoreo) accept arbitrary tiltings and so
+      also appear in the scheme cross-product below.
 
-  * ``pl_*`` (power_law × waldo) — analytic Theorem-8 vs generic MC:
+  * ``pl_*`` (power_law × {waldo, lrto, scoreo}) — analytic Theorem-8 vs generic MC:
       ``pl_fixed{0,05}{,_generic}``,
       ``pl_numerical``, ``pl_numerical_intp``, ``pl_numerical_generic``,
       ``pl_dyn_numerical``, ``pl_dyn_numerical_generic``,
+      ``pl_dyn_numerical_{lrto,scoreo}{,_generic}``,
       ``pl_learned_{intp,cd_var,static_w}``,
       ``pl_learned_intp_generic``.
       (``pl_dyn_numerical_generic`` historically raised; ``_generic``
       variants force the generic-MC path through the audit.)
 
-  * ``ot_*`` (W2 geodesic × waldo):
+  * ``ot_*`` (W2 geodesic × {waldo, lrto, scoreo}):
       ``ot_dyn_numerical{,_generic}``,
+      ``ot_dyn_numerical_{lrto,scoreo}{,_generic}``,
       ``ot_learned_{intp,cd_var,static_w}``.
 
-  * ``mx_*`` (m-geodesic × waldo) — full set including learned heads
-    (mixture's structural sigmoid (0,1) bound makes cd_var stable per
-    row 13c):
+  * ``mx_*`` (m-geodesic × {waldo, lrto, scoreo}) — full set including
+    learned heads (mixture's structural sigmoid (0,1) bound makes cd_var
+    stable per row 13c):
       ``mx_fixed{0,05}{,_generic}``,
       ``mx_numerical``, ``mx_numerical_intp``, ``mx_numerical_generic``,
       ``mx_dyn_numerical{,_generic}``,
+      ``mx_dyn_numerical_{lrto,scoreo}{,_generic}``,
       ``mx_learned_{intp,cd_var,static_w}``.
+      Unlike PL/OT/FR (which collapse the trinity to a single CI on the
+      Gaussian tilt), the 2-Gaussian-mixture lrto/scoreo cells produce
+      genuinely different CIs from ``mx_dyn_numerical``.
 
-  * ``fr_*`` (Fisher-Rao / Levi-Civita geodesic × waldo, Stages A-D):
+  * ``fr_*`` (Fisher-Rao / Levi-Civita geodesic × {waldo, lrto, scoreo},
+    Stages A-D):
       ``fr_dyn_numerical{,_generic}``,
+      ``fr_dyn_numerical_{lrto,scoreo}{,_generic}``,
       ``fr_learned_{intp,cd_var,static_w}``.
       The ``fr_*_generic`` variants exercise the Stage B autodiff path
       (diffrax shooting BVP); ``fr_dyn_numerical_generic`` is
@@ -58,6 +71,10 @@ from pathlib import Path
 
 from frasian import Config, registry, run_experiment
 from frasian._registry_bootstrap import bootstrap
+from frasian.statistics.lrt import LRTStatistic
+from frasian.statistics.lrto import LRTOStatistic
+from frasian.statistics.score import ScoreStatistic
+from frasian.statistics.scoreo import ScoreoStatistic
 from frasian.statistics.wald import WaldStatistic
 from frasian.statistics.waldo import WaldoStatistic
 from frasian.learned.eta_artifact import EtaArtifact
@@ -117,6 +134,23 @@ def _build_cell(flavor: str):
         return IdentityTilting(), WaldoStatistic(force_generic=False), None
     if flavor == "waldo_generic":
         return IdentityTilting(), WaldoStatistic(force_generic=True), None
+    # Baseline cells for the LRT and Score statistic pairs (identity tilting).
+    if flavor == "lrt":
+        return IdentityTilting(), LRTStatistic(force_generic=False), None
+    if flavor == "lrt_generic":
+        return IdentityTilting(), LRTStatistic(force_generic=True), None
+    if flavor == "lrto":
+        return IdentityTilting(), LRTOStatistic(force_generic=False), None
+    if flavor == "lrto_generic":
+        return IdentityTilting(), LRTOStatistic(force_generic=True), None
+    if flavor == "score":
+        return IdentityTilting(), ScoreStatistic(force_generic=False), None
+    if flavor == "score_generic":
+        return IdentityTilting(), ScoreStatistic(force_generic=True), None
+    if flavor == "scoreo":
+        return IdentityTilting(), ScoreoStatistic(force_generic=False), None
+    if flavor == "scoreo_generic":
+        return IdentityTilting(), ScoreoStatistic(force_generic=True), None
     # Power-law × WALDO
     pl_bare = PowerLawTilting()
     if flavor == "pl_fixed0":
@@ -146,6 +180,21 @@ def _build_cell(flavor: str):
     if flavor == "pl_dyn_numerical_generic":
         return (PowerLawTilting(selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)),
                 WaldoStatistic(force_generic=True), pl_bare)
+    # Power-law × {lrto, scoreo} with dynamic-numerical η. LRT/Score
+    # ignore the prior (identity-only), so only the ...o variants extend
+    # to non-identity tiltings.
+    if flavor == "pl_dyn_numerical_lrto":
+        return (PowerLawTilting(selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)),
+                LRTOStatistic(force_generic=False), pl_bare)
+    if flavor == "pl_dyn_numerical_lrto_generic":
+        return (PowerLawTilting(selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)),
+                LRTOStatistic(force_generic=True), pl_bare)
+    if flavor == "pl_dyn_numerical_scoreo":
+        return (PowerLawTilting(selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)),
+                ScoreoStatistic(force_generic=False), pl_bare)
+    if flavor == "pl_dyn_numerical_scoreo_generic":
+        return (PowerLawTilting(selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)),
+                ScoreoStatistic(force_generic=True), pl_bare)
     # Learned-η selectors (Phase C / D) — one per loss
     if flavor == "pl_learned_intp":
         return (PowerLawTilting(selector=_learned_selector("integrated_p")),
@@ -162,6 +211,19 @@ def _build_cell(flavor: str):
     if flavor == "ot_dyn_numerical_generic":
         return (OTTilting(selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)),
                 WaldoStatistic(force_generic=True), ot_bare)
+    # OT × {lrto, scoreo} with dynamic-numerical η (mirrors PL above).
+    if flavor == "ot_dyn_numerical_lrto":
+        return (OTTilting(selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)),
+                LRTOStatistic(force_generic=False), ot_bare)
+    if flavor == "ot_dyn_numerical_lrto_generic":
+        return (OTTilting(selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)),
+                LRTOStatistic(force_generic=True), ot_bare)
+    if flavor == "ot_dyn_numerical_scoreo":
+        return (OTTilting(selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)),
+                ScoreoStatistic(force_generic=False), ot_bare)
+    if flavor == "ot_dyn_numerical_scoreo_generic":
+        return (OTTilting(selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)),
+                ScoreoStatistic(force_generic=True), ot_bare)
     # OT learned-eta variants
     if flavor == "ot_learned_intp":
         return (OTTilting(selector=_learned_selector("integrated_p", scheme="ot")),
@@ -208,6 +270,22 @@ def _build_cell(flavor: str):
     if flavor == "mx_dyn_numerical_generic":
         return (MixtureTilting(selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)),
                 WaldoStatistic(force_generic=True), mx_bare)
+    # Mixture × {lrto, scoreo} with dynamic-numerical η. Unlike PL/OT/FR
+    # the closed-form on a 2-Gaussian mixture is genuinely different from
+    # WALDO (no trinity collapse), so these cells produce widths that
+    # diverge from `mx_dyn_numerical`.
+    if flavor == "mx_dyn_numerical_lrto":
+        return (MixtureTilting(selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)),
+                LRTOStatistic(force_generic=False), mx_bare)
+    if flavor == "mx_dyn_numerical_lrto_generic":
+        return (MixtureTilting(selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)),
+                LRTOStatistic(force_generic=True), mx_bare)
+    if flavor == "mx_dyn_numerical_scoreo":
+        return (MixtureTilting(selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)),
+                ScoreoStatistic(force_generic=False), mx_bare)
+    if flavor == "mx_dyn_numerical_scoreo_generic":
+        return (MixtureTilting(selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)),
+                ScoreoStatistic(force_generic=True), mx_bare)
     # Mixture learned-η variants (added 2026-05-10).
     if flavor == "mx_learned_intp":
         return (MixtureTilting(selector=_learned_selector("integrated_p", scheme="mixture")),
@@ -227,6 +305,19 @@ def _build_cell(flavor: str):
     if flavor == "fr_dyn_numerical_generic":
         return (FisherRaoTilting(selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)),
                 WaldoStatistic(force_generic=True), fr_bare)
+    # Fisher-Rao × {lrto, scoreo} with dynamic-numerical η (mirrors PL/OT above).
+    if flavor == "fr_dyn_numerical_lrto":
+        return (FisherRaoTilting(selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)),
+                LRTOStatistic(force_generic=False), fr_bare)
+    if flavor == "fr_dyn_numerical_lrto_generic":
+        return (FisherRaoTilting(selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)),
+                LRTOStatistic(force_generic=True), fr_bare)
+    if flavor == "fr_dyn_numerical_scoreo":
+        return (FisherRaoTilting(selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)),
+                ScoreoStatistic(force_generic=False), fr_bare)
+    if flavor == "fr_dyn_numerical_scoreo_generic":
+        return (FisherRaoTilting(selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)),
+                ScoreoStatistic(force_generic=True), fr_bare)
     if flavor == "fr_learned_intp":
         return (FisherRaoTilting(selector=_learned_selector("integrated_p", scheme="fisher_rao")),
                 WaldoStatistic(force_generic=False), fr_bare)
@@ -271,6 +362,23 @@ _FLAVORS = [
     # cd_variance requires `--lr-a 1e-4 --grad-clip-max-norm 0.5` per
     # docs/notes/2026-05-11-fisher-rao-cd-var-hyperparams.md.
     "fr_learned_intp", "fr_learned_cd_var", "fr_learned_static_w",
+    # Statistic-only baseline cells for the LRT/LRTO and Score/Scoreo trinity pairs.
+    "lrt", "lrt_generic", "lrto", "lrto_generic",
+    "score", "score_generic", "scoreo", "scoreo_generic",
+    # Cross-product: scheme × {lrto, scoreo} with dynamic-numerical η.
+    # Wires up the trinity collapse on PL/OT/FR closed-form (cells produce
+    # numerically-identical CIs to <scheme>_dyn_numerical) and exercises
+    # the analytic 2-Gaussian-mixture lrto/scoreo on MX (genuinely different
+    # CIs from mx_dyn_numerical). LRT/Score themselves are identity-only
+    # (they ignore the prior) and so do not appear here.
+    "pl_dyn_numerical_lrto", "pl_dyn_numerical_lrto_generic",
+    "pl_dyn_numerical_scoreo", "pl_dyn_numerical_scoreo_generic",
+    "ot_dyn_numerical_lrto", "ot_dyn_numerical_lrto_generic",
+    "ot_dyn_numerical_scoreo", "ot_dyn_numerical_scoreo_generic",
+    "mx_dyn_numerical_lrto", "mx_dyn_numerical_lrto_generic",
+    "mx_dyn_numerical_scoreo", "mx_dyn_numerical_scoreo_generic",
+    "fr_dyn_numerical_lrto", "fr_dyn_numerical_lrto_generic",
+    "fr_dyn_numerical_scoreo", "fr_dyn_numerical_scoreo_generic",
 ]
 
 
