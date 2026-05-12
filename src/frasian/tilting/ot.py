@@ -94,7 +94,12 @@ def _ot_tilted_pvalue_numpy_scalar(
     if statistic_name == "wald":
         z = abs(D_f - theta_f) / sigma
         return float(2.0 * _scalar_scipy_stats.norm.sf(z))
-    if statistic_name == "waldo":
+    if statistic_name in ("waldo", "lrto", "scoreo"):
+        # Trinity collapse on NN+Normal: OT's tilted posterior is the W₂
+        # geodesic between N(μ_n, σ_n²) and N(D, σ²), a single Gaussian,
+        # so τ_LRTO,η = τ_SCOREO,η = τ_WALDO,η identically and the H₀
+        # reference under D'~N(θ,σ²) gives the same Φ(b-a)+Φ(-a-b)
+        # formula. See docs/notes/2026-05-12-tilted-trinity-derivation.md.
         mu_n = w * D_f + (1.0 - w) * mu0
         mu_t = (1.0 - eta_f) * mu_n + eta_f * D_f
         s_t = (w + eta_f * (1.0 - w)) * sigma
@@ -105,7 +110,7 @@ def _ot_tilted_pvalue_numpy_scalar(
         )
     raise NotImplementedError(
         f"_ot_tilted_pvalue_numpy_scalar not implemented for statistic={statistic_name!r}; "
-        f"supported: 'wald', 'waldo'."
+        f"supported: 'wald', 'waldo', 'lrto', 'scoreo'."
     )
 
 
@@ -129,7 +134,8 @@ def _ot_tilted_pvalue_kernel(
     if statistic_name == "wald":
         z = jnp.abs(D - theta) / sigma
         return 2.0 * (1.0 - jsp_stats.norm.cdf(z))
-    if statistic_name == "waldo":
+    if statistic_name in ("waldo", "lrto", "scoreo"):
+        # Trinity collapse — see _ot_tilted_pvalue_numpy_scalar above.
         mu_n = w * D + (1.0 - w) * mu0
         mu_t = (1.0 - eta) * mu_n + eta * D
         s_t = (w + eta * (1.0 - w)) * sigma
@@ -138,7 +144,7 @@ def _ot_tilted_pvalue_kernel(
         return jsp_stats.norm.cdf(b - a) + jsp_stats.norm.cdf(-a - b)
     raise NotImplementedError(
         f"_ot_tilted_pvalue_kernel not implemented for statistic={statistic_name!r}; "
-        f"supported: 'wald', 'waldo'."
+        f"supported: 'wald', 'waldo', 'lrto', 'scoreo'."
     )
 
 
