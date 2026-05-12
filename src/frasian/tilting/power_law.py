@@ -78,7 +78,12 @@ def _tilted_pvalue_numpy_scalar(
     if statistic_name == "wald":
         z = abs(D_f - theta_f) / sigma
         return float(2.0 * _scalar_scipy_stats.norm.sf(z))
-    if statistic_name == "waldo":
+    if statistic_name in ("waldo", "lrto", "scoreo"):
+        # Trinity collapse on NN+Normal: q_η is a single Gaussian
+        # (Theorem 6, power_law.md), so τ_LRTO,η = τ_SCOREO,η = τ_WALDO,η
+        # identically and the H₀ reference under D'~N(θ,σ²) gives the
+        # same Φ(b-a)+Φ(-a-b) formula. See
+        # docs/notes/2026-05-12-tilted-trinity-derivation.md.
         mu_eta = (w * D_f + (1.0 - eta_f) * (1.0 - w) * mu0) / denom
         norm_factor = w * sigma / denom
         a_eta = abs(mu_eta - theta_f) / norm_factor
@@ -89,7 +94,7 @@ def _tilted_pvalue_numpy_scalar(
         )
     raise NotImplementedError(
         f"_tilted_pvalue_numpy_scalar not implemented for statistic={statistic_name!r}; "
-        f"supported: 'wald', 'waldo'."
+        f"supported: 'wald', 'waldo', 'lrto', 'scoreo'."
     )
 
 
@@ -129,7 +134,8 @@ def _tilted_pvalue_kernel(
         # eta-independent: 2 * (1 - Phi(|D - theta| / sigma)).
         z = jnp.abs(D - theta) / sigma
         return 2.0 * (1.0 - jsp_stats.norm.cdf(z))
-    if statistic_name == "waldo":
+    if statistic_name in ("waldo", "lrto", "scoreo"):
+        # Trinity collapse — see _tilted_pvalue_numpy_scalar above.
         mu_eta = (w * D + (1.0 - eta) * (1.0 - w) * mu0) / denom
         norm_factor = w * sigma / denom
         a_eta = jnp.abs(mu_eta - theta) / norm_factor
@@ -137,7 +143,7 @@ def _tilted_pvalue_kernel(
         return jsp_stats.norm.cdf(b_eta - a_eta) + jsp_stats.norm.cdf(-a_eta - b_eta)
     raise NotImplementedError(
         f"_tilted_pvalue_kernel not implemented for statistic={statistic_name!r}; "
-        f"supported: 'wald', 'waldo'."
+        f"supported: 'wald', 'waldo', 'lrto', 'scoreo'."
     )
 
 
