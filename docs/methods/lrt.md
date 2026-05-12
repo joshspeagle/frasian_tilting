@@ -75,17 +75,111 @@ matching `wald`'s contract. The prior-aware variant is `lrto`.
 
 ## Derivation
 
-TODO — `/derive` (the deriver agent) fills this section.
+**Setup.** Let `Model` be a one-dim regular parametric family with
+loglikelihood `l(theta; data) = log L(theta; data)`, score
+`U(theta) = d l / d theta`, Fisher information `I(theta) > 0`, and
+interior MLE `theta_hat = argmax_theta l(theta; data)`. Write
+`tau_LRT(theta0) = -2 [ l(theta0) - l(theta_hat) ]` as in (D1).
 
-Required ingredients to cover:
-1. Wilks' theorem statement + regularity conditions (interior MLE,
-   sufficiency of `Model.fisher_information`, Wald-LRT-Score
-   asymptotic equivalence).
-2. The NN-sandbox collapse (D1-NN) by direct substitution of the
-   quadratic loglikelihood.
-3. The generic-path inversion: monotonicity of `tau_LRT` in
-   `|theta - theta_hat|` (one-dim case) and the bracket-and-bisect
-   strategy for the `chi^2_1` level set.
+**Step 1 (Wilks 1938).** Under H_0 : theta = theta_0 and regularity
+(third-derivative-bounded `l`; `theta_0` an interior point of an
+open parameter space; `I(theta_0)` finite and positive; MLE
+consistent and asymptotically efficient), as `n -> infty`
+
+    tau_LRT(theta_0)  --d-->  chi^2_1.
+
+(Wilks 1938; van der Vaart 1998 Thm 16.7; Casella & Berger 2002
+§10.3.1.) The p-value (D2) and CI (D3) follow by the standard
+test-inversion duality.
+
+**Step 2 (Wald-LRT-Score equivalence).** Taylor-expand `l` at
+`theta_hat`:
+
+    l(theta_0) = l(theta_hat) - (1/2)(theta_hat - theta_0)^2 I(theta_hat)
+                 + O((theta_hat - theta_0)^3).
+
+Multiplying by -2 gives `tau_LRT = (theta_hat - theta_0)^2 I(theta_hat)
++ O_p(n^{-1/2}) = tau_Wald + o_p(1)`. A second expansion at
+`theta_0` using the score yields `tau_Score = U(theta_0)^2 / I(theta_0)
+= tau_LRT + o_p(1)`. All three converge to the same `chi^2_1` limit
+(van der Vaart 1998 Thm 16.7).
+
+**Step 3 (NN-sandbox: exact collapse to Wald).** For
+`NormalNormalModel(sigma)` the sufficient statistic is
+`D = mean(observations)` with `D | theta ~ N(theta, sigma^2)`
+(framework's n=1 convention; see `NormalNormalModel.likelihood`).
+The loglikelihood is
+
+    l(theta; D) = -(1/2) log(2 pi sigma^2) - (1/2) ((D - theta)/sigma)^2,   (S1)
+
+quadratic in `theta` with curvature `1/sigma^2`. The MLE is
+`theta_hat = D` (the unique root of `d l / d theta = (D - theta)/sigma^2`),
+matching `NormalNormalModel.mle`. Substituting into (D1):
+
+    tau_LRT(theta_0)
+      = -2 [ l(theta_0; D) - l(D; D) ]
+      = -2 [ -(1/2)((D - theta_0)/sigma)^2  -  0 ]
+      = ((D - theta_0)/sigma)^2
+      = tau_Wald(theta_0).                                                  (S2)
+
+The constant `-(1/2) log(2 pi sigma^2)` cancels and the quadratic
+expansion is exact (no `O(.)` remainder), so the equivalence holds
+identically, not just asymptotically.
+
+*Verification (sympy).* With `l(theta) = -log(2 pi sigma^2)/2 -
+((D - theta)/sigma)^2 / 2`:
+
+    >>> sp.solve(sp.diff(l(theta), theta), theta)
+    [D]
+    >>> sp.simplify(-2*(l(theta0) - l(D)) - ((D - theta0)/sigma)**2)
+    0
+
+So `tau_LRT - tau_Wald == 0` symbolically. The Fisher info
+`I(theta) = 1/sigma^2` then gives `tau_Wald = (mle - theta_0)^2 *
+I(theta_0)`, matching the generic-path formula in
+`wald._generic_evaluate`.
+
+**Step 4 (p-value identity, numerical).** With `Z = (D - theta_0)/sigma
+~ N(0, 1)` under H_0, `tau_LRT = Z^2 ~ chi^2_1` exactly. The
+`chi^2_1` survival function satisfies the identity
+`1 - F_{chi^2_1}(z^2) = 2 (1 - Phi(|z|))`, so `p_LRT == p_Wald`
+elementwise.
+
+*Verification (numerical, atol < 1e-12).*
+
+| sigma | D     | theta0 |       p_LRT       |       p_Wald      |
+|-------|-------|--------|-------------------|-------------------|
+| 1.0   |  0.0  |  0.5   | 6.17075077e-01    | 6.17075077e-01    |
+| 2.0   | -1.3  |  2.7   | 4.55002639e-02    | 4.55002639e-02    |
+| 0.5   |  4.0  |  4.1   | 8.41480581e-01    | 8.41480581e-01    |
+| 1.5   | -2.0  | -2.0   | 1.0               | 1.0               |
+| 1.0   |  0.0  |  100.0 | 0.0               | 0.0               |
+
+Max `|p_LRT - p_Wald|` = 1.11e-16 (one ULP).
+
+**Step 5 (generic-path inversion).** For a generic `Model` the CI
+(D3) is `{ theta : tau_LRT(theta) <= q }` with
+`q = q_{chi^2_1, 1-alpha}`. Under unimodal `l(.; data)` (so
+`theta_hat` is unique), `tau_LRT(theta)` is strictly increasing in
+`|theta - theta_hat|`: writing `g(theta) = l(theta_hat) - l(theta) >= 0`,
+`g' = -U`, which vanishes only at `theta_hat`, so `g` is
+strictly increasing for `theta > theta_hat` and strictly decreasing
+for `theta < theta_hat`. The level set is therefore the interval
+`[theta_lo, theta_hi]` where `tau_LRT(theta_{lo, hi}) = q` on each
+side of `theta_hat`. The implementation mirrors
+`wald._generic_confidence_interval`: brentq with a doubling bracket
+initialised at `4 / sqrt(I(theta_hat))` (the Wald half-width;
+expanded by the solver if `tau_LRT` flattens before crossing q),
+clamped to `model.support()`. Multimodal `l` violates the
+strict-monotone assumption and must use the
+`confidence_regions` semantics (Failure modes).
+
+**Invariants checked numerically (atol <= 1e-12):**
+- `(sigma=1.0, D=0.0, theta0=0.5)`: `p_LRT == p_Wald` (1.11e-16).
+- `(sigma=2.0, D=-1.3, theta0=2.7)`: `p_LRT == p_Wald` (1.11e-16).
+- `(sigma=0.5, D=4.0, theta0=4.1)`: `p_LRT == p_Wald` (0).
+- `(sigma=1.5, D=-2.0, theta0=-2.0)`: `tau_LRT == 0`, `p_LRT == 1`.
+- Sympy: `tau_LRT(theta_0) - ((D - theta_0)/sigma)**2 == 0` symbolically.
 
 ## Predicted behavior
 
@@ -121,17 +215,39 @@ Required ingredients to cover:
 
 ## Invariants
 
-TODO — fill from `/derive` output. Tentative list (overlaps Wald's
-invariants; the NN-sandbox-vs-Wald cross-checks are the
-distinguishing tests):
-
-- p-value in `[0, 1]` for all `theta_0`.
-- `p_LRT(theta_hat) == 1` (mode property).
-- On NN: `p_LRT(theta) == p_Wald(theta)` and `CI_LRT == CI_Wald` to
-  numerical precision.
-- Under H_0 on NN: p-values are `Uniform[0,1]` (KS test, L3).
-- `accepts_tilting(identity) == True`,
-  `accepts_tilting(any other tilting) == False`.
+1. **p-value range.** `p_LRT(theta_0; data) in [0, 1]` for all
+   `theta_0` and all `data` (consequence of `tau >= 0` and the
+   `chi^2_1` survival function having range `[0, 1]`).
+2. **Non-negativity.** `tau_LRT(theta_0; data) >= 0` for all
+   `theta_0`, since `l(theta_hat) >= l(theta)` by definition of the
+   MLE. Equality at `theta_0 = theta_hat`.
+3. **Mode property.** `p_LRT(theta_hat; data) == 1` exactly
+   (`tau == 0` plugged into `1 - F_{chi^2_1}`). Tested on NN with
+   `theta_hat = D`.
+4. **NN equivalence — p-value.** On `NormalNormalModel`,
+   `lrt.pvalue(theta_0, data, model) == wald.pvalue(theta_0, data,
+   model)` for any `(theta_0, data, sigma)`, to `atol <= 1e-12`.
+   This is exact (not asymptotic): see Derivation Step 3.
+5. **NN equivalence — CI.** On `NormalNormalModel`,
+   `lrt.confidence_interval(alpha, data, model) ==
+   wald.confidence_interval(alpha, data, model)` for any
+   `(alpha, data, sigma)`, to `atol <= 1e-8` (CI from numerical
+   inversion is tighter than the closed-form 1e-12 of (4)). Pinned
+   in `tests/regression/test_lrt_matches_wald.py`.
+6. **Exact `chi^2_1` calibration on NN under H_0.** Drawing
+   `data ~ N(theta_true, sigma^2)` and evaluating
+   `tau_LRT(theta_true; data)` gives an exact `chi^2_1` sample
+   (Derivation Step 3 + 4); KS test of `tau_LRT` against `chi^2_1`,
+   and of `p_LRT` against `Uniform[0, 1]`, both pass at the nominal
+   level (L3, marker `L3`).
+7. **Monotonicity on NN.** `p_LRT(theta_0; data)` is strictly
+   decreasing in `|theta_0 - D|` (since `tau_LRT` is strictly
+   increasing in `|theta_0 - D|` and `1 - F_{chi^2_1}` is strictly
+   decreasing on `(0, infty)`).
+8. **Tilting compatibility.** `lrt.accepts_tilting(tilting) is True`
+   iff `tilting.name == "identity"`; non-identity tiltings
+   (`power_law`, `ot`, `mixture`, `fisher_rao`) return `False`.
+   Mirrors `wald`'s contract.
 
 ## Literature
 
