@@ -67,6 +67,7 @@ from ._dynamic import dynamic_ci_scan
 from ._solvers import brentq_with_doubling
 from .base import EtaSelector, ParamSpec
 from .eta_selectors import FixedEtaSelector
+from .power_law import _grid_tau_lrto, _grid_tau_scoreo  # τ helpers for grid-distribution mixture fallback
 
 if TYPE_CHECKING:
     from ..config import Config
@@ -664,11 +665,21 @@ def _generic_tilted_pvalue_mixture(
     n_grid: int = _GENERIC_TILT_N_GRID,
     alpha: float = 0.05,
 ) -> float:
-    """Generic-MC tilted-WALDO p-value for any (model, prior).
+    """Generic-MC tilted p-value for any (model, prior).
 
     Mirrors `power_law._generic_tilted_pvalue` but with the mixture tilt's
     moment formula. Wald reduces to bare 2-sided Wald regardless of eta
-    (Wald ignores prior).
+    (Wald ignores prior). Supports ``statistic_name in
+    {"wald", "waldo", "lrto", "scoreo"}``.
+
+    For ``lrto`` / ``scoreo``: q_η is a literal 2-component
+    `MixtureDistribution` (NOT a single Gaussian — trinity collapse does
+    NOT apply on mixture). When both components are `NormalDistribution`,
+    dispatch to the analytic 2-Gaussian-mixture τ helpers
+    (`_mixture_tau_lrto_2gauss` / `_mixture_tau_scoreo_2gauss`); otherwise
+    materialise the mixture pdf on a θ-grid and dispatch to the shared
+    grid τ helpers (`_grid_tau_lrto` / `_grid_tau_scoreo` from
+    `power_law.py`).
     """
     if statistic_name == "wald":
         D_arr = np.atleast_1d(np.asarray(data, dtype=np.float64))
@@ -677,40 +688,182 @@ def _generic_tilted_pvalue_mixture(
         z = abs(D_f - theta_f) / sigma
         return float(2.0 * _scalar_scipy_stats.norm.sf(z))
 
-    if statistic_name != "waldo":
+    if statistic_name not in ("waldo", "lrto", "scoreo"):
         raise NotImplementedError(
-            f"_generic_tilted_pvalue_mixture: unsupported statistic={statistic_name!r}"
+            f"_generic_tilted_pvalue_mixture: unsupported statistic={statistic_name!r}; "
+            f"supported: 'wald', 'waldo', 'lrto', 'scoreo'."
         )
 
+    data_arr = np.atleast_1d(np.asarray(data, dtype=np.float64))
     derived_seed = _stable_tilted_pvalue_seed(
-        np.atleast_1d(np.asarray(data, dtype=np.float64)),
-        model, prior, eta_f, alpha, _GENERIC_TILTED_PVALUE_BASE_SEED,
+        data_arr, model, prior, eta_f, alpha, _GENERIC_TILTED_PVALUE_BASE_SEED,
     )
-    rng = np.random.default_rng(derived_seed)
-    try:
-        t_obs = _generic_tilted_t_statistic_mixture(
-            theta_f, data, model, prior, eta_f,
-            support=support, n_grid=n_grid,
-        )
-    except (ValueError, TiltingDomainError):
-        return float("nan")
 
-    n_obs = int(np.asarray(data, dtype=np.float64).size)
-    t_arr = np.empty(int(n_mc), dtype=np.float64)
-    n_collapsed = 0
-    for i in range(int(n_mc)):
-        D_i = model.sample_data(theta_f, rng, n_obs)
+    # ---- waldo: moment-based path (unchanged from Stage B) ----
+    if statistic_name == "waldo":
+        rng = np.random.default_rng(derived_seed)
         try:
-            t_arr[i] = _generic_tilted_t_statistic_mixture(
-                theta_f, D_i, model, prior, eta_f,
+            t_obs = _generic_tilted_t_statistic_mixture(
+                theta_f, data, model, prior, eta_f,
                 support=support, n_grid=n_grid,
             )
         except (ValueError, TiltingDomainError):
-            t_arr[i] = 0.0  # conservative: not-more-extreme
-            n_collapsed += 1
+            return float("nan")
 
-    # (k+1)/(n+1) continuity correction (matches WaldoStatistic generic path).
-    return (1.0 + float(np.sum(t_arr >= t_obs))) / (n_mc + 1.0)
+        n_obs = int(data_arr.size)
+        t_arr = np.empty(int(n_mc), dtype=np.float64)
+        n_collapsed = 0
+        for i in range(int(n_mc)):
+            D_i = model.sample_data(theta_f, rng, n_obs)
+            try:
+                t_arr[i] = _generic_tilted_t_statistic_mixture(
+                    theta_f, D_i, model, prior, eta_f,
+                    support=support, n_grid=n_grid,
+                )
+            except (ValueError, TiltingDomainError):
+                t_arr[i] = 0.0  # conservative: not-more-extreme
+                n_collapsed += 1
+
+        # (k+1)/(n+1) continuity correction (matches WaldoStatistic generic path).
+        return (1.0 + float(np.sum(t_arr >= t_obs))) / (n_mc + 1.0)
+
+    # ---- lrto / scoreo: shape-functional τ on a literal mixture ----
+    # Analytic 2-Gaussian fast path (NN+Normal); grid fallback otherwise.
+    tau_fn_analytic = (
+        _mixture_tau_lrto_2gauss if statistic_name == "lrto"
+        else _mixture_tau_scoreo_2gauss
+    )
+    tau_fn_grid = (
+        _grid_tau_lrto if statistic_name == "lrto" else _grid_tau_scoreo
+    )
+
+    # Hoist observed mixture once. On NN+Normal both endpoints are
+    # Gaussian, so we substitute a NormalDistribution view of the
+    # likelihood (instead of the GridDistribution wrapping
+    # `likelihood_as_distribution` would produce) — that lets the
+    # analytic 2-Gaussian τ helpers fire. The substitution is only
+    # legal when eta ∈ [0, 1] (so MixtureDistribution's weights pass
+    # the non-negative + sums-to-one check); outside that range we
+    # fall back to the grid path (which probes for negative density
+    # and raises ValueError on inadmissible eta).
+    try:
+        posterior_obs = model.posterior(data, prior)
+        likelihood_obs = model.likelihood(data)
+        nn_gaussian = (
+            isinstance(posterior_obs, NormalDistribution)
+            and isinstance(likelihood_obs, GaussianLikelihood)
+            and 0.0 <= float(eta_f) <= 1.0
+        )
+        if nn_gaussian:
+            lik_as_dist_obs = NormalDistribution(
+                loc=float(likelihood_obs.D), scale=float(likelihood_obs.sigma)
+            )
+            mixture_obs = MixtureDistribution(
+                weights=(1.0 - float(eta_f), float(eta_f)),
+                components=(posterior_obs, lik_as_dist_obs),
+            )
+        else:
+            mixture_obs = _generic_tilt_mixture(
+                posterior_obs, likelihood_obs, eta_f,
+                model=model, data=data_arr, support=support, n_grid=n_grid,
+            )
+    except (ValueError, TiltingDomainError):
+        return float("nan")
+
+    use_analytic = (
+        len(mixture_obs.components) == 2
+        and all(isinstance(c, NormalDistribution) for c in mixture_obs.components)
+    )
+
+    # Build a shared θ-grid for the grid fallback (covers both posterior
+    # and likelihood masses). Skipped when use_analytic; cost is trivial
+    # otherwise.
+    if not use_analytic:
+        try:
+            mu_p = float(posterior_obs.mean())
+            sigma_p = float(np.sqrt(max(float(posterior_obs.var()), 1e-300)))
+        except (TypeError, ValueError, AttributeError):
+            mu_p, sigma_p = float(theta_f), 1.0
+        support_lo, support_hi = float(support[0]), float(support[1])
+        lo = max(mu_p - 8.0 * sigma_p, support_lo)
+        hi = min(mu_p + 8.0 * sigma_p, support_hi)
+        if not (np.isfinite(lo) and np.isfinite(hi) and lo < hi):
+            return float("nan")
+        theta_grid = np.linspace(lo, hi, int(n_grid))
+        pdf_obs_row = np.asarray(mixture_obs.pdf(theta_grid), dtype=np.float64)
+        log_pdf_obs_row = np.log(np.maximum(pdf_obs_row, 1e-300))
+        tau_obs = tau_fn_grid(log_pdf_obs_row, theta_grid, float(theta_f))
+    else:
+        c1, c2 = mixture_obs.components
+        mu1_obs = float(c1.loc)
+        s1_sq_obs = float(c1.scale) ** 2
+        mu2_obs = float(c2.loc)
+        s2_sq_obs = float(c2.scale) ** 2
+        tau_obs = tau_fn_analytic(
+            float(theta_f), float(eta_f),
+            mu1_obs, s1_sq_obs, mu2_obs, s2_sq_obs,
+        )
+
+    if not np.isfinite(tau_obs):
+        return float("nan")
+
+    # MC reference under H_0:theta_f.
+    from ..models.base import sample_data_batch as _sample_data_batch
+
+    rng = np.random.default_rng(int(derived_seed))
+    n_obs = int(data_arr.size)
+    D_batch = _sample_data_batch(
+        model, float(theta_f), rng, int(n_mc), int(n_obs)
+    )
+    tau_rep = np.empty(int(n_mc), dtype=np.float64)
+    n_collapsed = 0
+    for i in range(int(n_mc)):
+        D_i = D_batch[i]
+        try:
+            posterior_i = model.posterior(D_i, prior)
+            likelihood_i = model.likelihood(D_i)
+            if use_analytic:
+                # Both endpoints are Gaussian on NN+Normal; build the
+                # NormalDistribution likelihood directly so the analytic
+                # τ helpers see two NormalDistribution components.
+                lik_as_dist_i = NormalDistribution(
+                    loc=float(likelihood_i.D), scale=float(likelihood_i.sigma)
+                )
+                mixture_i = MixtureDistribution(
+                    weights=(1.0 - float(eta_f), float(eta_f)),
+                    components=(posterior_i, lik_as_dist_i),
+                )
+            else:
+                mixture_i = _generic_tilt_mixture(
+                    posterior_i, likelihood_i, eta_f,
+                    model=model, data=D_i, support=support, n_grid=n_grid,
+                )
+        except (ValueError, TiltingDomainError):
+            tau_rep[i] = np.nan
+            n_collapsed += 1
+            continue
+        if use_analytic:
+            c1_i, c2_i = mixture_i.components
+            mu1_i = float(c1_i.loc)
+            s1_sq_i = float(c1_i.scale) ** 2
+            mu2_i = float(c2_i.loc)
+            s2_sq_i = float(c2_i.scale) ** 2
+            tau_rep[i] = tau_fn_analytic(
+                float(theta_f), float(eta_f),
+                mu1_i, s1_sq_i, mu2_i, s2_sq_i,
+            )
+        else:
+            pdf_row_i = np.asarray(mixture_i.pdf(theta_grid), dtype=np.float64)
+            log_pdf_row_i = np.log(np.maximum(pdf_row_i, 1e-300))
+            tau_rep[i] = tau_fn_grid(log_pdf_row_i, theta_grid, float(theta_f))
+
+    finite = np.isfinite(tau_rep)
+    n_eff = int(finite.sum())
+    if n_eff == 0:
+        return float("nan")
+    return (
+        float(np.sum(tau_rep[finite] >= tau_obs)) + 1.0
+    ) / (float(n_eff) + 1.0)
 
 
 def _generic_tilted_confidence_interval_mixture(

@@ -28,6 +28,10 @@ from frasian.tilting.ot import (
     OTTilting,
     _generic_tilted_pvalue_ot,
 )
+from frasian.tilting.mixture import (
+    MixtureTilting,
+    _generic_tilted_pvalue_mixture,
+)
 from frasian.tilting.eta_selectors import FixedEtaSelector
 
 
@@ -74,4 +78,29 @@ def test_ot_generic_path_trinity_collapse(stat_name, eta, theta):
     assert 0.0 <= float(p_stat) <= 1.0
     assert abs(float(p_stat) - float(p_waldo)) < 0.15, (
         f"ot {stat_name} eta={eta} theta={theta}: p_stat={p_stat} p_waldo={p_waldo}"
+    )
+
+
+@pytest.mark.L2
+@pytest.mark.parametrize("stat_name", ["lrto", "scoreo"])
+@pytest.mark.parametrize("eta", [0.1, 0.3])
+@pytest.mark.parametrize("theta", [0.0, 0.5])
+def test_mx_generic_path_pvalue_is_valid(stat_name, eta, theta):
+    """MX's generic-MC path produces well-formed p-values for lrto/scoreo.
+
+    Unlike PL/OT/FR, trinity collapse does NOT apply to mixture: q_η,mix
+    is a 2-Gaussian mixture and τ_LRTO/SCOREO genuinely differ from
+    τ_WALDO. So we just check p ∈ [0, 1] and the path runs without
+    raising. η=0 would collapse to the bare posterior (handled by the
+    Stage A η=0 short-circuit, not relevant on the generic path); use η > 0.
+    """
+    model = NormalNormalModel(sigma=1.0)
+    prior = NormalDistribution(loc=0.0, scale=2.0)
+    data = np.array([0.7])
+    p = _generic_tilted_pvalue_mixture(
+        theta, eta, data, model, prior, stat_name,
+        support=(-float("inf"), float("inf")),
+    )
+    assert 0.0 <= float(p) <= 1.0, (
+        f"mx {stat_name} eta={eta} theta={theta}: p={p}"
     )
