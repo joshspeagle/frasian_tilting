@@ -69,6 +69,11 @@ from ..models.distributions import GaussianLikelihood, NormalDistribution
 from ..statistics.base import TestStatistic
 from .base import EtaSelector, ParamSpec
 from .eta_selectors import FixedEtaSelector
+# Cross-module reuse of the grid-distribution τ helpers from power_law.
+# These operate on a normalised log-pdf row `(n_grid,)` + θ-grid and so
+# work uniformly for any tilted q_η represented as a grid pdf —
+# including OT's quantile-mixture once we materialise q_η on the grid.
+from .power_law import _grid_tau_lrto, _grid_tau_scoreo
 from .quantile_mixture import QuantileMixturePath
 
 if TYPE_CHECKING:
@@ -451,6 +456,7 @@ def _generic_tilted_mc_reference_batch_ot(
     n_mc: int,
     n_grid: int,
     rng: np.random.Generator,
+    statistic_name: str = "waldo",
 ) -> tuple[NDArray[np.float64], int]:
     """Vectorised MC reference for OT-tilted p-value.
 
@@ -517,6 +523,120 @@ def _generic_tilted_mc_reference_batch_ot(
     # 3. Build per-row log-likelihood on the shared grid (numpy).
     log_lik = _batch_loglik_grid(model, D_batch, theta_grid)  # (n_mc, n_grid)
 
+    # lrto/scoreo branch — needs per-row q_η log-pdf on the θ-grid.
+    # Building this via per-replicate QuantileMixturePath.pdf is too
+    # slow (~600µs/grid-point × 200 rows × 256 grid = minutes). Instead
+    # construct q_η pdf directly in u-space, all vectorised across the
+    # n_mc axis:
+    #   - F_post^{-1}(u): per-row via `posterior_quantile_batch` (scipy
+    #     ndtri for Gaussian — vectorised).
+    #   - F_lik^{-1}(u):  per-row via cumulative-trapezoid CDF of
+    #     `pdf_lik` + per-row searchsorted (`_batched_inverse_cdf`).
+    #   - F_t^{-1}(u) = (1-η)F_post^{-1} + η F_lik^{-1}  (vectorised).
+    #   - du/dθ_t at the u-grid via central differences → q_η pdf at
+    #     the inverse-CDF-image points θ_mixed[j, :].
+    #   - Linear-interpolate the pdf onto the fixed `theta_grid` →
+    #     `pdf_qmp` shape (n_mc, n_grid). Take log + dispatch to τ.
+    # This is all numpy broadcast ops; no brentq, no per-row Python.
+    if statistic_name in ("lrto", "scoreo"):
+        from ..models.base import posterior_quantile_batch as _posterior_quantile_batch
+
+        # Build the u-grid (mid-resolution; we don't need the τ helper's
+        # full n_grid here because we interpolate back to theta_grid).
+        n_u = 1024
+        eps_u = 1.0 / (n_u + 1)
+        u_grid = np.linspace(eps_u, 1.0 - eps_u, n_u)
+
+        # F_post^{-1}(u_grid): shape (n_mc, n_u). NN: analytic Gaussian.
+        F_post_inv = np.asarray(
+            _posterior_quantile_batch(model, D_batch, prior, u_grid),
+            dtype=np.float64,
+        )
+
+        # F_lik^{-1}(u_grid): build per-row pdf, normalise, cumulative-
+        # trapezoid CDF, then `_batched_inverse_cdf` to invert at u_grid.
+        log_lik_clean = np.where(np.isfinite(log_lik), log_lik, -1e300)
+        log_lik_max = log_lik_clean.max(axis=-1, keepdims=True)
+        pdf_lik_unnorm = np.exp(log_lik_clean - log_lik_max)  # (n_mc, n_grid)
+        Z_lik = np.trapezoid(pdf_lik_unnorm, theta_grid, axis=-1)
+        Z_lik_safe = np.where(Z_lik > 0, Z_lik, 1.0)
+        pdf_lik = pdf_lik_unnorm / Z_lik_safe[:, None]
+        dtheta = np.diff(theta_grid)  # (n_grid - 1,)
+        incr_lik = 0.5 * (pdf_lik[:, :-1] + pdf_lik[:, 1:]) * dtheta[None, :]
+        cdf_lik = np.concatenate(
+            [np.zeros((pdf_lik.shape[0], 1)), np.cumsum(incr_lik, axis=-1)],
+            axis=-1,
+        )
+        cdf_lik_total = cdf_lik[:, -1:]
+        cdf_lik = np.clip(
+            cdf_lik / np.where(cdf_lik_total > 0, cdf_lik_total, 1.0),
+            0.0,
+            1.0,
+        )
+        F_lik_inv = _batched_inverse_cdf(theta_grid, cdf_lik, u_grid)  # (n_mc, n_u)
+
+        # OT W2 mix in u-space.
+        F_mixed = (1.0 - float(eta_f)) * F_post_inv + float(eta_f) * F_lik_inv  # (n_mc, n_u)
+
+        # pdf at F_mixed via du/dθ central differences:
+        # f_t(θ_mixed[i]) ≈ (u[i+1] - u[i-1]) / (θ_mixed[i+1] - θ_mixed[i-1]).
+        du_central = (u_grid[2:] - u_grid[:-2])[None, :]
+        dtheta_central = F_mixed[:, 2:] - F_mixed[:, :-2]  # (n_mc, n_u-2)
+        # Endpoint backfill: one-sided difference at the boundaries.
+        du_left = (u_grid[1] - u_grid[0])
+        du_right = (u_grid[-1] - u_grid[-2])
+        dtheta_left = (F_mixed[:, 1] - F_mixed[:, 0])[:, None]
+        dtheta_right = (F_mixed[:, -1] - F_mixed[:, -2])[:, None]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            pdf_central = np.where(
+                dtheta_central > 0, du_central / np.where(dtheta_central > 0, dtheta_central, 1.0), 0.0
+            )
+            pdf_left = np.where(
+                dtheta_left > 0, du_left / np.where(dtheta_left > 0, dtheta_left, 1.0), 0.0
+            )
+            pdf_right = np.where(
+                dtheta_right > 0, du_right / np.where(dtheta_right > 0, dtheta_right, 1.0), 0.0
+            )
+        # Stack: (n_mc, n_u). pdf_at_mixed[j, i] = density of q_η at F_mixed[j, i].
+        pdf_at_mixed = np.concatenate([pdf_left, pdf_central, pdf_right], axis=-1)
+        # Sanity: pdf_at_mixed >= 0 (already by construction), finite.
+        pdf_at_mixed = np.where(np.isfinite(pdf_at_mixed), pdf_at_mixed, 0.0)
+
+        # Resample to the fixed theta_grid via per-row linear interp.
+        # `F_mixed[j, :]` is monotone non-decreasing (W2 geodesic of
+        # monotone quantiles) so np.interp is well-defined.
+        pdf_qmp = np.zeros((int(n_mc), int(n_grid)), dtype=np.float64)
+        for j in range(int(n_mc)):
+            # Linear interp; outside the support of θ_mixed[j], np.interp
+            # extrapolates to endpoint values — we zero those out below.
+            pdf_qmp[j] = np.interp(theta_grid, F_mixed[j], pdf_at_mixed[j])
+            outside = (theta_grid < F_mixed[j, 0]) | (theta_grid > F_mixed[j, -1])
+            pdf_qmp[j] = np.where(outside, 0.0, pdf_qmp[j])
+
+        # Compute τ per row via the shared grid helpers. Use log-pdf.
+        with np.errstate(divide="ignore"):
+            log_pdf_qmp = np.where(pdf_qmp > 0, np.log(np.maximum(pdf_qmp, 1e-300)), -1e300)
+        tau_fn = _grid_tau_lrto if statistic_name == "lrto" else _grid_tau_scoreo
+        t_samples = np.zeros(int(n_mc), dtype=np.float64)
+        n_collapsed = 0
+        for j in range(int(n_mc)):
+            row = log_pdf_qmp[j]
+            if not np.any(np.isfinite(row)) or not np.any(pdf_qmp[j] > 0):
+                n_collapsed += 1
+                continue
+            tau_j = tau_fn(row, theta_grid, float(theta_f))
+            if not np.isfinite(tau_j):
+                n_collapsed += 1
+            else:
+                t_samples[j] = float(tau_j)
+        return t_samples, int(n_collapsed)
+
+    if statistic_name != "waldo":
+        raise NotImplementedError(
+            f"_generic_tilted_mc_reference_batch_ot not implemented for "
+            f"statistic={statistic_name!r}; supported: 'waldo', 'lrto', 'scoreo'."
+        )
+
     # 4. Gauss-Legendre nodes + weights — cached jnp.Array per n_u so
     #    we don't pay the ~700 µs leggauss eigendecomposition or the
     #    per-call `jnp.asarray` conversion in the kernel-input list.
@@ -571,16 +691,21 @@ def _generic_tilted_pvalue_ot(
       `model.sample_data(theta, ...)`, recompute t per draw using
       `_generic_tilted_t_statistic_ot`. Conservative `(k+1)/(n+1)`
       smoothing. CRN-seeded via blake2b stable hash.
+    - statistic_name="lrto" / "scoreo": materialise the q_η log-pdf on a
+      θ-grid (via QuantileMixturePath.logpdf) and dispatch through the
+      shared grid-distribution τ helpers (`_grid_tau_lrto` /
+      `_grid_tau_scoreo` from power_law.py). On NN+Normal the
+      Gaussian q_η yields trinity-collapse τ_LRTO=τ_SCOREO=τ_WALDO.
     """
     from ..statistics.wald import WaldStatistic
     from ._generic_pvalue import _resolve_support, _stable_tilted_pvalue_seed
 
     if statistic_name == "wald":
         return float(np.asarray(WaldStatistic()._generic_pvalue(theta, data, model)))
-    if statistic_name != "waldo":
+    if statistic_name not in ("waldo", "lrto", "scoreo"):
         raise NotImplementedError(
             f"OTTilting generic tilted_pvalue not implemented for "
-            f"statistic={statistic_name!r}; supported: 'wald', 'waldo'."
+            f"statistic={statistic_name!r}; supported: 'wald', 'waldo', 'lrto', 'scoreo'."
         )
 
     data_arr = np.atleast_1d(np.asarray(data, dtype=np.float64))
@@ -606,26 +731,82 @@ def _generic_tilted_pvalue_ot(
             data_arr, model, prior, eta_f, alpha, base_seed
         )
 
-    # Hoist observed moments (skeptic finding from PowerLaw 3c-fix1).
-    if obs_moments is not None:
-        mu_obs, var_obs = obs_moments
+    # Observed tilted τ at (data, theta_f, eta_f).
+    if statistic_name == "waldo":
+        # Hoist observed moments (skeptic finding from PowerLaw 3c-fix1).
+        if obs_moments is not None:
+            mu_obs, var_obs = obs_moments
+        else:
+            posterior_obs = model.posterior(data_arr, prior)
+            likelihood_obs = model.likelihood(data_arr)
+            mu_obs, var_obs = _generic_tilted_moments_ot(
+                posterior_obs, likelihood_obs, eta_f,
+                model=model, data=data_arr, support=support,
+                n_grid=_GENERIC_TILT_N_GRID,
+            )
+        var_obs_safe = max(var_obs, 1e-300)
+        diff_obs = mu_obs - theta_f
+        t_obs = diff_obs * diff_obs / var_obs_safe
     else:
+        # lrto / scoreo: build the full normalised observed tilted log-pdf
+        # grid on the same θ-window the MC reference will use (so τ_obs
+        # and τ_rep are computed at matching grid resolution). For OT,
+        # q_η is a QuantileMixturePath; we materialise its log-pdf row
+        # by calling `.logpdf(theta_grid)` once.
         posterior_obs = model.posterior(data_arr, prior)
         likelihood_obs = model.likelihood(data_arr)
-        mu_obs, var_obs = _generic_tilted_moments_ot(
-            posterior_obs, likelihood_obs, eta_f,
-            model=model, data=data_arr, support=support,
-            n_grid=_GENERIC_TILT_N_GRID,
+        # Reuse the same θ-window-sizing strategy as the MC reference:
+        # union of (posterior ± 8σ) and the model support, but we use
+        # the simpler approach of just calling `_generic_tilt_ot` and
+        # evaluating on a fresh grid spanning the posterior + likelihood
+        # support. The MC batch uses its own per-call window, but for
+        # τ_obs/τ_rep parity, using the posterior moments + support
+        # clipping yields a comparable window.
+        try:
+            mu_post_obs = float(np.asarray(posterior_obs.mean()))
+            var_post_obs = float(np.asarray(posterior_obs.var()))
+        except (TypeError, ValueError, AttributeError):
+            # Conservative: fall back to model support.
+            mu_post_obs, var_post_obs = 0.0, 1.0
+        sigma_post_obs = float(np.sqrt(max(var_post_obs, 1e-300)))
+        lo_obs = max(mu_post_obs - 8.0 * sigma_post_obs, float(support[0]))
+        hi_obs = min(mu_post_obs + 8.0 * sigma_post_obs, float(support[1]))
+        if not (lo_obs < hi_obs) or not np.isfinite(lo_obs) or not np.isfinite(hi_obs):
+            # Degenerate observed window — conservative p=1.
+            return 1.0
+        theta_grid_obs = np.linspace(
+            lo_obs, hi_obs, _GENERIC_TILTED_PVALUE_N_GRID_MC
         )
-    var_obs_safe = max(var_obs, 1e-300)
-    diff_obs = mu_obs - theta_f
-    t_obs = diff_obs * diff_obs / var_obs_safe
+        try:
+            qmp_obs = _generic_tilt_ot(
+                posterior_obs, likelihood_obs, eta_f,
+                model=model, data=data_arr, support=support,
+                n_grid=_GENERIC_TILT_N_GRID,
+            )
+            log_pdf_obs = np.asarray(
+                qmp_obs.logpdf(theta_grid_obs), dtype=np.float64
+            )
+        except (ValueError, RuntimeError, TiltingDomainError):
+            # Non-monotone extrapolation or brentq failure — conservative p=1.
+            return 1.0
+        if not np.all(np.isfinite(log_pdf_obs)):
+            # log-pdf has -inf at out-of-support points → renormalise
+            # by setting -inf to a small finite floor relative to max
+            # so the τ helpers see a clean grid.
+            log_pdf_obs = np.where(np.isfinite(log_pdf_obs), log_pdf_obs, -1e300)
+        tau_fn = _grid_tau_lrto if statistic_name == "lrto" else _grid_tau_scoreo
+        t_obs = tau_fn(log_pdf_obs, theta_grid_obs, theta_f)
+        if not np.isfinite(t_obs):
+            # τ_obs out-of-window or non-finite: conservative smoothed p.
+            return 1.0 / (float(n_mc) + 1.0)
 
     # MC reference under H_0:theta_f — vectorised batched pipeline.
     # Replaces a per-iteration `likelihood_as_distribution` (full
     # GridDistribution construction) + `QuantileMixturePath` (Gauss-
     # Legendre on inverse-CDF) loop with batched cumulative-trapezoid
     # CDF + vectorised inverse-CDF lookup. ~500x speedup at n_mc=200.
+    # For lrto/scoreo, the batch falls back to a per-row QuantileMixturePath
+    # construction (the τ helpers need the full log-pdf row, not just moments).
     rng = np.random.default_rng(derived_seed)
     n_obs = int(data_arr.size)
     t_samples, n_collapsed = _generic_tilted_mc_reference_batch_ot(
@@ -638,6 +819,7 @@ def _generic_tilted_pvalue_ot(
         n_mc=int(n_mc),
         n_grid=_GENERIC_TILTED_PVALUE_N_GRID_MC,
         rng=rng,
+        statistic_name=statistic_name,
     )
     if n_collapsed > n_mc // 2:
         import warnings
@@ -672,6 +854,13 @@ def _generic_tilted_pvalue_ot_vec(
     same call signature so the dynamic-CI scanner can swap schemes by
     name. Used by ``OTTilting.dynamic_tilted_confidence_interval_ot_generic``
     to fine-scan the dynamic-η p-value at force_generic=True on NN.
+
+    Supports ``statistic_name in {"wald", "waldo", "lrto", "scoreo"}``;
+    routing is delegated to the scalar helper. The lrto/scoreo branches
+    use per-row grid τ helpers (scalar output by construction), so even
+    a future triple-batched vec would still loop over the n_mc axis for
+    those statistics — the current Python-loop fallback over n_theta
+    has no significant downside relative to a fully-batched version.
 
     Implementation note: the current OT version is a Python loop over
     (theta_i, eta_i) wrapping the scalar ``_generic_tilted_pvalue_ot``,
