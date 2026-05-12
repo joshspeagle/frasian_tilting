@@ -128,6 +128,101 @@ class TestLRTOInvariants:
             f"exceeds expected tol {expected_tol:.3e}"
         )
 
+    def test_gaussian_fast_path_isinstance_not_duck_typed(self):
+        """Skeptic finding #1: the Gaussian fast path is gated on
+        `isinstance(posterior, NormalDistribution)`, NOT on
+        `hasattr(posterior, "loc") and hasattr(posterior, "scale")`.
+
+        We verify by constructing a `_PseudoLocScale` Distribution that
+        has both attributes but is NOT NormalDistribution; the fast-path
+        check must return False so the (correct) slow path is used.
+        """
+        from dataclasses import dataclass
+
+        from frasian.statistics.lrto import LRTOStatistic
+
+        @dataclass(frozen=True)
+        class _PseudoLocScale:
+            loc: float
+            scale: float
+
+            def logpdf(self, x):
+                return np.float64(0.0)
+
+            def mean(self):
+                return self.loc
+
+            def var(self):
+                return self.scale**2
+
+        probe = _PseudoLocScale(loc=0.0, scale=1.0)
+        assert hasattr(probe, "loc") and hasattr(probe, "scale")
+        # Tightened detection: only NormalDistribution opts in.
+        assert LRTOStatistic._is_gaussian_posterior(probe) is False
+        assert LRTOStatistic._is_gaussian_posterior(NormalDistribution(0.0, 1.0)) is True
+
+    def test_slow_path_via_non_normal_posterior(self):
+        """Skeptic finding #10: the per-row Python loop in
+        `_generic_mc_reference` has zero coverage on NN
+        (`force_generic=True` still hits the Gaussian fast path).
+        We force the slow path by wrapping NormalNormalModel so its
+        `.posterior(...)` returns a non-NormalDistribution wrapper
+        with identical logpdf semantics — the MC reference must still
+        agree with WALDO within MC tolerance.
+        """
+        from frasian.statistics.lrto import LRTOStatistic
+        from frasian.statistics.waldo import WaldoStatistic
+
+        class _UnimodalWrapper:
+            """A non-NormalDistribution posterior that wraps a Gaussian.
+
+            Implements just the Distribution protocol surface that
+            `_generic_pvalue` / `_generic_mc_reference` use: `logpdf`,
+            `mean`, `var`. Crucially does NOT carry `.loc`/`.scale`,
+            so `_is_gaussian_posterior` returns False and the per-row
+            Python loop runs.
+            """
+
+            __slots__ = ("_inner",)
+
+            def __init__(self, inner: NormalDistribution):
+                self._inner = inner
+
+            def logpdf(self, x):
+                return self._inner.logpdf(x)
+
+            def mean(self):
+                return self._inner.mean()
+
+            def var(self):
+                return self._inner.var()
+
+        class _WrappedNN(NormalNormalModel):
+            def posterior(self, data, prior):
+                inner = super().posterior(data, prior)
+                return _UnimodalWrapper(inner)
+
+        model = _WrappedNN(sigma=1.0)
+        prior = NormalDistribution(loc=0.0, scale=1.0)
+        data = np.asarray([0.5])
+        theta = 0.2
+
+        # Force the generic path on the wrapped model. The Gaussian
+        # fast-path check returns False (wrapper has no .loc/.scale),
+        # so the per-row Python loop runs.
+        stat_slow = LRTOStatistic(force_generic=True, n_mc=500)
+        p_slow = float(stat_slow.pvalue(theta, data, model, prior))
+
+        # Reference: same MC machinery on the un-wrapped NN should give
+        # the same p (within MC noise from a different seed-data tuple).
+        # We compare against the WALDO closed form, which `lrto`
+        # collapses to on NN.
+        p_waldo_cf = float(WaldoStatistic().pvalue(theta, data, model, prior))
+        # MC noise at n_mc=500: ~0.045 SE at p~0.5.
+        assert abs(p_slow - p_waldo_cf) < 0.10, (
+            f"slow-path p={p_slow:.4f} vs closed-form WALDO p={p_waldo_cf:.4f}"
+        )
+
     def test_wrong_map_triggers_warning(self):
         """Generic-path mode-finder protection: if the posterior's
         argmax disagrees with what `_find_theta_map` returns,

@@ -305,21 +305,27 @@ class LRTOStatistic:
         return int.from_bytes(h.digest()[:4], "little", signed=False)
 
     @staticmethod
-    def _posterior_is_gaussian_like(model: Model, prior: Prior) -> bool:
-        """Detect whether `model.posterior(data, prior)` returns a
-        location-scale Gaussian-style Distribution (has `.loc` and
-        `.scale`). When True, the MC reference can use the vectorised
-        fast path that mirrors WALDO's `posterior_moments_batch`
-        machinery: `tau_LRTO = (mu_n - theta_0)^2 / sigma_n^2` (which
-        equals WALDO's `t` on NN). ~50-200x faster than the
-        per-row Python loop on NormalNormalModel + NormalDistribution.
+    def _is_gaussian_posterior(posterior) -> bool:
+        """True iff `posterior` is a `NormalDistribution` instance.
+
+        When True, the MC reference can use the vectorised fast path
+        because (a) `theta_MAP == posterior.loc` exactly, and (b)
+        `-2 [logpdf(theta) - logpdf(loc)] = (loc - theta)^2 / scale^2`
+        (the same closed-form as WALDO's `t` on NN).
+
+        **Why `isinstance`, not duck-typing?** Skeptic finding #1
+        (lrto v1) showed that an `isinstance` check is safer than
+        `hasattr(probe, "loc") and hasattr(probe, "scale")`: a future
+        Student-t / lognormal / skew-normal wrapper will have those
+        attributes (location-scale family) but `theta_MAP != .loc`
+        and the WALDO formula `(mu - theta)^2 / var` is NOT the
+        posterior LRT. The fast path would silently apply a wrong
+        statistic on the H_0 MC reference and produce miscalibrated
+        p-values. Tightening to `NormalDistribution` makes the
+        fast-path opt-in by class identity; future Gaussian-class
+        wrappers can join this tuple explicitly.
         """
-        try:
-            arr = np.zeros(1, dtype=np.float64)
-            probe = model.posterior(arr, prior)
-        except Exception:
-            return False
-        return hasattr(probe, "loc") and hasattr(probe, "scale")
+        return isinstance(posterior, NormalDistribution)
 
     def _generic_mc_reference(
         self,
@@ -329,29 +335,30 @@ class LRTOStatistic:
         prior: Prior,
         n_mc: int,
         derived_seed: int,
+        *,
+        is_gaussian: bool,
     ) -> NDArray[np.float64]:
         """Sample n_mc tau values under H_0 ~ likelihood(.|theta_0).
 
-        Two paths:
+        `is_gaussian`: caller-supplied flag set by
+        `_is_gaussian_posterior(posterior_obs)` (hoisted at the CI /
+        pvalue level so we don't re-detect at every brentq probe —
+        skeptic finding #2). When True, uses the vectorised fast
+        path; when False, falls back to the per-row Python loop.
 
-        - **Gaussian-posterior fast path** (`posterior` returns a
-          Distribution with `.loc` and `.scale`): vectorised via
-          `posterior_moments_batch`. For a Gaussian posterior
-          `pi(.|D') = N(mu, sigma^2)`, `theta_MAP_{D'} = mu` and
+        - **Gaussian fast path**: vectorised via
+          `posterior_moments_batch`. For `pi(.|D') = N(mu, sigma^2)`:
+          `theta_MAP_{D'} = mu` and
+          `tau_LRTO = (mu - theta_0)^2 / sigma^2` — same numpy
+          expression as WALDO's `t` on NN. ~50-200x speedup.
 
-              tau_LRTO = -2 [log pi(theta_0) - log pi(mu)]
-                       = (mu - theta_0)^2 / sigma^2
+        - **Per-row path**: `scipy.optimize.minimize_scalar` for
+          `theta_MAP`, per-row `logpdf` evaluations. Same
+          wrong-MAP RuntimeWarning + non-negativity clamp as
+          `_generic_evaluate` (skeptic finding #11). Returns NaN
+          for any draw that raises during posterior construction.
 
-          which is the same single-line numpy expression as WALDO's
-          `t`. ~50-200x speedup on NN at n_mc=2000.
-
-        - **Generic path**: per-row Python loop with
-          `scipy.optimize.minimize_scalar` for `theta_MAP` and
-          per-row `logpdf` evaluations. O(n_mc * mode_find +
-          2 * logpdf) — slow for non-conjugate posteriors.
-
-        Returns shape `(n_mc,)` with NaN for any draw that produces a
-        non-finite posterior summary.
+        Returns shape `(n_mc,)`.
         """
         from ..models.base import (
             posterior_moments_batch as _moments_batch,
@@ -361,7 +368,7 @@ class LRTOStatistic:
         rng = np.random.default_rng(int(derived_seed))
         D_batch = _sample_batch(model, float(theta0_f), rng, int(n_mc), int(n_obs))
 
-        if self._posterior_is_gaussian_like(model, prior):
+        if is_gaussian:
             mu_arr, var_arr = _moments_batch(model, D_batch, prior)
             finite = (var_arr > 0.0) & np.isfinite(var_arr) & np.isfinite(mu_arr)
             with np.errstate(invalid="ignore", divide="ignore"):
@@ -369,9 +376,10 @@ class LRTOStatistic:
                 tau = diff * diff / np.where(finite, var_arr, 1.0)
             return np.where(finite, tau, np.nan)
 
-        # Generic (non-Gaussian-posterior) path.
+        # Per-row (non-Gaussian-posterior) path.
         support = model.support()
         tau = np.empty(int(n_mc), dtype=np.float64)
+        worst_negative = 0.0  # for skeptic-finding-#11 wrong-MAP guard
         for i in range(int(n_mc)):
             try:
                 post_i = model.posterior(D_batch[i], prior)
@@ -381,10 +389,21 @@ class LRTOStatistic:
                 tau_i = -2.0 * (ll0 - ll_map)
                 if not np.isfinite(tau_i):
                     tau[i] = np.nan
-                else:
-                    tau[i] = max(tau_i, 0.0)
+                    continue
+                worst_negative = min(worst_negative, tau_i)
+                tau[i] = max(tau_i, 0.0)
             except Exception:
                 tau[i] = np.nan
+        if worst_negative < -_GENERIC_TAU_NEG_TOL:
+            warnings.warn(
+                f"LRTOStatistic._generic_mc_reference: at least one MC "
+                f"draw produced tau={worst_negative:.3e} < "
+                f"-{_GENERIC_TAU_NEG_TOL:.0e}; this implies the mode-finder "
+                f"did not converge to the true MAP on at least one draw. "
+                f"Clamping to 0; downstream p-value will be biased.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
         return tau
 
     def _generic_pvalue(
@@ -395,13 +414,16 @@ class LRTOStatistic:
         prior: Prior | None,
         *,
         derived_seed: int | None = None,
-        obs_state: tuple[float, NDArray[np.float64]] | None = None,
+        obs_state: tuple[float, float, bool, object] | None = None,
     ) -> jax.Array:
         """MC empirical p-value with `(k+1)/(n+1)` continuity correction.
 
-        `obs_state`: optional `(theta_map_obs, logpdf_at_map_obs)` —
-        theta-INDEPENDENT, hoisted out of the CI brentq loop to avoid
-        re-finding the MAP at every probe.
+        `obs_state`: optional 4-tuple
+        `(theta_map_obs, ll_map_obs, is_gaussian, posterior_obs)` —
+        all theta-INDEPENDENT, hoisted out of the CI brentq loop to
+        avoid re-finding the MAP, re-detecting Gaussian-ness, and
+        re-constructing the posterior at every probe (skeptic
+        findings #2 + #12).
         """
         if prior is None:
             raise ValueError("LRTOStatistic.pvalue requires a prior (got None).")
@@ -413,15 +435,15 @@ class LRTOStatistic:
             )
         n_obs = int(data_arr.size)
 
-        # Hoist observed MAP + log-density-at-MAP (theta-independent).
+        # Hoist observed posterior + MAP + log-density-at-MAP +
+        # is_gaussian flag (all theta-independent).
         if obs_state is None:
             posterior = model.posterior(data_arr, prior)
             theta_map_obs = self._find_theta_map(posterior, model.support())
             ll_map_obs = float(np.asarray(posterior.logpdf(np.float64(theta_map_obs))))
+            is_gaussian = self._is_gaussian_posterior(posterior)
         else:
-            theta_map_obs, ll_map_obs_arr = obs_state
-            ll_map_obs = float(ll_map_obs_arr)
-            posterior = model.posterior(data_arr, prior)
+            theta_map_obs, ll_map_obs, is_gaussian, posterior = obs_state
         if not np.isfinite(ll_map_obs):
             raise ValueError(
                 "LRTOStatistic._generic_pvalue: posterior.logpdf at the MAP is "
@@ -440,14 +462,28 @@ class LRTOStatistic:
             posterior.logpdf(np.asarray(theta_arr, dtype=np.float64)),
             dtype=np.float64,
         )
-        tau_obs = np.maximum(-2.0 * (ll_theta_obs - ll_map_obs), 0.0)
+        tau_obs_raw = -2.0 * (ll_theta_obs - ll_map_obs)
+        # Same wrong-MAP guard as `_generic_evaluate` (skeptic finding #11).
+        if tau_obs_raw.size:
+            worst = float(np.nanmin(tau_obs_raw))
+            if worst < -_GENERIC_TAU_NEG_TOL:
+                warnings.warn(
+                    f"LRTOStatistic._generic_pvalue: tau_obs={worst:.3e} < "
+                    f"-{_GENERIC_TAU_NEG_TOL:.0e}; the mode-finder did not "
+                    f"return the true posterior MAP. Clamping to 0; the p-value "
+                    f"will be biased.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+        tau_obs = np.maximum(tau_obs_raw, 0.0)
 
         # Per-theta MC reference (each theta gets its own H_0 reference;
         # CRN seed shared so brentq probes nest cleanly).
         p_out = np.empty(theta_arr.shape, dtype=np.float64)
         for i, theta_f in enumerate(theta_arr):
             tau_ref = self._generic_mc_reference(
-                float(theta_f), n_obs, model, prior, self.n_mc, derived_seed
+                float(theta_f), n_obs, model, prior, self.n_mc, derived_seed,
+                is_gaussian=is_gaussian,
             )
             finite = np.isfinite(tau_ref)
             n_eff = int(finite.sum())
@@ -486,13 +522,15 @@ class LRTOStatistic:
         derived_seed = self._stable_seed(data_arr, model, prior, 0.0, self.seed)
         support_lo, support_hi = model.support()
 
-        # Hoisted observed MAP — theta-INDEPENDENT, computed once.
+        # Hoisted observed state — all theta-INDEPENDENT, computed once
+        # and threaded into every brentq probe (skeptic findings #2, #12).
         posterior = model.posterior(data, prior)
         theta_map_obs = self._find_theta_map(posterior, model.support())
         ll_map_obs = float(np.asarray(posterior.logpdf(np.float64(theta_map_obs))))
+        is_gaussian = self._is_gaussian_posterior(posterior)
         var_post = float(np.asarray(posterior.var()))
         sigma_post = float(np.sqrt(max(var_post, 1e-300)))
-        obs_state = (theta_map_obs, np.float64(ll_map_obs))
+        obs_state = (theta_map_obs, ll_map_obs, is_gaussian, posterior)
 
         def f(theta: float) -> float:
             theta_safe = max(float(support_lo), min(float(support_hi), theta))

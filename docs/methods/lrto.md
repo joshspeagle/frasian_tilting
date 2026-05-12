@@ -281,6 +281,39 @@ mu_0=0.5, theta_true=1.2)`, `n=2000` draws:
   same risk as WALDO/Wald — the closed-form dispatch reads only the
   fingerprint. Mitigation: same options as `lrt` (avoid subclass,
   override `fingerprint`, or `force_generic=True`).
+- **Fat-tailed posteriors with unbounded support (generic path)**:
+  `_find_theta_map`'s slow-path bracket is `mean +/- 10 *
+  sqrt(var)`. For thick-tailed posteriors where the MAP sits many
+  sigmas from the mean (heavy-tailed mixtures, future Cauchy-style
+  posteriors with `var()` returning `inf`), the bracket can miss
+  the true mode. The `np.maximum(tau, 0.0)` clamp only fires when
+  a test theta happens to hit a region with higher logpdf than the
+  returned MAP, so an undetected wrong-MAP can propagate silently.
+  Mitigation: future work would adaptively double the bracket
+  outward until logpdf crests.
+- **Near-flat posteriors (generic path)**: when the posterior is
+  almost flat (highly uninformative likelihood + diffuse prior),
+  `scipy.optimize.minimize_scalar` returns an arbitrary point in
+  the flat region. `res.success` is currently not inspected. The
+  resulting CI inversion typically fails to bracket and falls back
+  to `model.support()` with a `UserWarning`; downstream consumers
+  should treat that warning as "the data + prior gave no
+  information at this alpha".
+- **CI bracket assumes `posterior.var()` is finite**:
+  `_generic_confidence_interval` uses `4 * sqrt(posterior.var())`
+  as the initial half-width. For posteriors with infinite variance
+  (Cauchy, Student-t with df ≤ 2), the bracket is infinite and
+  `brentq_with_doubling` cannot make progress. The
+  bracket-exhaustion warning fires and the CI is returned as
+  `model.support()`.
+- **Gaussian fast-path detection is class-tight**: the
+  `posterior_moments_batch` fast path runs only when
+  `isinstance(posterior, NormalDistribution)` (not just
+  `hasattr(.loc) and hasattr(.scale)`) — to prevent a future
+  location-scale wrapper (Student-t, lognormal, etc.) from
+  silently being treated as Gaussian and producing a miscalibrated
+  H_0 MC reference. New Gaussian-class wrappers must explicitly be
+  added to `_is_gaussian_posterior`.
 
 ## Invariants
 
@@ -322,10 +355,17 @@ mu_0=0.5, theta_true=1.2)`, `n=2000` draws:
    `alpha = 0.01` on n=2000 draws (L3, marker `L3`). This holds
    DESPITE the asymptotic chi^2_1 statement failing in general
    (Derivation Step 5 + 8).
-9. **Cross-pair equivalence on NN.** At cell `(identity, lrto)` the
-   runner produces identical RawResults to `(identity, waldo)` on
-   the NN+Normal sandbox — pinned cell-for-cell against the
-   cross-product manifest.
+9. **Cross-pair equivalence on NN — p-value + CI level.** On the
+   NN+Normal closed-form path, `lrto.pvalue == waldo.pvalue` and
+   `lrto.confidence_interval == waldo.confidence_interval` for
+   every `(theta, alpha, data, model, prior)`. Pinned by
+   `test_matches_waldo_pvalue_on_nn` / `test_matches_waldo_ci_on_nn`
+   (property tests) and
+   `test_pvalue_matches_waldo_on_nn_closed_form` (regression). At
+   the runner / RawResult level cell-name and statistic-class
+   metadata necessarily differ; the cross-product machinery is
+   common discipline shared with WALDO and is not pinned by an
+   lrto-specific test.
 
 ## Literature
 
