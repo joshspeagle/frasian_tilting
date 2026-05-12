@@ -456,20 +456,45 @@ class DynamicNumericalEtaSelector:
     n_grid: int = 401
     coarse_n: int = 25
     search_mult: float = 8.0
-    cache_bin_width: float = 0.5
     is_dynamic: bool = True
     # `select_grid(theta_grid, ...)` is θ-only — η at each θ depends on
     # θ, not D — so the dynamic CI is calibrated. The single-context
     # `select(data=[D], ...)` shim falls back to NumericalEtaSelector at
     # θ=D and inherits its post-selection bias; prefer `select_grid`.
     is_post_selection: ClassVar[bool] = False
-    # Memoization cache for `select_grid`. The selector is otherwise a
-    # value object (frozen dataclass + value-equal `compare=` fields);
-    # the cache is excluded from `__eq__` / `__hash__` / `__repr__`
-    # via `compare=False, repr=False, hash=False` so two selectors
-    # with the same configuration but different cache populations are
-    # equal AND interchangeable. Read by `select_grid` only; never
-    # written from outside this module.
+    # Stored-cache density (independent of request resolution). The η(θ)
+    # function depends only on (model, prior, scheme, statistic, alpha) —
+    # not on the request grid — so the cache stores eta on a single dense
+    # grid per such tuple, and `np.interp`s for any request resolution.
+    cache_grid_n: int = 100
+    # Stored-grid extent in units of σ from μ₀. Deterministic given
+    # (model, prior) — does NOT depend on the first request's endpoints.
+    # The dynamic-CI scan uses request bounds D ± `search_mult`·σ
+    # (default 8σ); boundary-retry doubles to 16σ. With K=24, the cached
+    # range comfortably covers D values up to ±8σ from μ₀ + their
+    # 16σ-half-width retry boxes. Requests beyond ±K·σ trigger a
+    # one-time extension; in practice the framework never reaches them.
+    # The deterministic property is required for cache order-independence
+    # (`test_cache_order_independence`).
+    cache_grid_extent_sigmas: float = 24.0
+    # Disk-backed L2 cache: persists across script runs at
+    # `<repo_root>/artifacts/eta_lookups/dyn_numerical_<24-char-hash>.npz`
+    # (gitignored, parallels the trained EtaArtifacts). Set False to
+    # disable disk persistence; the in-memory L1 still applies.
+    use_disk_cache: bool = True
+    # Cache version: derived dynamically from the source code of the
+    # inner solver methods (`NumericalEtaSelector.select_grid` and
+    # `NumericalEtaSelector._eta_bounds`). When either changes, the
+    # source hash changes, the cache key changes, and old `.npz` files
+    # silently miss instead of returning stale numbers. Manual override
+    # via `cache_version_override` (e.g. for tests or forced
+    # invalidation).
+    cache_version_override: str | None = None
+    # In-memory L1 cache. Excluded from `__eq__` / `__hash__` / `__repr__`
+    # via `compare=False, repr=False, hash=False` so two selectors with
+    # the same configuration but different cache populations are equal
+    # AND interchangeable. Read by `select_grid` only; never written from
+    # outside this module.
     _cache: dict = field(
         default_factory=dict, compare=False, repr=False, hash=False
     )
@@ -501,6 +526,142 @@ class DynamicNumericalEtaSelector:
         )
         return float(out[0])
 
+    @staticmethod
+    def _inner_solver_version() -> str:
+        """8-char SHA-256 of the inner-solver source code.
+
+        Bumps automatically when `NumericalEtaSelector.select_grid` or
+        `_eta_bounds` change, invalidating on-disk caches that were
+        produced by older code. Without this, an unrelated future commit
+        to the inner solver could silently change cached η-values without
+        anyone noticing the headline numbers drifted.
+        """
+        import hashlib
+        import inspect
+
+        try:
+            src = (
+                inspect.getsource(NumericalEtaSelector.select_grid)
+                + inspect.getsource(NumericalEtaSelector._eta_bounds)
+            )
+        except (OSError, TypeError):
+            # Source unavailable (zipped install, REPL); fall back to a
+            # safe constant — caches will be sticky but cross-version.
+            return "src_unavailable"
+        return hashlib.sha256(src.encode()).hexdigest()[:8]
+
+    def _cache_key(
+        self,
+        scheme_name: str,
+        statistic_name: str,
+        alpha: float,
+        model_fp: tuple | None,
+        prior_fp: tuple | None,
+    ) -> str:
+        """24-char SHA-256 of the cache key. Excludes endpoints and request
+        resolution — those are absorbed by the wide stored grid + np.interp.
+        Includes a source-derived version so inner-solver changes auto-
+        invalidate stale on-disk caches.
+        """
+        import hashlib
+
+        version = self.cache_version_override or self._inner_solver_version()
+        components = (
+            version,
+            scheme_name,
+            statistic_name,
+            f"{alpha:.10g}",
+            repr(model_fp),
+            repr(prior_fp),
+            str(self.cache_grid_n),
+            f"{self.cache_grid_extent_sigmas:.4g}",
+        )
+        s = "|".join(components)
+        return hashlib.sha256(s.encode()).hexdigest()[:24]
+
+    def _disk_cache_path(self, key: str) -> "Path":  # type: ignore[name-defined]
+        from pathlib import Path
+
+        # eta_selectors.py lives at src/frasian/tilting/; project root is 3 up.
+        repo_root = Path(__file__).resolve().parents[3]
+        return repo_root / "artifacts" / "eta_lookups" / f"dyn_numerical_{key}.npz"
+
+    def _load_from_disk(self, key: str) -> tuple | None:
+        path = self._disk_cache_path(key)
+        if not path.exists():
+            return None
+        try:
+            data = np.load(path)
+            return (np.asarray(data["theta"]), np.asarray(data["eta"]))
+        except Exception as exc:
+            # Corrupt or schema-mismatched file — warn, unlink, recompute.
+            # Silent recovery would mask cache corruption (e.g. from a
+            # truncated write under concurrent boundary-retry without the
+            # atomic-write guarantee); the warning makes "cache slow today"
+            # observable as "cache broken today".
+            import warnings
+
+            warnings.warn(
+                f"DynamicNumerical: corrupt eta_lookup at {path} "
+                f"({type(exc).__name__}: {exc}); deleting and recomputing.",
+                RuntimeWarning,
+                stacklevel=3,
+            )
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            return None
+
+    def _save_to_disk(self, key: str, theta: np.ndarray, eta: np.ndarray) -> None:
+        path = self._disk_cache_path(key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Atomic write: write to a unique tmp path with `.npz` suffix
+        # (so `np.savez` doesn't auto-append), then `os.replace` to the
+        # final path. Atomic on POSIX (and on WSL drvfs for files in the
+        # same directory). Required because workers can recompute
+        # concurrently when `dynamic_ci_scan`'s boundary-retry path
+        # overflows the originally-primed cache extent (see _dynamic.py).
+        # Failures are swallowed; the in-memory L1 cache still serves
+        # correct values for this process.
+        import os
+        import tempfile
+
+        tmp_path: Path | None = None
+        try:
+            fd, tmp_name = tempfile.mkstemp(
+                prefix="tmp_", suffix=".npz", dir=str(path.parent)
+            )
+            os.close(fd)
+            tmp_path = Path(tmp_name)
+            np.savez(tmp_path, theta=theta, eta=eta)
+            os.replace(str(tmp_path), str(path))
+            tmp_path = None
+        except Exception:
+            if tmp_path is not None:
+                try:
+                    tmp_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+    @staticmethod
+    def _deterministic_extent(model, prior, K: float) -> tuple[float, float]:
+        """Compute the cached-grid extent from (model, prior). Independent
+        of the request's endpoints, so two selectors processing the same
+        (model, prior) under different request orderings end up with
+        bit-identical stored grids — required by
+        `test_cache_order_independence`.
+
+        For Normal-Normal: μ₀ = prior.loc, σ = model.sigma. Range:
+        `[μ₀ − K·σ, μ₀ + K·σ]`. For non-NN priors / models without these
+        attributes, fall back to (0, 1)-centred σ=1 — works for any
+        dimensionless / unit-scale parameter space.
+        """
+        sigma = float(getattr(model, "sigma", 1.0))
+        mu0 = float(getattr(prior, "loc", 0.0))
+        half = K * sigma
+        return (mu0 - half, mu0 + half)
+
     def select_grid(
         self,
         grid,
@@ -511,46 +672,69 @@ class DynamicNumericalEtaSelector:
         prior: Prior,
         alpha: float,
     ):
-        """Per-θ η* lookup with caching.
+        """Per-θ η* lookup with two-tier (memory + disk) caching.
 
-        Cache key includes the θ-grid endpoints (1e-6-binned to absorb
-        tiny numerical drift) and the model/prior fingerprints so
-        different experiments do not collide.
+        η(θ) depends only on `(model, prior, scheme, statistic, alpha)` —
+        not on the request grid endpoints. The cache stores a single
+        dense `(theta, eta)` pair per such tuple, computed on a
+        deterministic `μ₀ ± cache_grid_extent_sigmas · σ` range that
+        does not depend on which request hits first. In-extent requests
+        are served via `np.interp`. Out-of-extent requests (rare;
+        beyond ±24σ from μ₀ in the default config) extend the range
+        and overwrite the cache entry.
         """
         scheme_name = getattr(scheme, "name", type(scheme).__name__)
-        coarse_n = len(grid)
-
         theta_arr = np.asarray(grid, dtype=np.float64)
-        t_min_bin = float(np.round(theta_arr.min(), 6))
-        t_max_bin = float(np.round(theta_arr.max(), 6))
+        req_lo = float(theta_arr.min())
+        req_hi = float(theta_arr.max())
+
         model_fp = getattr(model, "fingerprint", lambda: None)()
         prior_fp = getattr(prior, "fingerprint", lambda: None)()
-        key = (
-            "theta",
-            alpha,
-            statistic.name,
-            scheme_name,
-            coarse_n,
-            t_min_bin,
-            t_max_bin,
-            tuple(model_fp) if model_fp is not None else None,
-            tuple(prior_fp) if prior_fp is not None else None,
-        )
+        model_fp_t = tuple(model_fp) if model_fp is not None else None
+        prior_fp_t = tuple(prior_fp) if prior_fp is not None else None
+        key = self._cache_key(scheme_name, statistic.name, alpha, model_fp_t, prior_fp_t)
+
         cached = self._cache.get(key)
-        if cached is None:
-            eta_full = self._inner().select_grid(
-                theta_arr,
-                scheme,
-                model=model,
-                prior=prior,
-                alpha=alpha,
-                statistic=statistic,
-            )
-            self._cache[key] = (theta_arr, eta_full)
-            cached_grid, cached_eta = theta_arr, eta_full
-        else:
+        if cached is None and self.use_disk_cache:
+            cached = self._load_from_disk(key)
+            if cached is not None:
+                self._cache[key] = cached
+
+        if cached is not None:
             cached_grid, cached_eta = cached
-        return np.interp(theta_arr, cached_grid, cached_eta)
+            if float(cached_grid[0]) <= req_lo and float(cached_grid[-1]) >= req_hi:
+                # Cached extent covers request — interp and return.
+                return np.interp(theta_arr, cached_grid, cached_eta)
+            # Out-of-extent request: extend to cover both cached and request.
+            # This is order-independent only insofar as such requests are
+            # rare (beyond ±24σ from μ₀); typical dynamic-CI scans stay
+            # well within the deterministic extent.
+            wide_lo = min(float(cached_grid[0]), req_lo)
+            wide_hi = max(float(cached_grid[-1]), req_hi)
+        else:
+            # Cache miss: use the deterministic (model, prior)-derived
+            # extent so the stored grid is order-independent.
+            wide_lo, wide_hi = self._deterministic_extent(
+                model, prior, self.cache_grid_extent_sigmas
+            )
+            # Edge case: if the request happens to exceed the deterministic
+            # extent on first call (unusual), widen to cover it.
+            wide_lo = min(wide_lo, req_lo)
+            wide_hi = max(wide_hi, req_hi)
+
+        wide_grid = np.linspace(wide_lo, wide_hi, self.cache_grid_n)
+        wide_eta = self._inner().select_grid(
+            wide_grid,
+            scheme,
+            model=model,
+            prior=prior,
+            alpha=alpha,
+            statistic=statistic,
+        )
+        self._cache[key] = (wide_grid, wide_eta)
+        if self.use_disk_cache:
+            self._save_to_disk(key, wide_grid, wide_eta)
+        return np.interp(theta_arr, wide_grid, wide_eta)
 
 
 # Threshold for the runtime safety clamp in `LearnedDynamicEtaSelector`.
@@ -1084,21 +1268,45 @@ class LearnedDynamicEtaSelector:
     def _maybe_clamp_eta(self, eta, *, scheme, w, alpha):
         """Runtime safety net for predicted η outside admissible range.
 
-        For Normal-Normal experiments (``w`` is a finite float in
-        ``(0, 1)``) the admissible window is scheme-specific:
-        - ``ot``     : ``[0, 1]``
-        - ``mixture``: ``[0, 1]`` (closed-form admissibility under the
-                       structural sigmoid bound; tighter than PL's window)
-        - other      : ``(-w/(1-w) + buffer, 1/(1-w) - buffer)`` (power_law)
+        Per the deriver-produced admissibility theory (PL/OT briefs):
+
+        - ``mixture``    : η ∈ [0, 1] (structural sigmoid bound at training
+                           time per row 13c; runtime clamp matches).
+        - ``power_law``  : η < 1/(1-w) (upper-only; PL brief A1.
+                           **No finite lower bound** — the spurious
+                           -w/(1-w) floor was removed in commit 89af7df).
+        - ``ot``         : η > -√w/(1-√w) (lower-only; OT brief B2.
+                           **No finite upper bound** — the spurious
+                           [0, 1] window was a PL-fallback bug).
+        - ``fisher_rao`` : η ∈ ℝ — geodesically complete (Cartan-
+                           Hadamard); no clamp. Return η as-is.
 
         For non-Normal-Normal experiments (``w is None``), the
         admissibility region is learned by ``ValidityNet`` during
-        training; the closed-form clamp is
-        not applicable. We fall back to the ``eta_explore_box`` recorded
-        in the checkpoint's ``experiment_config`` metadata, with a
-        small interior buffer.
+        training; the closed-form clamp is not applicable. We fall back
+        to the ``eta_explore_box`` recorded in the checkpoint's
+        ``experiment_config`` metadata, with a small interior buffer.
         """
         del alpha  # bounds are α-independent
+        # NaN/Inf guard: clamp logic below uses comparisons that silently
+        # return False on NaN, so non-finite η would pass through and
+        # corrupt the dynamic CI scan. Raise loudly instead.
+        if not np.all(np.isfinite(eta)):
+            from .._errors import MissingArtifactError
+
+            n_bad = int((~np.isfinite(eta)).sum())
+            raise MissingArtifactError(
+                f"{self.artifact.name}: {n_bad}/{eta.size} predicted η values "
+                f"are non-finite (NaN or Inf). The trained network is broken or "
+                f"extrapolating into a numerically degenerate region; refuse "
+                f"rather than silently corrupt the dynamic CI scan."
+            )
+        # Fisher-Rao first: scheme-level invariant (geodesically complete on
+        # the half-plane, Cartan-Hadamard) — no clamp regardless of the
+        # NN/non-NN dispatch below. Returning η as-is here also short-circuits
+        # the eta_explore_box fallback in the `w is None` branch.
+        if scheme.name == "fisher_rao":
+            return eta
         if w is None:
             # Phase G non-NN: no closed-form admissibility window;
             # ValidityNet learned the boundary. Read the training-time
@@ -1121,12 +1329,16 @@ class LearnedDynamicEtaSelector:
                 if not (0.0 < w < 1.0):
                     raise ValueError(f"w must lie in (0, 1); got {w!r}")
                 buffer = 1e-3
-                if scheme.name == "ot" or scheme.name == "mixture":
+                if scheme.name == "mixture":
                     lo, hi = 0.0 + buffer, 1.0 - buffer
+                elif scheme.name == "ot":
+                    sqrt_w = float(np.sqrt(w))
+                    lo = -sqrt_w / (1.0 - sqrt_w) + buffer
+                    hi = np.inf
                 else:
-                    # power_law (and any other Normal-Normal scheme
-                    # using the same admissible window).
-                    lo = -w / (1.0 - w) + buffer
+                    # power_law (and any future scheme using the same
+                    # natural-parameter / precision-space admissibility).
+                    lo = -np.inf
                     hi = 1.0 / (1.0 - w) - buffer
             except (ValueError, TiltingDomainError):
                 lo, hi = -np.inf, np.inf

@@ -1,95 +1,900 @@
-"""Property tests for FisherRaoTilting (stub).
+"""Property tests for FisherRaoTilting (Stage A — NN closed-form geodesic + quadrature p-value).
 
-Mirrors invariants in `docs/methods/fisher_rao.md`. Flipping
-`skip` -> passing is the unit of progress.
-
-Audit P0-18: also pin that the stub *raises* NotImplementedError
-rather than silently returning a wrong value.
+Mirrors invariants in `docs/methods/fisher_rao.md`. These are all *active*
+now (the stub raise-checks under TestFisherRaoStubActuallyRaises are
+removed because the stub is being replaced). Rev 1 corrections applied:
+- Test atols 1e-10 → 1e-3 for near-endpoint quadrature (1e-12 for exact-endpoint closed-form fast paths)
+- KS calibration becomes load-bearing
+- New tests: test_pvalue_near_endpoints_quadrature_residual, test_quadrature_converges_with_grid
 """
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
+from hypothesis import given, settings, strategies as st
 
 from frasian.models.distributions import GaussianLikelihood, NormalDistribution
 from frasian.models.normal_normal import NormalNormalModel
 from frasian.statistics.waldo import WaldoStatistic
 from frasian.tilting.fisher_rao import FisherRaoTilting
+from frasian.tilting.ot import OTTilting
 
-_STUB_REASON = "stub - see docs/methods/fisher_rao.md"
+
+def _nn_fixtures(sigma=1.0, sigma0=1.0, mu0=0.0, D=0.5):
+    model = NormalNormalModel(sigma=sigma)
+    prior = NormalDistribution(loc=mu0, scale=sigma0)
+    lik = GaussianLikelihood(D=D, sigma=sigma)
+    post = model.posterior(np.asarray([D]), prior)
+    return model, prior, lik, post
 
 
 @pytest.mark.L1
 @pytest.mark.properties
 class TestFisherRaoInvariants:
-    @pytest.mark.skip(reason=_STUB_REASON)
-    def test_identity_at_eta_identity(self):
-        """tilt(eta=eta_identity) returns the chosen reference Gaussian."""
+    def test_identity_at_eta_zero(self):
+        """tilt(eta=0) returns the posterior N(mu_n, sigma_n^2) to atol 1e-12."""
+        model, prior, lik, post = _nn_fixtures(sigma=1.0, sigma0=1.0, mu0=0.0, D=0.5)
+        scheme = FisherRaoTilting()
+        out = scheme.tilt(post, prior, lik, 0.0)
+        assert isinstance(out, NormalDistribution)
+        assert np.isclose(out.loc, post.loc, atol=1e-12)
+        assert np.isclose(out.scale, post.scale, atol=1e-12)
 
-    @pytest.mark.skip(reason=_STUB_REASON)
-    def test_output_sigma_positive(self):
-        """Fisher-Rao path stays in the open half-plane sigma > 0."""
+    def test_endpoint_at_eta_one(self):
+        """tilt(eta=1) returns N(D, sigma^2)."""
+        model, prior, lik, post = _nn_fixtures()
+        scheme = FisherRaoTilting()
+        out = scheme.tilt(post, prior, lik, 1.0)
+        assert np.isclose(out.loc, lik.D, atol=1e-12)
+        assert np.isclose(out.scale, lik.sigma, atol=1e-12)
 
-    @pytest.mark.skip(reason=_STUB_REASON)
-    def test_reduces_to_vertical_line_when_means_match(self):
-        """Equal-mean special case: path is sigma-only."""
+    @given(
+        sigma=st.floats(min_value=0.1, max_value=5.0),
+        sigma0=st.floats(min_value=0.1, max_value=5.0),
+        mu0=st.floats(min_value=-3.0, max_value=3.0),
+        D=st.floats(min_value=-3.0, max_value=3.0),
+        eta=st.floats(min_value=0.0, max_value=1.0),
+    )
+    @settings(max_examples=50, deadline=None)
+    def test_sigma_positive_along_path(self, sigma, sigma0, mu0, D, eta):
+        """sigma(t) > 0 for all t in [0, 1] and reasonable inputs."""
+        _, prior, lik, post = _nn_fixtures(sigma=sigma, sigma0=sigma0, mu0=mu0, D=D)
+        out = FisherRaoTilting().tilt(post, prior, lik, eta)
+        assert out.scale > 0.0
 
-    @pytest.mark.skip(reason=_STUB_REASON)
-    def test_smoothness_lipschitz_below_threshold(self):
-        """Step-5 diagnostic: lipschitz_eta < 1.0 (claim)."""
+    def test_continuous_in_eta(self):
+        """W1 distance between tilt(eta) and tilt(eta+h) is O(h)."""
+        _, prior, lik, post = _nn_fixtures()
+        scheme = FisherRaoTilting()
+        a = scheme.tilt(post, prior, lik, 0.4)
+        b = scheme.tilt(post, prior, lik, 0.401)
+        w1 = abs(a.loc - b.loc) + abs(a.scale - b.scale)
+        assert w1 < 0.05
 
-    @pytest.mark.skip(reason=_STUB_REASON)
-    def test_differs_from_ot_when_variances_differ(self):
-        """Fisher-Rao != W2 unless sigma_a = sigma_b."""
+    @pytest.mark.parametrize(
+        "sigma, sigma0, mu0, D",
+        [
+            (1.0, 1.0, 0.0, 0.5),
+            (2.0, 0.5, 1.0, -1.0),
+            (0.5, 2.0, 0.0, 2.0),
+        ],
+    )
+    def test_arc_length_matches_costa_2015(self, sigma, sigma0, mu0, D):
+        """Path arc-length matches Costa et al. 2015 Eqs. 5-6 closed form."""
+        from frasian.tilting.fisher_rao import (
+            _fr_arc_length_costa,
+            _fr_geodesic_arc_length_numerical,
+        )
+        _, prior, lik, post = _nn_fixtures(sigma, sigma0, mu0, D)
+        mu_a, s_a = post.loc, post.scale
+        mu_b, s_b = lik.D, lik.sigma
+        d_costa = _fr_arc_length_costa(mu_a, s_a, mu_b, s_b)
+        d_numerical = _fr_geodesic_arc_length_numerical(mu_a, s_a, mu_b, s_b, n_steps=10000)
+        assert np.isclose(d_numerical, d_costa, atol=1e-9)
+
+    def test_vertical_case_reduces_to_geometric_mean(self):
+        """When mu_a = mu_b, sigma(t) = sigma_a^(1-t) * sigma_b^t."""
+        from frasian.tilting.fisher_rao import _fr_geodesic_gaussian_scalar
+        mu_a, s_a = 0.0, 1.0
+        mu_b, s_b = 0.0, 2.0
+        for t in [0.0, 0.25, 0.5, 0.75, 1.0]:
+            mu_t, s_t = _fr_geodesic_gaussian_scalar(mu_a, s_a, mu_b, s_b, t)
+            assert np.isclose(mu_t, 0.0, atol=1e-12)
+            assert np.isclose(s_t, s_a ** (1 - t) * s_b ** t, atol=1e-12)
+
+    def test_tilted_pvalue_scalar_returns_python_float(self):
+        """Scalar fast path returns float, not jax.Array."""
+        from frasian.tilting.fisher_rao import _fr_tilted_pvalue_numpy_scalar
+        p = _fr_tilted_pvalue_numpy_scalar(
+            theta_f=0.0, eta_f=0.5, D_f=0.5, w=0.5, mu0=0.0, sigma=1.0,
+            statistic_name="waldo",
+        )
+        assert isinstance(p, float)
+        assert 0.0 <= p <= 1.0
+
+    def test_pvalue_reduces_to_bare_waldo_at_eta_zero(self):
+        """At exact eta=0 the closed-form bare-WALDO fast path activates; atol 1e-12."""
+        model, prior, lik, post = _nn_fixtures()
+        scheme = FisherRaoTilting()
+        bare_waldo = WaldoStatistic()
+        theta_grid = np.linspace(-2.0, 2.0, 11)
+        for theta in theta_grid:
+            p_fr = scheme.tilted_pvalue(
+                theta=theta, D=lik.D, model=model, prior=prior, eta=0.0,
+                statistic_name="waldo",
+            )
+            p_bare = bare_waldo.pvalue(np.array([theta]), np.array([lik.D]),
+                                        model=model, prior=prior)[0]
+            assert np.isclose(float(p_fr), float(p_bare), atol=1e-12)
+
+    def test_pvalue_reduces_to_bare_wald_at_eta_one(self):
+        """At exact eta=1 the closed-form bare-Wald fast path activates; atol 1e-12."""
+        model, prior, lik, post = _nn_fixtures()
+        scheme = FisherRaoTilting()
+        theta_grid = np.linspace(-2.0, 2.0, 11)
+        for theta in theta_grid:
+            p_fr = scheme.tilted_pvalue(
+                theta=theta, D=lik.D, model=model, prior=prior, eta=1.0,
+                statistic_name="waldo",
+            )
+            from scipy.stats import norm
+            p_wald = 2 * norm.sf(abs(lik.D - theta) / lik.sigma)
+            assert np.isclose(float(p_fr), float(p_wald), atol=1e-12)
+
+    def test_pvalue_near_endpoints_quadrature_residual(self):
+        """Just-inside-quadrature p_FR matches bare statistic to atol.
+
+        At eta=1e-6 the FR-tilted p-value should be close to bare-WALDO
+        (eta=0 limit). At eta=1-1e-6 it should be close to bare-Wald
+        (eta=1 limit). Trapezoidal quadrature truncation residual at
+        the default coarse grid.
+
+        Stage A audit finding #9: extended to also check the eta=1-1e-6
+        boundary, where the geodesic is steeper and quadrature is more
+        sensitive (atol 2e-3 vs 1e-3 at eta=1e-6).
+        """
+        from scipy.stats import norm
+
+        model, prior, lik, post = _nn_fixtures()
+        scheme = FisherRaoTilting()
+        bare_waldo = WaldoStatistic()
+        theta_grid = np.linspace(-1.5, 1.5, 7)
+        # eta=1e-6 -> compare against bare WALDO
+        for theta in theta_grid:
+            p_fr = scheme.tilted_pvalue(
+                theta=theta, D=lik.D, model=model, prior=prior, eta=1e-6,
+                statistic_name="waldo",
+            )
+            p_bare = bare_waldo.pvalue(np.array([theta]), np.array([lik.D]),
+                                        model=model, prior=prior)[0]
+            assert np.isclose(float(p_fr), float(p_bare), atol=1e-3), (
+                f"eta=1e-6 residual exceeds 1e-3 at theta={theta}: "
+                f"p_fr={float(p_fr):.6f}, p_bare={float(p_bare):.6f}"
+            )
+        # eta=1 - 1e-6 -> compare against bare Wald
+        for theta in theta_grid:
+            p_fr = scheme.tilted_pvalue(
+                theta=theta, D=lik.D, model=model, prior=prior, eta=1.0 - 1e-6,
+                statistic_name="waldo",
+            )
+            p_wald = 2.0 * norm.sf(abs(lik.D - theta) / lik.sigma)
+            assert np.isclose(float(p_fr), float(p_wald), atol=2e-3), (
+                f"eta=1-1e-6 residual exceeds 2e-3 at theta={theta}: "
+                f"p_fr={float(p_fr):.6f}, p_wald={float(p_wald):.6f}"
+            )
+
+    def test_quadrature_converges_with_grid(self):
+        """Adaptive quadrature with brentq boundary finding is essentially
+        machine-precision regardless of n_grid (coarse grid only used for
+        sign-change discovery; brentq xtol=1e-12 refines roots to machine
+        precision). So coarse and fine grids should agree to ~1e-10.
+
+        Stage A audit finding #7: previously compared default (n=256) to
+        n=512 — too close to actually exercise the coarse-grid sufficiency
+        claim. Now compares n=64 (much coarser than default) to n=2048.
+        """
+        from frasian.tilting.fisher_rao import _fr_tilted_pvalue_numpy_scalar
+        kwargs = dict(theta_f=0.3, eta_f=0.5, D_f=0.5, w=0.5, mu0=0.0,
+                      sigma=1.0, statistic_name="waldo")
+        p_coarse = _fr_tilted_pvalue_numpy_scalar(**kwargs, n_grid=64)
+        p_fine = _fr_tilted_pvalue_numpy_scalar(**kwargs, n_grid=2048)
+        # Should agree to brentq xtol precision: the coarse grid only
+        # locates sign changes, brentq refines roots to xtol=1e-12.
+        assert abs(p_coarse - p_fine) < 1e-10
+
+    @pytest.mark.L3
+    @pytest.mark.parametrize(
+        "theta_true, eta",
+        [
+            (-1.0, 0.3),
+            (0.0, 0.5),
+            (1.0, 0.7),
+            (3.0, 0.9),
+        ],
+    )
+    def test_calibration_under_h0(self, theta_true, eta):
+        """KS uniformity of FR tilted-WALDO p-values under H0 (theta=theta_true).
+
+        Rev 1 finding: this is the LOAD-BEARING correctness check for FR
+        since algebraic-equality cross-checks have intrinsic quadrature noise.
+
+        Stage A audit finding #8: bumped n_replicates 1000 -> 10000 (KS power)
+        and parametrized over (theta_true, eta) so the calibration check
+        is exercised across the (location, geodesic-position) plane,
+        not just at a single regime.
+
+        We invoke ``_fr_tilted_pvalue_numpy_scalar`` directly with
+        ``n_grid=1024`` (vs the default 256 used by ``tilted_pvalue``).
+        At KS-power n=10000 the default coarse grid occasionally returns
+        ``p == 1.0`` for D values near the tau-minimum (no sign change
+        on the n=256 X-grid even though the algorithm is correct in
+        the limit). n_grid=1024 brings KS-stat below the per-shard noise
+        floor for all parametrised cases; runtime cost is acceptable
+        for an L3 test (~40s/param). The fact that default-grid
+        calibration deviates at this power level is a documented
+        Stage A limitation (see docs/methods/fisher_rao.md Failure
+        modes section).
+        """
+        from frasian.tilting.fisher_rao import _fr_tilted_pvalue_numpy_scalar
+
+        rng = np.random.default_rng(42)
+        n_replicates = 10000
+        sigma = 1.0
+        sigma0 = 1.0
+        mu0 = 0.0
+        w = sigma0 ** 2 / (sigma ** 2 + sigma0 ** 2)
+        pvals = np.empty(n_replicates)
+        for i in range(n_replicates):
+            D_obs = theta_true + sigma * rng.standard_normal()
+            p = _fr_tilted_pvalue_numpy_scalar(
+                theta_f=theta_true, eta_f=eta, D_f=D_obs,
+                w=w, mu0=mu0, sigma=sigma,
+                statistic_name="waldo",
+                n_grid=1024,
+            )
+            pvals[i] = float(p)
+        from scipy.stats import kstest
+        ks_stat, ks_p = kstest(pvals, "uniform")
+        assert ks_p > 0.01, (
+            f"KS test rejected uniformity at (theta_true={theta_true}, eta={eta}): "
+            f"ks_stat={ks_stat:.4f}, p={ks_p:.4f}"
+        )
+
+    @pytest.mark.parametrize(
+        "sigma, sigma0, mu0, D, eta",
+        [
+            (1.0, 0.3, 0.0, 1.5, 0.5),
+            (2.0, 0.5, 1.0, -1.0, 0.3),
+            (0.5, 2.0, 0.0, 2.0, 0.7),
+        ],
+    )
+    def test_differs_from_ot_when_sigma_a_neq_sigma_b(self, sigma, sigma0, mu0, D, eta):
+        """When prior and likelihood scales differ, FR (mu_t, sigma_t) != OT linear interp."""
+        _, prior, lik, post = _nn_fixtures(sigma, sigma0, mu0, D)
+        if np.isclose(post.scale, lik.sigma):
+            pytest.skip("equal-sigma case -- FR and OT coincide here")
+        fr = FisherRaoTilting().tilt(post, prior, lik, eta)
+        ot = OTTilting().tilt(post, prior, lik, eta)
+        delta = abs(fr.loc - ot.loc) + abs(fr.scale - ot.scale)
+        assert delta > 1e-3
+
+    def test_fr_differs_from_ot_at_equal_sigma(self):
+        """FR's "horizontal geodesic" is a half-ellipse, not OT's straight line.
+
+        Stage A audit finding #10: brief Step 10 claims even the
+        equal-sigma "degenerate" case differs — the FR half-plane
+        geodesic between two points at equal sigma is a semicircle in
+        `(tilde_mu, sigma)` coords, which projects to a half-ellipse
+        in raw `(mu, sigma)` coords (eccentricity 1/sqrt(2), Costa
+        Eq. 8). The FR midpoint dips to higher sigma than either
+        endpoint, while OT's midpoint stays at the common sigma. We
+        construct the test directly via `_fr_geodesic_gaussian_scalar`
+        because engineering `post.scale = lik.sigma` exactly through a
+        Normal-Normal posterior would require sigma0 -> infinity (an
+        improper prior), which is outside the framework's API.
+        """
+        from frasian.tilting.fisher_rao import _fr_geodesic_gaussian_scalar
+        mu_a, sigma_a = 0.0, 1.0
+        mu_b, sigma_b = 2.0, 1.0  # equal sigma, different mu
+        eta = 0.5
+        fr_mu, fr_sigma = _fr_geodesic_gaussian_scalar(
+            mu_a, sigma_a, mu_b, sigma_b, eta,
+        )
+        # OT W2 geodesic on Gaussians is linear in (mu, sigma):
+        ot_mu = (1 - eta) * mu_a + eta * mu_b
+        ot_sigma = (1 - eta) * sigma_a + eta * sigma_b
+        delta = abs(fr_mu - ot_mu) + abs(fr_sigma - ot_sigma)
+        assert delta > 1e-3, (
+            f"FR midpoint=({fr_mu:.6f}, {fr_sigma:.6f}); "
+            f"OT midpoint=({ot_mu:.6f}, {ot_sigma:.6f}); "
+            f"delta={delta:.6e} <= 1e-3"
+        )
+
+
+@pytest.mark.L2
+@pytest.mark.regression
+class TestFisherRaoJaxKernel:
+    def test_jax_kernel_grad_is_non_zero_and_matches_fd(self):
+        """`jax.grad(integrated_p_loss)(eta)` must return a non-zero
+        gradient matching finite-difference direction. Stage C.2
+        regression: the hard indicator `jnp.where(tau_rep >= tau_obs,
+        1, 0)` killed gradient through the boolean comparison (JAX
+        convention: zero grad through `cond` of jnp.where), so
+        autograd returned exactly zero at every η despite the loss
+        landscape being non-trivial. SGD collapsed to a random walk.
+
+        Fix: straight-through estimator (forward = hard indicator,
+        backward = sigmoid surrogate at sharpness 0.05). This test
+        pins that fix — if a future change reverts to the hard
+        indicator without an ST trick, autograd grad will go to zero
+        and this test will catch it.
+        """
+        import jax
+        import jax.numpy as jnp
+        from frasian.learned.training.pvalue_jax import fisher_rao_tilted_pvalue_jax
+
+        D, w, mu0, sigma = 0.5, 0.5, 0.0, 1.0
+        theta_grid = jnp.linspace(-5.0, 5.0, 50)
+
+        def loss_at_eta(eta_scalar):
+            eta_arr = jnp.full_like(theta_grid, eta_scalar)
+            D_arr = jnp.full_like(theta_grid, D)
+            w_arr = jnp.full_like(theta_grid, w)
+            mu0_arr = jnp.full_like(theta_grid, mu0)
+            sigma_arr = jnp.full_like(theta_grid, sigma)
+            p = fisher_rao_tilted_pvalue_jax(
+                theta_grid, D_arr, w_arr, mu0_arr, sigma_arr, eta_arr, "waldo",
+            )
+            return jnp.trapezoid(p, theta_grid)
+
+        grad_loss = jax.grad(loss_at_eta)
+
+        # Probe at three representative eta values in (0, 1). The ST
+        # surrogate is biased (forward = hard indicator, backward =
+        # sigmoid surrogate at sharpness 0.05) so we don't expect
+        # bit-equality with FD; we DO expect the bias to stay within an
+        # order of magnitude of FD (loose 4× envelope, since over- or
+        # under-shooting both still give SGD a usable signal).
+        for eta in [0.2, 0.5, 0.8]:
+            g_auto = float(grad_loss(eta))
+            h = 1e-3
+            g_fd = float((loss_at_eta(eta + h) - loss_at_eta(eta - h)) / (2 * h))
+            assert abs(g_auto) > 1e-3, (
+                f"autograd gradient near zero at eta={eta}: {g_auto:.6e} "
+                f"(FD says {g_fd:.6e}). Did the straight-through estimator "
+                f"regress? See fisher_rao.py:_fr_tilted_pvalue_kernel and "
+                f"the indicator construction."
+            )
+            # Sign agreement is the load-bearing check.
+            assert (g_auto > 0) == (g_fd > 0), (
+                f"autograd sign disagrees with FD at eta={eta}: "
+                f"auto={g_auto:.6e}, fd={g_fd:.6e}"
+            )
+            # Magnitude envelope: bound the bias to catch a sharpness
+            # regression (e.g. 5.0 → over-smooth, 1e-6 → numerically
+            # unstable). The choice 0.05 should give |g_auto/g_fd| ∈
+            # [0.25, 4.0]; a tighter envelope would be theoretically
+            # nice but the FD itself has ~10% noise from the trapezoid
+            # quadrature.
+            ratio = abs(g_auto) / max(abs(g_fd), 1e-12)
+            assert 0.25 < ratio < 4.0, (
+                f"ST gradient surrogate at eta={eta} is too biased: "
+                f"|g_auto|/|g_fd| = {ratio:.3f} (expected 0.25-4.0). "
+                f"Check `_FR_INDICATOR_SHARPNESS` — too large smooths "
+                f"the indicator past the trapezoid's resolution; too "
+                f"small produces numerically degenerate gradients."
+            )
+
+    def test_jax_kernel_handles_vector_theta_input(self):
+        """`fisher_rao_tilted_pvalue_jax` must accept vector / 2D `theta`
+        and return same-shape p-values. The learned-eta training loop
+        passes shape ``(B, T)`` ``theta`` (batch × theta_grid); a kernel
+        that only handles scalar theta crashes at the training step
+        with a shape-broadcasting error.
+
+        Stage C.2 regression: caught at first training run when the
+        kernel's internal X-grid construction
+        ``jnp.linspace(theta - 8σ, theta + 8σ, n_grid=8000)`` broadcast
+        to ``(n_grid, *theta.shape)`` and downstream ops couldn't
+        compose.
+        """
+        from frasian.learned.training.pvalue_jax import fisher_rao_tilted_pvalue_jax
+        import jax.numpy as jnp
+        D, w, mu0, sigma, eta = 0.5, 0.5, 0.0, 1.0, 0.3
+        # Shape (B=2, T=4) — typical training-loop pattern
+        theta = jnp.asarray([
+            [-1.0, -0.5, 0.0, 0.5],
+            [ 0.5,  1.0, 1.5, 2.0],
+        ])
+        p = fisher_rao_tilted_pvalue_jax(
+            theta, jnp.asarray(D), jnp.asarray(w), jnp.asarray(mu0),
+            jnp.asarray(sigma), jnp.asarray(eta), "waldo",
+        )
+        assert p.shape == (2, 4), f"expected (2, 4); got {p.shape}"
+        # All values must be in [0, 1] and finite
+        p_np = np.asarray(p)
+        assert np.all(np.isfinite(p_np))
+        assert np.all((p_np >= 0.0) & (p_np <= 1.0))
+
+    @pytest.mark.parametrize("eta", [0.1, 0.3, 0.5, 0.7, 0.9])
+    @pytest.mark.parametrize("theta", [-1.0, -0.5, 0.0, 0.5, 1.0])
+    def test_jax_kernel_matches_numpy_scalar_waldo(self, eta, theta):
+        """JAX kernel (trap rule, n=8000) agrees with numpy scalar (adaptive
+        brentq, machine precision) to atol 1e-3. The asymmetry is intentional:
+        - Numpy scalar uses brentq boundary-finding + analytical Gaussian
+          CDF integration — essentially machine-precision.
+        - JAX kernel uses trap-rule quadrature on the discontinuous indicator;
+          O(1/n) convergence ⇒ ~4e-4 precision at n=8000. Suitable for
+          learned-eta gradient signal but not for production CI inversion.
+        """
+        from frasian.tilting.fisher_rao import (
+            _fr_tilted_pvalue_kernel, _fr_tilted_pvalue_numpy_scalar,
+        )
+        import jax.numpy as jnp
+        D, w, mu0, sigma = 0.5, 0.5, 0.0, 1.0
+        p_np = _fr_tilted_pvalue_numpy_scalar(
+            theta_f=theta, eta_f=eta, D_f=D, w=w, mu0=mu0, sigma=sigma,
+            statistic_name="waldo",
+        )
+        p_jax = float(_fr_tilted_pvalue_kernel(
+            jnp.array(theta), jnp.array(eta), jnp.array(D),
+            jnp.array(w), jnp.array(mu0), jnp.array(sigma),
+            "waldo",
+        ))
+        assert np.isclose(p_np, p_jax, atol=1e-3)
+
+    @pytest.mark.parametrize("mu_b", [1e-8, 1e-4, 0.1, 1.0])
+    def test_jax_geodesic_gradient_through_vertical(self, mu_b):
+        """`jax.grad` of the JAX geodesic matches finite-difference at
+        small `mu_b` (the vertical-case threshold).
+
+        Stage A audit finding #1: the bare ``safe_denom = where(...,
+        1.0, denom)`` pattern catches forward NaNs at denom=0 but
+        leaves reverse-mode gradients corrupted in the small-denom
+        regime (autograd reverses through ``c_tilde ~ 1/denom`` whose
+        Jacobian explodes as ``1/denom**2``). The fix is the symbolic
+        double-where pattern with a wider JAX-specific eps
+        ``_VERTICAL_CASE_EPS_JAX = 1e-6``: when ``|denom| < 1e-6`` we
+        evaluate the vertical branch (which has bounded gradients);
+        otherwise the arc branch is well within float64 stability.
+        """
+        import jax
+        import jax.numpy as jnp
+        from frasian.tilting.fisher_rao import _fr_geodesic_gaussian_jax
+
+        mu_a, sigma_a, sigma_b, t = 0.0, 1.0, 2.0, 0.5
+
+        def sigma_t_of_mu_b(mb):
+            _, s = _fr_geodesic_gaussian_jax(
+                jnp.array(mu_a), jnp.array(sigma_a),
+                jnp.array(mb), jnp.array(sigma_b), jnp.array(t),
+            )
+            return s
+
+        # Adaptive central-difference step (small enough to resolve
+        # near-zero derivatives, large enough to avoid float64
+        # roundoff at small mu_b).
+        h = max(1e-5, abs(mu_b) * 1e-4)
+        fd = (
+            float(sigma_t_of_mu_b(mu_b + h))
+            - float(sigma_t_of_mu_b(mu_b - h))
+        ) / (2.0 * h)
+        ag = float(jax.grad(sigma_t_of_mu_b)(mu_b))
+        assert np.isclose(ag, fd, atol=1e-4), (
+            f"Autograd vs FD gradient mismatch at mu_b={mu_b}: "
+            f"autograd={ag:.6e}, fd={fd:.6e}, diff={abs(ag - fd):.4e}"
+        )
 
 
 @pytest.mark.L1
 @pytest.mark.properties
-class TestFisherRaoStubActuallyRaises:
-    """Audit P0-18: pin that each stub method raises NotImplementedError."""
+class TestFisherRaoGaussianFisherMetric:
+    """Closed-form Fisher metric on the Gaussian family.
 
-    @pytest.fixture
-    def fixtures(self):
+    Stage B's autodiff/diffrax machinery uses this as the known-correct
+    reference. See `docs/methods/fisher_rao.md` Derivation Step 1.
+    """
+
+    @pytest.mark.parametrize(
+        "mu, sigma",
+        [(0.0, 1.0), (0.5, 1.5), (-1.0, 0.3), (10.0, 2.0)],
+    )
+    def test_gaussian_fisher_metric_closed_form(self, mu, sigma):
+        """g(mu, sigma) = diag(1/sigma^2, 2/sigma^2); independent of mu."""
+        from frasian.tilting.fisher_rao import _gaussian_fisher_metric
+        import jax.numpy as jnp
+        theta = jnp.array([mu, sigma])
+        g = _gaussian_fisher_metric(theta)
+        expected = jnp.diag(jnp.array([1.0 / sigma ** 2, 2.0 / sigma ** 2]))
+        assert g.shape == (2, 2)
+        # Diagonal entries
+        assert np.isclose(float(g[0, 0]), 1.0 / sigma ** 2, atol=1e-12)
+        assert np.isclose(float(g[1, 1]), 2.0 / sigma ** 2, atol=1e-12)
+        # Off-diagonals are zero
+        assert np.isclose(float(g[0, 1]), 0.0, atol=1e-15)
+        assert np.isclose(float(g[1, 0]), 0.0, atol=1e-15)
+        # Full-matrix equality
+        assert np.allclose(np.array(g), np.array(expected), atol=1e-12)
+
+    def test_gaussian_fisher_metric_is_jax_traceable(self):
+        """The metric must be jax-jit'able since downstream uses jax.jacrev on it."""
+        import jax
+        import jax.numpy as jnp
+        from frasian.tilting.fisher_rao import _gaussian_fisher_metric
+        jit_g = jax.jit(_gaussian_fisher_metric)
+        g = jit_g(jnp.array([0.0, 1.0]))
+        assert np.isclose(float(g[0, 0]), 1.0, atol=1e-12)
+        assert np.isclose(float(g[1, 1]), 2.0, atol=1e-12)
+
+
+@pytest.mark.L1
+@pytest.mark.properties
+class TestFisherRaoChristoffel:
+    """Christoffel symbols from autodiff on the metric tensor field.
+
+    Validates against the Gaussian closed form (the only metric this PR
+    exercises). For g = diag(1/σ², 2/σ²) on (μ, σ):
+        Γ^μ_{μσ} = Γ^μ_{σμ} = -1/σ
+        Γ^σ_{μμ} = +1/(2σ)
+        Γ^σ_{σσ} = -1/σ
+    All other entries zero.
+    """
+
+    @pytest.mark.parametrize(
+        "mu, sigma",
+        [
+            # Original: mu=0 (Γ is mu-independent on Gaussian)
+            (0.0, 0.5), (0.0, 1.0), (0.0, 1.5), (0.0, 2.0),
+            # Span mu so an einsum/transpose bug masked by mu-symmetry
+            # (vanishing at mu=0) would surface (finding #7 from Stage B
+            # skeptic review). The Gaussian metric is mu-independent so
+            # the closed-form Christoffel values are mu-independent too;
+            # all parametrise points produce identical expected values.
+            (-1.0, 0.5), (1.0, 1.5), (5.0, 0.3),
+        ],
+    )
+    def test_christoffel_gaussian_closed_form(self, mu, sigma):
+        from frasian.tilting.fisher_rao import (
+            _christoffel_from_metric, _gaussian_fisher_metric,
+        )
+        import jax.numpy as jnp
+        theta = jnp.array([mu, sigma])
+        gamma = _christoffel_from_metric(_gaussian_fisher_metric, theta)
+        assert gamma.shape == (2, 2, 2)
+        # Indexing: gamma[k, i, j] with k, i, j ∈ {0=mu, 1=sigma}.
+        # Non-zero entries:
+        assert np.isclose(float(gamma[0, 0, 1]), -1.0 / sigma, atol=1e-9)
+        assert np.isclose(float(gamma[0, 1, 0]), -1.0 / sigma, atol=1e-9)
+        assert np.isclose(float(gamma[1, 0, 0]),  1.0 / (2.0 * sigma), atol=1e-9)
+        assert np.isclose(float(gamma[1, 1, 1]), -1.0 / sigma, atol=1e-9)
+        # Zero entries:
+        assert np.isclose(float(gamma[0, 0, 0]),  0.0, atol=1e-12)
+        assert np.isclose(float(gamma[0, 1, 1]),  0.0, atol=1e-12)
+        assert np.isclose(float(gamma[1, 0, 1]),  0.0, atol=1e-12)
+        assert np.isclose(float(gamma[1, 1, 0]),  0.0, atol=1e-12)
+
+    def test_christoffel_symmetric_in_lower_indices(self):
+        """Γ^k_{ij} = Γ^k_{ji} for the Levi-Civita connection."""
+        from frasian.tilting.fisher_rao import (
+            _christoffel_from_metric, _gaussian_fisher_metric,
+        )
+        import jax.numpy as jnp
+        theta = jnp.array([0.5, 1.3])
+        gamma = _christoffel_from_metric(_gaussian_fisher_metric, theta)
+        # Symmetry: gamma[k, i, j] = gamma[k, j, i] for all k, i, j
+        for k in range(2):
+            for i in range(2):
+                for j in range(2):
+                    assert np.isclose(
+                        float(gamma[k, i, j]),
+                        float(gamma[k, j, i]),
+                        atol=1e-12,
+                    ), f"asymmetry at gamma[{k}, {i}, {j}]"
+
+    def test_christoffel_is_jit_compatible(self):
+        """Must JIT-compile since downstream uses it inside diffrax solves."""
+        import jax
+        import jax.numpy as jnp
+        from frasian.tilting.fisher_rao import (
+            _christoffel_from_metric, _gaussian_fisher_metric,
+        )
+        jit_christoffel = jax.jit(lambda th: _christoffel_from_metric(_gaussian_fisher_metric, th))
+        gamma = jit_christoffel(jnp.array([0.0, 1.0]))
+        assert gamma.shape == (2, 2, 2)
+        assert np.isclose(float(gamma[0, 0, 1]), -1.0, atol=1e-9)
+
+
+@pytest.mark.L1
+@pytest.mark.properties
+class TestFisherRaoGeodesicOdeRhs:
+    """First-order ODE rhs for the FR geodesic equation."""
+
+    def test_geodesic_ode_rhs_shape_and_finite(self):
+        """rhs returns (2*D,) finite values for a valid state."""
+        from frasian.tilting.fisher_rao import (
+            _gaussian_fisher_metric, _geodesic_ode_rhs,
+        )
+        import jax.numpy as jnp
+        # State: theta=(mu=0, sigma=1), v=(1, 0) — moving along the
+        # mu-direction at the half-plane base point.
+        state = jnp.array([0.0, 1.0, 1.0, 0.0])
+        rhs = _geodesic_ode_rhs(
+            jnp.array(0.0), state, (_gaussian_fisher_metric,),
+        )
+        assert rhs.shape == (4,)
+        assert jnp.all(jnp.isfinite(rhs))
+        # First two entries should be the velocity v=(1, 0)
+        assert np.isclose(float(rhs[0]), 1.0, atol=1e-12)
+        assert np.isclose(float(rhs[1]), 0.0, atol=1e-12)
+
+    def test_geodesic_ode_rhs_accel_matches_closed_form_at_known_state(self):
+        """At theta=(0, 1), v=(1, 0):
+        accel^mu = -Γ^mu_{ij} v^i v^j = -Γ^mu_{00} · 1 · 1 = 0 (since Γ^μ_{μμ}=0).
+        accel^sigma = -Γ^sigma_{00} · 1 · 1 = -1/(2*1) = -0.5.
+        """
+        from frasian.tilting.fisher_rao import (
+            _gaussian_fisher_metric, _geodesic_ode_rhs,
+        )
+        import jax.numpy as jnp
+        state = jnp.array([0.0, 1.0, 1.0, 0.0])
+        rhs = _geodesic_ode_rhs(jnp.array(0.0), state, (_gaussian_fisher_metric,))
+        # accel^mu (rhs[2]) = -Γ^μ_{ij} v^i v^j = -Γ^μ_{μμ} = 0
+        assert np.isclose(float(rhs[2]), 0.0, atol=1e-9)
+        # accel^sigma (rhs[3]) = -Γ^σ_{ij} v^i v^j = -Γ^σ_{μμ} · 1·1 = -1/(2σ) = -0.5
+        assert np.isclose(float(rhs[3]), -0.5, atol=1e-9)
+
+    def test_geodesic_ode_rhs_accel_matches_closed_form_pure_sigma_velocity(self):
+        """At theta=(0, 1), v=(0, 1):
+        accel^mu = -Γ^mu_{σσ} · 1 · 1 = 0 (Γ^μ_{σσ}=0).
+        accel^sigma = -Γ^σ_{σσ} · 1 · 1 = -(-1/σ) · 1 · 1 = 1/σ = 1.
+        Wait — Γ^σ_{σσ} = -1/σ per B.3, so accel = -Γ^σ_{σσ} = +1/σ = +1.
+        """
+        from frasian.tilting.fisher_rao import (
+            _gaussian_fisher_metric, _geodesic_ode_rhs,
+        )
+        import jax.numpy as jnp
+        state = jnp.array([0.0, 1.0, 0.0, 1.0])  # v = (0, 1)
+        rhs = _geodesic_ode_rhs(jnp.array(0.0), state, (_gaussian_fisher_metric,))
+        # accel^mu = -Γ^μ_{σσ} = 0
+        assert np.isclose(float(rhs[2]), 0.0, atol=1e-9)
+        # accel^sigma = -Γ^σ_{σσ} · 1 · 1 = -(-1/σ) = +1/σ = 1.0 at sigma=1
+        assert np.isclose(float(rhs[3]), 1.0, atol=1e-9)
+
+    def test_geodesic_ode_rhs_jit_compiles(self):
+        """Must JIT-compile since diffrax wraps it inside the solver."""
+        import jax
+        import jax.numpy as jnp
+        from frasian.tilting.fisher_rao import (
+            _gaussian_fisher_metric, _geodesic_ode_rhs,
+        )
+        # diffrax passes args as a tuple via ODETerm; emulate that here.
+        jit_rhs = jax.jit(
+            lambda t, st: _geodesic_ode_rhs(t, st, (_gaussian_fisher_metric,)),
+        )
+        rhs = jit_rhs(jnp.array(0.0), jnp.array([0.0, 1.0, 1.0, 0.0]))
+        assert rhs.shape == (4,)
+        assert jnp.all(jnp.isfinite(rhs))
+
+
+@pytest.mark.L1
+@pytest.mark.properties
+class TestFisherRaoGeodesicNumerical:
+    """Diffrax shooting BVP for the FR geodesic, validated against the
+    closed-form half-plane geodesic on Gaussian endpoints.
+    """
+
+    @pytest.mark.parametrize(
+        "mu_a, sigma_a, mu_b, sigma_b, t",
+        [
+            (0.0, 1.0, 1.0, 0.5, 0.3),
+            (0.5, 0.5, -0.5, 1.5, 0.7),
+            (1.0, 2.0, -1.0, 0.5, 0.5),
+        ],
+    )
+    def test_numerical_geodesic_matches_closed_form_on_normal(
+        self, mu_a, sigma_a, mu_b, sigma_b, t
+    ):
+        """At three representative endpoint pairs and t in (0, 1):
+        _fr_geodesic_numerical(theta_a, theta_b, t) matches
+        _fr_geodesic_gaussian_scalar(mu_a, sigma_a, mu_b, sigma_b, t)
+        to atol 1e-7. This is the load-bearing validation of the entire
+        Stage B autodiff/diffrax machinery.
+        """
+        from frasian.tilting.fisher_rao import (
+            _fr_geodesic_gaussian_scalar, _fr_geodesic_numerical,
+        )
+        mu_t_cf, sigma_t_cf = _fr_geodesic_gaussian_scalar(
+            mu_a, sigma_a, mu_b, sigma_b, t
+        )
+        theta_a = np.array([mu_a, sigma_a])
+        theta_b = np.array([mu_b, sigma_b])
+        theta_t = _fr_geodesic_numerical(theta_a, theta_b, t)
+        assert np.isclose(theta_t[0], mu_t_cf, atol=1e-7), (
+            f"mu mismatch at t={t}: numerical {theta_t[0]:.8f} vs closed {mu_t_cf:.8f}"
+        )
+        assert np.isclose(theta_t[1], sigma_t_cf, atol=1e-7), (
+            f"sigma mismatch at t={t}: numerical {theta_t[1]:.8f} vs closed {sigma_t_cf:.8f}"
+        )
+
+    def test_diffrax_jit_compiles(self):
+        """_solve_geodesic_forward must JIT-compile for use inside training loops."""
+        import jax
+        import jax.numpy as jnp
+        from frasian.tilting.fisher_rao import (
+            _gaussian_fisher_metric, _solve_geodesic_forward,
+        )
+        theta_a = jnp.array([0.0, 1.0])
+        v0 = jnp.array([1.0, 0.0])
+        jit_solve = jax.jit(
+            lambda v: _solve_geodesic_forward(_gaussian_fisher_metric, theta_a, v)
+        )
+        theta_1 = jit_solve(v0)
+        assert theta_1.shape == (2,)
+        assert jnp.all(jnp.isfinite(theta_1))
+
+    def test_diffrax_grad_through_solve(self):
+        """jax.grad through the forward solve must produce finite gradients
+        (needed for learned-eta training in Stage C).
+        """
+        import jax
+        import jax.numpy as jnp
+        from frasian.tilting.fisher_rao import (
+            _gaussian_fisher_metric, _solve_geodesic_forward,
+        )
+        theta_a = jnp.array([0.0, 1.0])
+        def loss(v):
+            theta_1 = _solve_geodesic_forward(_gaussian_fisher_metric, theta_a, v)
+            return jnp.sum(theta_1 ** 2)
+        v0 = jnp.array([1.0, 0.0])
+        grad = jax.grad(loss)(v0)
+        assert grad.shape == (2,)
+        assert jnp.all(jnp.isfinite(grad))
+
+    @pytest.mark.parametrize("Delta_scaled", [-3.0, -1.0, 0.0, 1.0, 3.0])
+    def test_shooting_converges_at_typical_conflict_regimes(self, Delta_scaled):
+        """At three (theta_a, theta_b) pairs corresponding to mild-to-extreme
+        conflict, the Newton shooting iteration converges without raising.
+        """
+        from frasian.tilting.fisher_rao import _fr_geodesic_numerical
+        # Construct (theta_a, theta_b) where mu_a, mu_b reflect the conflict.
+        sigma = 1.0
+        sigma0 = 1.0
+        w = sigma0 ** 2 / (sigma ** 2 + sigma0 ** 2)  # = 0.5 here
+        D = -Delta_scaled * sigma / (1.0 - w)  # so Delta = (1-w)*(0 - D)/sigma
+        mu0 = 0.0
+        mu_n = w * D + (1.0 - w) * mu0
+        sigma_n = math.sqrt(w) * sigma
+        theta_a = np.array([mu_n, sigma_n])
+        theta_b = np.array([D, sigma])
+        # Should not raise; result should be finite & sigma_t > 0.
+        theta_t = _fr_geodesic_numerical(theta_a, theta_b, 0.5)
+        assert np.all(np.isfinite(theta_t))
+        assert theta_t[1] > 0.0, f"sigma_t = {theta_t[1]} not positive at Delta={Delta_scaled}"
+
+    @pytest.mark.parametrize(
+        "theta_a, theta_b",
+        [
+            # Near-vertical geodesics, σ ratio ~10
+            (np.array([0.0, 0.1]), np.array([0.0, 1.0])),
+            (np.array([0.0, 1.0]), np.array([0.0, 10.0])),
+            # σ ratio ~10 combined with μ gap — KNOWN-FAILING; the
+            # xfail surfaces a real BVP-shooting convergence boundary
+            # documented in the Stage B skeptic-fix pass (finding #8).
+            pytest.param(
+                np.array([0.0, 0.1]), np.array([2.0, 1.0]),
+                marks=pytest.mark.xfail(
+                    reason=(
+                        "Stage B skeptic finding #8 surfaced a real "
+                        "convergence boundary: at "
+                        "(theta_a=[0, 0.1], theta_b=[2, 1]) — σ ratio 10 "
+                        "combined with a μ gap of 2 — the damped Newton "
+                        "shooting in `_shoot_bvp` fails the backtracking "
+                        "line search (|r|=2.009 stuck after "
+                        "_BVP_NEWTON_MAX_ITERS). Documented as a known "
+                        "limitation of the Stage B `_shoot_bvp` "
+                        "globalisation; a follow-up patch (e.g. "
+                        "continuation in θ_b, or a better initial-"
+                        "velocity heuristic for high-curvature starts) "
+                        "is required to clear this regime. The production "
+                        "fr_dyn_numerical (Stage A closed-form) path is "
+                        "unaffected."
+                    ),
+                    strict=True,
+                ),
+            ),
+            # Large μ + σ gap (large-arc geodesic)
+            (np.array([0.0, 1.0]), np.array([5.0, 5.0])),
+        ],
+    )
+    def test_shooting_converges_at_extreme_regimes(self, theta_a, theta_b):
+        """Shooting BVP converges at extreme σ-ratio and μ-gap regimes.
+
+        Extends `test_shooting_converges_at_typical_conflict_regimes`
+        which spans Δ_scaled at (sigma=1, sigma0=1) — insufficient
+        parameter coverage. This test exercises:
+        - near-vertical geodesics (σ ratio 10 with small or zero μ gap)
+        - large-arc geodesics (μ gap with σ gap)
+        These regimes stress the Newton damping / line-search globalisation
+        in `_shoot_bvp`. Finding #8 from the Stage B skeptic review.
+
+        One xfail case documents a real convergence failure at
+        (σ ratio 10 + μ gap 2); the Stage A production path is
+        unaffected.
+        """
+        from frasian.tilting.fisher_rao import _fr_geodesic_numerical
+        theta_t = _fr_geodesic_numerical(theta_a, theta_b, 0.5)
+        assert np.all(np.isfinite(theta_t))
+        assert theta_t[1] > 0.0, (
+            f"sigma_t = {theta_t[1]} not positive at "
+            f"theta_a={theta_a}, theta_b={theta_b}"
+        )
+
+
+@pytest.mark.L1
+@pytest.mark.properties
+class TestFisherRaoGenericTilt:
+    """_generic_tilt_fr builds the FR-tilted distribution via diffrax shooting.
+
+    Validates that the autodiff/diffrax-based generic tilt agrees with
+    the closed-form half-plane formula on Gaussian endpoints to atol 1e-7
+    on (mu_t, sigma_t). This is the same closed-form-vs-numerical check
+    as TestFisherRaoGeodesicNumerical (B.5), but at the higher
+    Distribution-level API rather than the raw geodesic helper.
+    """
+
+    @pytest.mark.parametrize(
+        "sigma, sigma0, mu0, D, eta",
+        [
+            (1.0, 1.0, 0.0, 0.5, 0.3),
+            (2.0, 0.5, 1.0, -1.0, 0.7),
+            (0.5, 2.0, 0.0, 1.0, 0.5),
+        ],
+    )
+    def test_generic_tilt_matches_closed_form_on_normal(
+        self, sigma, sigma0, mu0, D, eta
+    ):
+        from frasian.tilting.fisher_rao import (
+            FisherRaoTilting, _generic_tilt_fr,
+        )
+        from frasian.models.normal_normal import NormalNormalModel
+        model = NormalNormalModel(sigma=sigma)
+        prior = NormalDistribution(loc=mu0, scale=sigma0)
+        lik = GaussianLikelihood(D=D, sigma=sigma)
+        post = model.posterior(np.asarray([D]), prior)
+
+        # Closed-form via the FisherRaoTilting.tilt() public API
+        scheme = FisherRaoTilting()
+        cf_dist = scheme.tilt(post, prior, lik, eta)
+        # Generic numerical via diffrax shooting
+        gen_dist = _generic_tilt_fr(post, prior, lik, eta, model=model)
+
+        assert np.isclose(gen_dist.loc, cf_dist.loc, atol=1e-7), (
+            f"mu mismatch: generic {gen_dist.loc:.8f} vs closed {cf_dist.loc:.8f}"
+        )
+        assert np.isclose(gen_dist.scale, cf_dist.scale, atol=1e-7), (
+            f"sigma mismatch: generic {gen_dist.scale:.8f} vs closed {cf_dist.scale:.8f}"
+        )
+
+    def test_generic_tilt_rejects_non_gaussian(self):
+        """_generic_tilt_fr raises NotImplementedError for non-Gaussian endpoints
+        (rev 2 spec: FR is NN-only in this PR).
+        """
+        from frasian.tilting.fisher_rao import _generic_tilt_fr
+        from frasian.models.normal_normal import NormalNormalModel
         model = NormalNormalModel(sigma=1.0)
         prior = NormalDistribution(loc=0.0, scale=1.0)
-        lik = GaussianLikelihood(D=1.0, sigma=1.0)
-        post = model.posterior(np.asarray([1.0]), prior)
-        return model, prior, lik, post
+        lik = GaussianLikelihood(D=0.5, sigma=1.0)
+        post = model.posterior(np.asarray([0.5]), prior)
 
-    def test_tilt_raises(self, fixtures):
-        _, prior, lik, post = fixtures
-        with pytest.raises(NotImplementedError, match=r"fisher_rao"):
-            FisherRaoTilting().tilt(post, prior, lik, 0.5)
+        # Simulate a non-Gaussian posterior by passing a non-NormalDistribution
+        class FakeNonNormalDistribution:
+            loc = 0.5
+            scale = 0.7
+            def pdf(self, x): return np.exp(-x**2)
+        non_normal_post = FakeNonNormalDistribution()
 
-    def test_path_raises(self, fixtures):
-        _, prior, lik, post = fixtures
-        with pytest.raises(NotImplementedError, match=r"fisher_rao"):
-            list(FisherRaoTilting().path(post, prior, lik, np.linspace(0, 1, 5)))
-
-    def test_confidence_interval_raises(self, fixtures):
-        model, prior, _, _ = fixtures
-        with pytest.raises(NotImplementedError, match=r"fisher_rao"):
-            FisherRaoTilting().confidence_interval(
-                0.05, np.asarray([1.0]), model, prior, WaldoStatistic()
-            )
-
-    def test_confidence_regions_raises(self, fixtures):
-        model, prior, _, _ = fixtures
-        with pytest.raises(NotImplementedError, match=r"fisher_rao"):
-            FisherRaoTilting().confidence_regions(
-                0.05, np.asarray([1.0]), model, prior, WaldoStatistic()
-            )
-
-    def test_pvalue_raises(self, fixtures):
-        model, prior, _, _ = fixtures
-        with pytest.raises(NotImplementedError, match=r"fisher_rao"):
-            FisherRaoTilting().pvalue(
-                np.asarray([0.5]), np.asarray([1.0]), model, prior, WaldoStatistic()
-            )
-
-    def test_is_identity_does_not_raise(self):
-        """is_identity is a pure equality check; must not raise on the stub."""
-        f = FisherRaoTilting()
-        assert f.is_identity(0.0) is True
-        assert f.is_identity(0.5) is False
+        with pytest.raises(NotImplementedError, match="Gaussian endpoints"):
+            _generic_tilt_fr(non_normal_post, prior, lik, 0.5, model=model)

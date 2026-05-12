@@ -35,6 +35,7 @@ from frasian.tilting.eta_selectors import (
     LearnedDynamicEtaSelector,
     NumericalEtaSelector,
 )
+from frasian.tilting.fisher_rao import FisherRaoTilting
 from frasian.tilting.identity import IdentityTilting
 from frasian.tilting.mixture import MixtureTilting
 from frasian.tilting.ot import OTTilting
@@ -185,6 +186,24 @@ def _build_cell(flavor: str):
     if flavor == "mx_learned_static_w":
         return (MixtureTilting(selector=_learned_selector("static_width", scheme="mixture")),
                 WaldoStatistic(force_generic=False), mx_bare)
+    # Fisher-Rao (Levi-Civita / information-geometric geodesic) variants —
+    # mirrors OT's selector set (no fixed/numerical static; dynamic + learned only).
+    fr_bare = FisherRaoTilting()
+    if flavor == "fr_dyn_numerical":
+        return (FisherRaoTilting(selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)),
+                WaldoStatistic(force_generic=False), fr_bare)
+    if flavor == "fr_dyn_numerical_generic":
+        return (FisherRaoTilting(selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)),
+                WaldoStatistic(force_generic=True), fr_bare)
+    if flavor == "fr_learned_intp":
+        return (FisherRaoTilting(selector=_learned_selector("integrated_p", scheme="fisher_rao")),
+                WaldoStatistic(force_generic=False), fr_bare)
+    if flavor == "fr_learned_cd_var":
+        return (FisherRaoTilting(selector=_learned_selector("cd_variance", scheme="fisher_rao")),
+                WaldoStatistic(force_generic=False), fr_bare)
+    if flavor == "fr_learned_static_w":
+        return (FisherRaoTilting(selector=_learned_selector("static_width", scheme="fisher_rao")),
+                WaldoStatistic(force_generic=False), fr_bare)
     raise ValueError(f"unknown flavor {flavor!r}")
 
 
@@ -206,6 +225,20 @@ _FLAVORS = [
     # squash on EtaNet output, mixture-only via train.py dispatch).
     # See `docs/notes/2026-05-10-mixture-cd-variance-instability.md`.
     "mx_learned_intp", "mx_learned_cd_var", "mx_learned_static_w",
+    # Fisher-Rao (Levi-Civita / information-geometric geodesic) variants.
+    # fr_dyn_numerical_generic exercises the Stage B generic-MC machinery
+    # (_generic_tilt_fr + _generic_tilted_pvalue_fr + diffrax shooting BVP)
+    # against the Stage A closed-form half-plane geodesic path.
+    "fr_dyn_numerical", "fr_dyn_numerical_generic",
+    # Stage C v4 trained heads (3 loss objectives). `_build_cell`
+    # branches at `fr_learned_*` consume these. Train via
+    # `python -m scripts.train_learned_eta --config
+    # experiments/canonical_normal_normal_fisher_rao_v4.yaml --loss
+    # {integrated_p, cd_variance, static_width} --out
+    # artifacts/learned_eta_canonical_normal_normal_fisher_rao_phaseC_<loss>_v4.eqx`.
+    # cd_variance requires `--lr-a 1e-4 --grad-clip-max-norm 0.5` per
+    # docs/notes/2026-05-11-fisher-rao-cd-var-hyperparams.md.
+    "fr_learned_intp", "fr_learned_cd_var", "fr_learned_static_w",
 ]
 
 

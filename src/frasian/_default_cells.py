@@ -132,8 +132,11 @@ def default_tiltings(
       - `learned`: `LearnedDynamicEtaSelector` with the trained MLP.
         Calibrated AND narrow.
 
-    Future smoother geodesic schemes (`fisher_rao`, `mixture`) plug
-    in here once their stubs land.
+    Other registered schemes (`mixture`, `fisher_rao`) are exercised
+    via the audit harness (`scripts/run_wald_audit.py`) rather than
+    being baked into the default-coverage / default-width cell list;
+    wiring them into `default_tiltings()` is a separate decision once
+    their respective production selectors are settled.
     """
     from .tilting.eta_selectors import DynamicNumericalEtaSelector
     from .tilting.identity import IdentityTilting
