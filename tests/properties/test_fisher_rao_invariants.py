@@ -353,8 +353,11 @@ class TestFisherRaoJaxKernel:
         grad_loss = jax.grad(loss_at_eta)
 
         # Probe at three representative eta values in (0, 1). The ST
-        # surrogate is biased (within ~2x of FD) so we only assert the
-        # SIGN matches and the magnitude is non-zero.
+        # surrogate is biased (forward = hard indicator, backward =
+        # sigmoid surrogate at sharpness 0.05) so we don't expect
+        # bit-equality with FD; we DO expect the bias to stay within an
+        # order of magnitude of FD (loose 4× envelope, since over- or
+        # under-shooting both still give SGD a usable signal).
         for eta in [0.2, 0.5, 0.8]:
             g_auto = float(grad_loss(eta))
             h = 1e-3
@@ -369,6 +372,20 @@ class TestFisherRaoJaxKernel:
             assert (g_auto > 0) == (g_fd > 0), (
                 f"autograd sign disagrees with FD at eta={eta}: "
                 f"auto={g_auto:.6e}, fd={g_fd:.6e}"
+            )
+            # Magnitude envelope: bound the bias to catch a sharpness
+            # regression (e.g. 5.0 → over-smooth, 1e-6 → numerically
+            # unstable). The choice 0.05 should give |g_auto/g_fd| ∈
+            # [0.25, 4.0]; a tighter envelope would be theoretically
+            # nice but the FD itself has ~10% noise from the trapezoid
+            # quadrature.
+            ratio = abs(g_auto) / max(abs(g_fd), 1e-12)
+            assert 0.25 < ratio < 4.0, (
+                f"ST gradient surrogate at eta={eta} is too biased: "
+                f"|g_auto|/|g_fd| = {ratio:.3f} (expected 0.25-4.0). "
+                f"Check `_FR_INDICATOR_SHARPNESS` — too large smooths "
+                f"the indicator past the trapezoid's resolution; too "
+                f"small produces numerically degenerate gradients."
             )
 
     def test_jax_kernel_handles_vector_theta_input(self):

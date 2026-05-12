@@ -135,6 +135,26 @@ analytical optimum" is also loss-specific. If so, the framework's
 production-default would shift away from integrated_p as the
 "calibrated and narrower" headline cell.
 
+## Caveat — OOD-θ override on negative-η at conflict
+
+`LearnedDynamicEtaSelector.clamp_outside_training=True` (default)
+replaces the network's predicted η with `scheme.param_space.
+eta_likelihood_only` (=1.0 for FR) when the requested θ falls
+outside the training θ-distribution box. The FR v4 YAML uses
+`type: sigma_anchored_uniform, K: 5.0`, so the box is
+`[μ₀ − 5σ₀, μ₀ + 5σ₀]`. For an audit / headline grid extending
+beyond `±5σ₀` from the prior mean (or for a likelihood-anchored
+audit grid where θ is far from μ₀), the FR cd_var head's
+**learned negative-η behaviour is overridden to η=1.0 (Wald)**
+exactly at the θ where its trained adaptation matters most.
+
+This is calibrated (any fixed η yields valid coverage) but kills
+the cd_variance optimum at the tails. Pin the implication:
+`fr_learned_cd_var` in the headline / audit reports the *trained*
+behaviour inside the σ₀-anchored box and *Wald* outside it.
+Disable via `LearnedDynamicEtaSelector(clamp_outside_training=False)`
+if you want to see the raw extrapolation.
+
 ## Open questions
 
 - **Should FR cd_var ship a soft regulariser** (option D: tanh output

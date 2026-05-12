@@ -133,47 +133,61 @@ class TestFisherRaoV4Fixture:
         assert eta.shape == theta.shape
         assert np.all(np.isfinite(eta)), f"non-finite eta predictions: {eta}"
 
-    def test_v4_predicted_eta_is_not_pure_float_noise(self, loaded_artifact):
-        """The trained network's η output is non-trivially different
-        from its random initialization. Catches a complete training
-        failure where the saved artifact == random init weights.
+    def test_v4_predicted_eta_is_not_pure_float_noise(self, loaded_artifact, request):
+        """The trained network's η output varies across θ within a
+        single (prior_hp, lik_hp) cell. Per-loss-head thresholds set at
+        ~1/3 of the documented per-cell std on the canonical demo cell
+        (μ₀=0, σ₀=σ=1) so a degenerate training that produces
+        ~init-noise output (std ~1e-5) fails loudly, while normal
+        cross-run drift (~30%) passes.
 
-        Threshold: std(eta over theta) > 1e-5 (loose; only catches
-        float-noise-level variation). Per-loss-head empirical std at
-        commit 2026-05-11:
-          integrated_p ≈ 5e-4    (~50× above threshold; near-constant
-                                  per cell but training did happen)
-          cd_variance  ≈ 5e-2    (~5000× above threshold; strong
-                                  per-θ adaptation despite training
-                                  instability)
-          static_width : TBD     (populated when fixture trained)
+        Documented per-cell std at the demo cell (commit 2026-05-11,
+        per `tools/probe_input_sensitivity_cross_scheme.py`):
+          integrated_p ≈ 4e-4   → threshold 1e-4
+          cd_variance  ≈ 0.13   → threshold 0.04
+          static_width ≈ 3e-3   → threshold 1e-3
         """
+        head_thresholds = {
+            "integrated_p": 1e-4,
+            "cd_variance": 0.04,
+            "static_width": 1e-3,
+        }
+        head_token = request.node.callspec.params["loaded_artifact"]
+        threshold = head_thresholds[head_token]
+
         prior = NormalDistribution(loc=0.0, scale=1.0)
         model = NormalNormalModel(sigma=1.0)
         theta = np.linspace(-3.0, 3.0, 51)
         eta = loaded_artifact.predict_eta(theta, prior.hyperparams(), model.hyperparams())
         eta_std = float(np.std(eta))
-        assert eta_std > 1e-5, (
-            f"learned eta is float-noise-level constant (std={eta_std:.2e}); "
-            f"training likely never stepped. Check optimizer state and "
-            f"the kernel gradient (commit 83a3c0e for the ST gradient fix)."
+        assert eta_std > threshold, (
+            f"learned eta std={eta_std:.2e} below per-loss threshold "
+            f"({threshold:.2e}) for head={head_token!r}. The training run "
+            f"likely produced a degenerate fixture (collapsed to constant "
+            f"output, or never escaped init). Check optimizer state and "
+            f"the kernel gradient (commit 83a3c0e for the ST gradient fix; "
+            f"docs/notes/2026-05-11-fisher-rao-cd-var-hyperparams.md for "
+            f"the cd_var-specific lr/grad-clip regime)."
         )
 
-    def test_v4_predicted_eta_varies_across_hyperparams(self, loaded_artifact):
+    def test_v4_predicted_eta_varies_across_hyperparams(self, loaded_artifact, request):
         """The trained network's η output varies across (prior_hp,
-        lik_hp) cells. Catches a more severe failure mode than
-        per-cell constant: EtaNet ignoring its inputs entirely.
+        lik_hp) cells. Per-loss-head thresholds set at ~1/3 of the
+        documented cross-cell spread.
 
-        Three cells span the hyperparam box:
-            (mu0, sigma0, sigma) ∈ {(0, 0.5, 1.0), (1, 2.0, 1.5), (-1, 1.0, 0.5)}
-        Assert that the mean η across θ varies by at least 1e-3 between
-        the most and least extreme cells.
-
-        Per-loss-head empirical cross-cell spread at commit 2026-05-11:
-          integrated_p ≈ 0.16
-          cd_variance  ≈ 0.24
-          static_width : TBD
+        Documented cross-cell mean-η spread (commit 2026-05-11):
+          integrated_p ≈ 0.16  → threshold 0.05
+          cd_variance  ≈ 1.43  → threshold 0.5
+          static_width ≈ 0.08  → threshold 0.02
         """
+        head_thresholds = {
+            "integrated_p": 0.05,
+            "cd_variance": 0.5,
+            "static_width": 0.02,
+        }
+        head_token = request.node.callspec.params["loaded_artifact"]
+        threshold = head_thresholds[head_token]
+
         theta = np.linspace(-3.0, 3.0, 21)
         cells = [
             (0.0, 0.5, 1.0),
@@ -187,9 +201,11 @@ class TestFisherRaoV4Fixture:
             eta = loaded_artifact.predict_eta(theta, prior.hyperparams(), model.hyperparams())
             mean_etas.append(float(np.mean(eta)))
         max_spread = max(mean_etas) - min(mean_etas)
-        assert max_spread > 1e-3, (
-            f"learned eta means are nearly identical across hyperparams "
-            f"({mean_etas}); the network may be ignoring its inputs. "
-            f"This is a more severe failure mode than per-cell constant "
-            f"output."
+        assert max_spread > threshold, (
+            f"learned eta cross-cell spread = {max_spread:.3f} below per-loss "
+            f"threshold ({threshold:.3f}) for head={head_token!r}. Per-cell "
+            f"means: {[round(m, 3) for m in mean_etas]}. The fixture is "
+            f"either input-insensitive (network ignoring (prior_hp, lik_hp) "
+            f"inputs) or training failed to converge — see "
+            f"docs/notes/2026-05-11-row-13b-loss-specificity-cross-scheme.md."
         )

@@ -91,13 +91,26 @@ Loss-specificity rollup (across all 4 schemes):
 | cd_variance   | 0.197                    | 0.032 | 1.431 | 4         |
 | static_width  | 0.204                    | 0.079 | 0.778 | 4         |
 
-**The integrated_p pattern is universal across schemes.** All four
-integrated_p fixtures produce per-cell std in the 2.4e-4 to 7.2e-3
-band (median 5.5e-4) and cross-cell spread in the 0.10-0.20 band. This
-is the row-13b "near-constant per-cell" pattern, and the probe confirms
-it holds equally for power_law, ot, mixture, and fisher_rao. The
-weakest spread (PL at 0.096) and strongest (OT at 0.198) span only ~2x
-within the loss; integrated_p is genuinely a loss-level effect.
+**The integrated_p pattern is universal across schemes — but with
+non-trivial within-loss spread.** All four integrated_p fixtures
+produce per-cell std in the 2.4e-4 to 7.2e-3 band: median 5.5e-4, but
+the worst-case PL cells (7.2e-3, 6.3e-3) sit ~14× above the median.
+Cross-cell spread is in the 0.10-0.20 band: weakest PL 0.096,
+strongest OT 0.198. So:
+
+- **median** integrated_p std (5.5e-4) is ~5× tighter than median
+  cd_variance (2.5e-3) and ~4× tighter than median static_width (2.1e-3);
+- but the **max** integrated_p std (7.2e-3) is within a factor of ~3
+  of the median cd_variance / static_width — i.e. the *worst* cell of
+  the "near-constant" loss is approaching the *typical* cell of the
+  other losses.
+
+The "row-13b is loss-specific" finding is robust **at the median**;
+at the per-cell tail it is more nuanced. The architectural framing
+remains too strong: the network IS capable of input-sensitive
+learning, just not uniformly under integrated_p. The single
+per-cell-std rollup hides this; future analyses should report
+quartiles or paired (median, max) instead.
 
 **The cd_variance + static_width "stronger adaptation" claim is
 non-uniform.** Median per-cell stds for the two non-integrated_p losses

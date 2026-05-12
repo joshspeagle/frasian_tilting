@@ -40,8 +40,18 @@ description: |
   per-inference and refuses out-of-range hyperparams.
 
   Three loss heads (integrated_p, cd_variance, static_width) trained
-  sequentially via `scripts.train_learned_eta`. ~5 min CPU per head.
-  Use the resulting checkpoints to populate the fr_learned_intp /
-  fr_learned_cd_var / fr_learned_static_w audit flavors (currently
-  commented out of `_FLAVORS` in scripts/run_wald_audit.py pending
-  this training).
+  sequentially via `scripts.train_learned_eta`. ~5 min CPU per head for
+  integrated_p / static_width; ~5 min for cd_variance under the regime
+  below.
+
+  REQUIRED hyperparameter overrides per loss:
+    integrated_p:  defaults work (--lr-a 3e-4 --grad-clip-max-norm 1.0).
+    static_width:  defaults work (same).
+    cd_variance:   MUST set --lr-a 1e-4 --grad-clip-max-norm 0.5.
+                   Defaults diverge (22/34 non-finite skipped steps; val
+                   peaks at ep 2 then climbs to 57.7 by ep 6) because FR
+                   has no admissibility-derived boundary penalty (Head B
+                   class-degenerate; geodesically complete). The tighter
+                   regime is enforced by Stage C.6 documentation pending
+                   a YAML schema field for per-loss overrides.
+                   See docs/notes/2026-05-11-fisher-rao-cd-var-hyperparams.md.

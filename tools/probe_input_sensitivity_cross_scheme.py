@@ -14,7 +14,8 @@ representative grid. The same probe configuration is used as in
 comparable to that test's reference values.
 
 Run as `python tools/probe_input_sensitivity_cross_scheme.py`. Saves the
-formatted summary table to /tmp/probe_input_sensitivity_output.txt.
+formatted summary table to `output/diagnostics/probe_input_sensitivity_<sha>.txt`
+(commit-pinned, portable across hosts).
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from __future__ import annotations
 from jax import config as _jax_config
 _jax_config.update("jax_enable_x64", True)
 
+import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -37,7 +39,24 @@ from frasian.models.normal_normal import NormalNormalModel
 
 
 _ARTIFACT_DIR = Path("artifacts")
-_OUTPUT_PATH = Path("/tmp/probe_input_sensitivity_output.txt")
+
+
+def _output_path() -> Path:
+    """Commit-tagged output path so reruns from different commits don't
+    overwrite each other and the file is identifiable post-hoc."""
+    project_root = Path(__file__).resolve().parents[1]
+    out_dir = project_root / "output" / "diagnostics"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        sha = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"], cwd=project_root, text=True
+        ).strip()
+    except Exception:
+        sha = "no_git"
+    return out_dir / f"probe_input_sensitivity_{sha}.txt"
+
+
+_OUTPUT_PATH = _output_path()
 
 # (scheme_name_for_display, filename_scheme_token)
 _SCHEMES = [
