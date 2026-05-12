@@ -23,6 +23,7 @@ See `docs/methods/lrt.md` for the derivation.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import ClassVar
 
@@ -32,6 +33,14 @@ import jax.scipy.stats as jsp_stats
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from scipy.special import ndtr as _ndtr, ndtri as _ndtri
+
+# Tolerance for the tau-non-negativity guard in `_generic_evaluate`.
+# A `tau` between `-_GENERIC_TAU_NEG_TOL` and 0 is silently clamped (FP
+# cancellation near the mode); a `tau` below `-_GENERIC_TAU_NEG_TOL`
+# triggers a `RuntimeWarning` because it implies `loglik(theta) >
+# loglik(theta_hat)` — i.e. `model.mle` did not actually maximise the
+# likelihood (skeptic finding #3).
+_GENERIC_TAU_NEG_TOL = 1e-8
 
 from .. import _jax_setup as _x64  # noqa: F401  — ensure float64 active
 from .._registry import register_statistic
@@ -130,7 +139,23 @@ class LRTStatistic:
         ll_theta = jnp.asarray(lik.loglik(theta_arr))
         ll_mle = jnp.asarray(lik.loglik(mle))
         tau = -2.0 * (ll_theta - ll_mle)
-        # Clamp tiny negatives from floating-point cancellation at theta == mle.
+        # Non-negativity guard. By definition of the MLE,
+        # `ll_theta <= ll_mle`, so `tau >= 0`. FP cancellation near
+        # the mode produces small negatives that are safe to clamp;
+        # a *significantly* negative `tau` means `model.mle` did not
+        # actually maximise the likelihood — surface that as a warning
+        # rather than silently returning a wrong p-value.
+        tau_np = np.asarray(tau, dtype=np.float64)
+        worst = float(np.nanmin(tau_np)) if tau_np.size else 0.0
+        if worst < -_GENERIC_TAU_NEG_TOL:
+            warnings.warn(
+                f"LRTStatistic._generic_evaluate: tau={worst:.3e} < "
+                f"-{_GENERIC_TAU_NEG_TOL:.0e}; this implies loglik(theta) > "
+                f"loglik(mle) and model.mle is not returning the true MLE. "
+                f"Clamping to 0; downstream p-value/CI will be incorrect.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
         return jnp.maximum(tau, 0.0)
 
     def _generic_pvalue(
@@ -158,8 +183,14 @@ class LRTStatistic:
         # Bracket-width estimation — mirrors `WaldStatistic._generic_confidence_interval`.
         # Three regimes:
         # 1. I(mle) finite & > 0 & not absurd: 4 / sqrt(I(mle)) is the
-        #    natural Wald half-width (LRT and Wald have the same
-        #    quadratic-approximation scale).
+        #    natural Wald half-width. LRT and Wald share the quadratic
+        #    approximation *asymptotically* (Derivation Step 2:
+        #    `tau_LRT = tau_Wald + O_p(n^{-1/2})`); on the NN sandbox
+        #    they coincide exactly. Off-NN at small n with a skewed
+        #    loglikelihood the LRT level set can be asymmetric around
+        #    the MLE, so the same half-width on both sides is a
+        #    starting guess that brentq's doubling will expand as
+        #    needed — slow but correct.
         # 2. I(mle) singular (bounded-support boundary): fall back to a
         #    fraction of the model support range.
         # 3. Numerical pathologies (NaN, negative): default to 1.0.

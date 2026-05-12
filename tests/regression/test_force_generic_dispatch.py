@@ -25,6 +25,7 @@ import pytest
 
 from frasian.models.distributions import NormalDistribution
 from frasian.models.normal_normal import NormalNormalModel
+from frasian.statistics.lrt import LRTStatistic
 from frasian.statistics.wald import WaldStatistic
 from frasian.statistics.waldo import WaldoStatistic
 
@@ -71,6 +72,67 @@ class TestWaldForceGeneric:
         # force_generic=True: no generic data-space inversion exists.
         with pytest.raises(NotImplementedError, match="no generic path"):
             WaldStatistic(force_generic=True).acceptance_region(0.05, 0.0, model)
+
+
+@pytest.mark.L2
+class TestLRTForceGeneric:
+    """Closed-form NN dispatch is identical to Wald (Derivation Step 3 of
+    `docs/methods/lrt.md`); generic path agrees within numerical tolerance.
+    Pins:
+      1. `cell_name` discriminates `"lrt"` vs `"lrt[generic]"`.
+      2. `force_generic=True` actually hits `_generic_pvalue` /
+         `_generic_confidence_interval`.
+      3. Closed-form and generic p-values / CIs agree on NN.
+      4. `acceptance_region` raises under `force_generic=True`.
+    """
+
+    def test_cell_name(self):
+        assert LRTStatistic().cell_name == "lrt"
+        assert LRTStatistic(force_generic=True).cell_name == "lrt[generic]"
+
+    def test_pvalue_uses_generic_on_nn(self):
+        model = NormalNormalModel(sigma=1.0)
+        data = np.asarray([0.5])
+        theta = 0.2
+        stat_default = LRTStatistic()
+        stat_generic = LRTStatistic(force_generic=True)
+        p_default = float(stat_default.pvalue(theta, data, model))
+        p_forced = float(stat_generic.pvalue(theta, data, model))
+        # force_generic=True should hit the generic helper exactly.
+        p_via_generic = float(stat_default._generic_pvalue(theta, data, model))
+        assert abs(p_forced - p_via_generic) < 1e-12, (
+            f"forced={p_forced}, direct generic={p_via_generic}"
+        )
+        # Closed-form and generic agree on NN.
+        assert abs(p_default - p_forced) < 1e-10
+
+    def test_pvalue_matches_wald_on_nn(self):
+        """tau_LRT == tau_Wald exactly on NN: pvalues coincide on both paths."""
+        model = NormalNormalModel(sigma=1.0)
+        data = np.asarray([0.5])
+        for theta in (-1.0, 0.0, 0.5, 1.7):
+            p_lrt_cf = float(LRTStatistic().pvalue(theta, data, model))
+            p_lrt_g = float(LRTStatistic(force_generic=True).pvalue(theta, data, model))
+            p_wald = float(WaldStatistic().pvalue(theta, data, model))
+            assert abs(p_lrt_cf - p_wald) < 1e-12
+            assert abs(p_lrt_g - p_wald) < 1e-10
+
+    @pytest.mark.parametrize("alpha", [0.05, 0.10])
+    def test_ci_uses_generic_on_nn(self, alpha):
+        model = NormalNormalModel(sigma=1.0)
+        data = np.asarray([0.5])
+        cf = LRTStatistic().confidence_interval(alpha, data, model)
+        gn = LRTStatistic(force_generic=True).confidence_interval(alpha, data, model)
+        assert abs(cf[0] - gn[0]) < 1e-6
+        assert abs(cf[1] - gn[1]) < 1e-6
+
+    def test_acceptance_region_raises_under_force_generic(self):
+        model = NormalNormalModel(sigma=1.0)
+        # Default (force_generic=False): closed-form path returns a region.
+        LRTStatistic().acceptance_region(0.05, 0.0, model)
+        # force_generic=True: no generic data-space inversion exists.
+        with pytest.raises(NotImplementedError, match="no generic path"):
+            LRTStatistic(force_generic=True).acceptance_region(0.05, 0.0, model)
 
 
 @pytest.mark.L2

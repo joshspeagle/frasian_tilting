@@ -185,7 +185,10 @@ strict-monotone assumption and must use the
 
 - **On NN sandbox**: `lrt.pvalue == wald.pvalue` and
   `lrt.confidence_interval == wald.confidence_interval` to numerical
-  precision. Regression-pinned.
+  precision; pinned by property tests
+  (`tests/properties/test_lrt_invariants.py::test_matches_wald_*`)
+  and the dispatch regression
+  (`tests/regression/test_force_generic_dispatch.py::TestLRTForceGeneric`).
 - **Under H_0** on NN: `tau_LRT ~ chi^2_1` exactly (not just
   asymptotically), so the p-value is `Uniform[0,1]` and the CI
   covers at the nominal level.
@@ -199,19 +202,58 @@ strict-monotone assumption and must use the
 
 - **Multimodal likelihoods**: `tau_LRT(theta) <= c` is not
   necessarily an interval; on the NN sandbox the loglikelihood is
-  strictly unimodal so this cannot occur, but a generic-path CI on
-  a future multimodal model must use `confidence_regions` semantics
-  (see CLAUDE.md "CI region semantics") rather than
-  `confidence_interval`.
+  strictly unimodal so this cannot occur. **Caller's responsibility**:
+  the generic path uses brentq to find one root on each side of
+  `theta_hat` — on a future multimodal model the returned interval
+  is the *outermost* level-set boundary and may strictly include a
+  region where `tau_LRT > c`. `LRTStatistic` does not implement the
+  `confidence_regions(...) -> list[(lo, hi)]` semantics described in
+  CLAUDE.md (that lives on `TiltingScheme`); callers needing
+  multi-region CIs must invert the p-value themselves.
 - **MLE on the boundary**: when `theta_hat` lies at a support
   boundary the chi^2 calibration breaks — a half-chi-squared
   distribution applies (Chernoff 1954). Not relevant for NN
   (parameter space is the real line) but matters for any future
   bounded-support model.
+- **Asymmetric loglikelihood (generic path)**: brentq is initialised
+  with the Wald half-width `4 / sqrt(I(theta_hat))` on both sides
+  of `theta_hat`. On NN this is sharp (the LRT level set is
+  symmetric); off-NN at small n the level set can be substantially
+  asymmetric (skewed exponential-family likelihoods, etc.). The
+  doubling bracket still converges, just slowly on the long-tail
+  side. Future non-Gaussian models that exhibit pathological skew
+  may need a dedicated bracket heuristic.
 - **Generic-path bracket failure**: as in `wald._generic_confidence_interval`,
   pathological Fisher information (zero / infinite / NaN) at `theta_hat`
-  has to fall back to a support-width-based bracket. Inherit the
-  same fallback policy.
+  falls back to a support-width-based bracket. If `lik.loglik` returns
+  `-inf` at the doubling endpoints `brentq_with_doubling` raises
+  `BracketingFailed`, which the implementation catches and returns
+  the support boundary on that side — silently truncating to a CI
+  flush with the support boundary. There is no runtime warning;
+  diagnose by inspecting the CI width relative to `model.support()`.
+- **Wrong-MLE protection (generic path)**: by definition `tau_LRT >= 0`,
+  but `model.mle(data)` is a model-provided primitive that *could*
+  return a non-MLE point (a local minimum, a saddle, or a default
+  like the prior mean). When this happens `tau_LRT < 0` at the true
+  MLE direction; the implementation issues a `RuntimeWarning` if
+  `tau` falls below `1e-8` and clamps to 0 before computing the
+  p-value. Downstream output is then incorrect — the warning is the
+  signal to fix `model.mle`.
+- **NormalNormalModel subclassing**: the closed-form NN dispatch
+  uses `is_normal_normal(model)` (fingerprint-based). A subclass
+  `class MyNN(NormalNormalModel)` that overrides `.likelihood(...)`
+  with a non-Gaussian replacement will still match the
+  `("normal_normal", ...)` fingerprint and dispatch through the
+  closed-form path that reads only `model.sigma` — producing a
+  wrong p-value with no error. The fix is to either (a) avoid the
+  subclass pattern, (b) override `fingerprint()` to break the
+  match, or (c) instantiate with `force_generic=True`. Same risk
+  exists for `wald`, `waldo`.
+- **`acceptance_region` not available off-NN**: the data-space
+  acceptance-region computation has no generic path (matches
+  `wald` / `waldo`); raises `NotImplementedError` on non-NN models
+  and on NN with `force_generic=True`. Use
+  `confidence_interval(...)` for the generic theta-space inversion.
 
 ## Invariants
 
@@ -233,7 +275,9 @@ strict-monotone assumption and must use the
    wald.confidence_interval(alpha, data, model)` for any
    `(alpha, data, sigma)`, to `atol <= 1e-8` (CI from numerical
    inversion is tighter than the closed-form 1e-12 of (4)). Pinned
-   in `tests/regression/test_lrt_matches_wald.py`.
+   in `tests/properties/test_lrt_invariants.py::test_matches_wald_ci_on_normal_normal`
+   and the closed-form↔generic dispatch in
+   `tests/regression/test_force_generic_dispatch.py::TestLRTForceGeneric`.
 6. **Exact `chi^2_1` calibration on NN under H_0.** Drawing
    `data ~ N(theta_true, sigma^2)` and evaluating
    `tau_LRT(theta_true; data)` gives an exact `chi^2_1` sample
@@ -505,7 +549,9 @@ WALDO paper; pairing-pattern template for `lrt` + `lrto`.
 
 - Implementation: `src/frasian/statistics/lrt.py`
 - Property tests: `tests/properties/test_lrt_invariants.py`
-- Regression tests: `tests/regression/test_lrt_matches_wald.py` (planned)
+- Regression tests: `tests/regression/test_force_generic_dispatch.py`
+  (TestLRTForceGeneric class — closed-form↔generic dispatch + cell-name
+  discrimination + acceptance_region raise behaviour)
 - Illustration: `src/frasian/experiments/illustrations/lrt_demo.py`
 - Generated figure: `output/illustrations/lrt_demo.png`
 

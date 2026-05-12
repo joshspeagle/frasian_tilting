@@ -47,12 +47,17 @@ class TestLRTInvariants:
         tau = LRTStatistic().evaluate(theta, np.asarray([D]), model)
         assert float(tau) >= 0.0
 
+    @pytest.mark.parametrize("force_generic", [False, True])
     @given(D=_D, sigma=_SIGMA)
     @settings(max_examples=50, deadline=None)
-    def test_pvalue_at_mle_equals_one(self, D, sigma):
-        """For NN the MLE equals D, so p(D) == 1."""
+    def test_pvalue_at_mle_equals_one(self, force_generic, D, sigma):
+        """For NN the MLE equals D, so p(D) == 1. Exercised on both
+        closed-form and generic paths so the non-negativity clamp in
+        `_generic_evaluate` can't mask a regression at the mode."""
         model = NormalNormalModel(sigma=sigma)
-        p = float(LRTStatistic().pvalue(D, np.asarray([D]), model))
+        p = float(LRTStatistic(force_generic=force_generic).pvalue(
+            D, np.asarray([D]), model
+        ))
         assert p == pytest.approx(1.0, abs=1e-12)
 
     @given(theta=_THETA, D=_D, sigma=_SIGMA)
@@ -89,18 +94,48 @@ class TestLRTInvariants:
         p2 = float(LRTStatistic().pvalue(theta2, data, model))
         assert p1 > p2
 
+    def test_wrong_mle_triggers_warning(self):
+        """Generic-path `_generic_evaluate` warns and clamps when
+        `model.mle` returns a non-maximiser (skeptic finding #3).
+
+        We wrap NormalNormalModel and override `mle` to return a fixed
+        non-MLE point (true MLE = D = 0.5; we return 5.0). Evaluating
+        `tau_LRT` at theta = D gives `tau = -2 [ll(D) - ll(5.0)] < 0`,
+        which should fire the RuntimeWarning and clamp to 0.
+        """
+        import warnings
+
+        class _WrongMLEModel(NormalNormalModel):
+            def mle(self, data):  # noqa: D401, override
+                # Return a non-MLE point on purpose.
+                return np.float64(5.0)
+
+        model = _WrongMLEModel(sigma=1.0)
+        data = np.asarray([0.5])  # true MLE = 0.5
+        stat = LRTStatistic(force_generic=True)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", RuntimeWarning)
+            tau = float(stat.evaluate(0.5, data, model))
+        assert tau == 0.0, f"clamp should drive tau to 0; got {tau}"
+        runtime_warnings = [w for w in caught if issubclass(w.category, RuntimeWarning)]
+        assert len(runtime_warnings) >= 1, "expected RuntimeWarning about wrong MLE"
+        assert "not returning the true MLE" in str(runtime_warnings[0].message)
+
     def test_accepts_only_identity_tilting(self):
         """Invariant 8: only `identity` tilting accepted (LRT ignores prior).
 
-        Mirrors `wald`'s contract. We hand-pick a representative set rather
-        than iterating the registry, since stub tiltings may not be
+        Mirrors `wald`'s contract. Hand-picks `identity`, `power_law`, `ot`
+        (the implemented non-identity schemes); stub tiltings are not
         instantiable with default args.
         """
+        from frasian.tilting.ot import OTTilting
         from frasian.tilting.power_law import PowerLawTilting
 
         stat = LRTStatistic()
         assert stat.accepts_tilting(IdentityTilting()) is True
         assert stat.accepts_tilting(PowerLawTilting()) is False
+        assert stat.accepts_tilting(OTTilting()) is False
         # Anything without a `name` attribute is also rejected.
         class _Dummy:
             pass
