@@ -77,7 +77,12 @@ def power_law_tilted_pvalue_jax(
         z = jnp.abs(D - theta) / sigma
         return 2.0 * (1.0 - _phi(z))
 
-    if statistic_name == "waldo":
+    if statistic_name in ("waldo", "lrto", "scoreo"):
+        # Trinity collapse on NN+Normal: q_η is a single Gaussian, so
+        # τ_WALDO,η = τ_LRTO,η = τ_SCOREO,η identically and the three
+        # statistics share the same p-value formula. See
+        # ``docs/notes/2026-05-12-tilted-trinity-derivation.md``.
+        #
         # denom = 1 - eta(1 - w); clamp to avoid divide-by-zero. The
         # clamped surface is smooth so Head A's width loss has a
         # gradient even when EtaNet predicts eta outside the admissible
@@ -92,7 +97,7 @@ def power_law_tilted_pvalue_jax(
 
     raise NotImplementedError(
         f"power_law_tilted_pvalue_jax: statistic={statistic_name!r} "
-        f"not supported (expected 'wald' or 'waldo')."
+        f"not supported (expected 'wald', 'waldo', 'lrto', or 'scoreo')."
     )
 
 
@@ -125,7 +130,12 @@ def ot_tilted_pvalue_jax(
         z = jnp.abs(D - theta) / sigma
         return 2.0 * (1.0 - _phi(z))
 
-    if statistic_name == "waldo":
+    if statistic_name in ("waldo", "lrto", "scoreo"):
+        # Trinity collapse on NN+Normal: q_η is a single Gaussian, so
+        # τ_WALDO,η = τ_LRTO,η = τ_SCOREO,η identically and the three
+        # statistics share the same p-value formula. See
+        # ``docs/notes/2026-05-12-tilted-trinity-derivation.md``.
+        #
         # mu_t = (1 - eta)*mu_n + eta*D, with mu_n = w*D + (1-w)*mu0.
         mu_n = w * D + (1.0 - w) * mu0
         mu_t = (1.0 - eta) * mu_n + eta * D
@@ -142,7 +152,7 @@ def ot_tilted_pvalue_jax(
 
     raise NotImplementedError(
         f"ot_tilted_pvalue_jax: statistic={statistic_name!r} "
-        f"not supported (expected 'wald' or 'waldo')."
+        f"not supported (expected 'wald', 'waldo', 'lrto', or 'scoreo')."
     )
 
 
@@ -251,6 +261,17 @@ def mixture_tilted_pvalue_jax(
         # eta-independent: collapses to bare 2-sided Wald.
         z = jnp.abs(D - theta) / sigma
         return 2.0 * (1.0 - _phi(z))
+
+    if statistic_name in ("lrto", "scoreo"):
+        raise NotImplementedError(
+            f"mixture_tilted_pvalue_jax: statistic={statistic_name!r} is out of "
+            f"scope for the JAX training kernel. Mixture LRTO/SCOREO requires "
+            f"autodiff through scipy.optimize for the mode, which JAX can't "
+            f"trace. Use the numpy-scalar path in `tilting.mixture` for "
+            f"inference; learned-η training against tilted-MX-LRTO/SCOREO "
+            f"loss is out of scope. See "
+            f"docs/notes/2026-05-12-tilted-trinity-derivation.md §6."
+        )
 
     if statistic_name == "waldo":
         sigma_n_sq = w * sigma * sigma
@@ -361,7 +382,8 @@ def mixture_tilted_pvalue_jax(
 
     raise NotImplementedError(
         f"mixture_tilted_pvalue_jax: statistic={statistic_name!r} "
-        f"not supported (expected 'wald' or 'waldo')."
+        f"not supported (expected 'wald' or 'waldo'; "
+        f"'lrto'/'scoreo' are out of scope — see above)."
     )
 
 
