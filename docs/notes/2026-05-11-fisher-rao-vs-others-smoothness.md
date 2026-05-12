@@ -76,13 +76,16 @@ outliers against the otherwise-flat baseline).
 | `power_law`  | 2.49      | 0.30  | 34            | 0.031    |
 | `fisher_rao` | 3.94      | 0.47  | 34            | 0.028    |
 | `mixture`    | 4.52      | 0.55  | 34            | 0.028    |
-| `ot`         | 4.61      | 0.56  | 34            | 0.029    |
+| `ot`         | 4.61      | 0.56  | 38            | 0.029    |
 
-PL has the smoothest learned η-curve. The 34 discontinuities are
-identical across all four schemes — that's the OOD-θ clamp at θ = ±5σ₀
-(the σ₀-anchored training-box edge) showing up as a pair of step
-discontinuities which the second-difference detector picks up
-identically per-scheme.
+PL has the smoothest learned η-curve. PL / MX / FR all report 34
+discontinuities — that's the OOD-θ clamp at θ = ±5σ₀ (the σ₀-anchored
+training-box edge) showing up as step discontinuities which the
+second-difference detector picks up at the same indices per-scheme. OT
+adds 4 extra discontinuities (38 total) — the OT η-curve has small
+extra kinks not present in the other learned cells; their source
+isn't characterised by the smoothness metrics alone (would need a
+per-cell η-plot).
 
 ### Pathological cell: `fisher_rao[learned_cd_var]`
 
@@ -153,8 +156,9 @@ the choice of geodesic barely shows up at the η level on this slice.
   anchored training box (~5σ₀ from μ₀). Our θ ∈ [-6, 6] sweep at
   σ₀ = 1 has the inner [-5, 5] in-distribution and the outer ±1
   OOD-clamped — visible as the step discontinuities at θ = ±5 in
-  every learned-cell η-curve, contributing the identical 34
-  discontinuity-count across all four learned_intp cells.
+  every learned-cell η-curve, contributing a discontinuity-count of
+  34 in PL/MX/FR learned_intp cells (38 in OT — see note in the
+  per-scheme table above for the extra OT-specific kinks).
 - **Single sandbox**. All numbers here are at μ₀=0, σ₀=σ=1, w=0.5.
   Asymmetric (μ₀ ≠ 0 or σ₀ ≠ σ) sandboxes might shift the headline
   ranking — the FR `dyn_numerical` collapse in particular is sandbox-
