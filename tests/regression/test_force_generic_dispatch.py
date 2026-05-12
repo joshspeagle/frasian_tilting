@@ -25,6 +25,10 @@ import pytest
 
 from frasian.models.distributions import NormalDistribution
 from frasian.models.normal_normal import NormalNormalModel
+from frasian.statistics.lrt import LRTStatistic
+from frasian.statistics.lrto import LRTOStatistic
+from frasian.statistics.score import ScoreStatistic
+from frasian.statistics.scoreo import ScoreoStatistic
 from frasian.statistics.wald import WaldStatistic
 from frasian.statistics.waldo import WaldoStatistic
 
@@ -74,6 +78,67 @@ class TestWaldForceGeneric:
 
 
 @pytest.mark.L2
+class TestLRTForceGeneric:
+    """Closed-form NN dispatch is identical to Wald (Derivation Step 3 of
+    `docs/methods/lrt.md`); generic path agrees within numerical tolerance.
+    Pins:
+      1. `cell_name` discriminates `"lrt"` vs `"lrt[generic]"`.
+      2. `force_generic=True` actually hits `_generic_pvalue` /
+         `_generic_confidence_interval`.
+      3. Closed-form and generic p-values / CIs agree on NN.
+      4. `acceptance_region` raises under `force_generic=True`.
+    """
+
+    def test_cell_name(self):
+        assert LRTStatistic().cell_name == "lrt"
+        assert LRTStatistic(force_generic=True).cell_name == "lrt[generic]"
+
+    def test_pvalue_uses_generic_on_nn(self):
+        model = NormalNormalModel(sigma=1.0)
+        data = np.asarray([0.5])
+        theta = 0.2
+        stat_default = LRTStatistic()
+        stat_generic = LRTStatistic(force_generic=True)
+        p_default = float(stat_default.pvalue(theta, data, model))
+        p_forced = float(stat_generic.pvalue(theta, data, model))
+        # force_generic=True should hit the generic helper exactly.
+        p_via_generic = float(stat_default._generic_pvalue(theta, data, model))
+        assert abs(p_forced - p_via_generic) < 1e-12, (
+            f"forced={p_forced}, direct generic={p_via_generic}"
+        )
+        # Closed-form and generic agree on NN.
+        assert abs(p_default - p_forced) < 1e-10
+
+    def test_pvalue_matches_wald_on_nn(self):
+        """tau_LRT == tau_Wald exactly on NN: pvalues coincide on both paths."""
+        model = NormalNormalModel(sigma=1.0)
+        data = np.asarray([0.5])
+        for theta in (-1.0, 0.0, 0.5, 1.7):
+            p_lrt_cf = float(LRTStatistic().pvalue(theta, data, model))
+            p_lrt_g = float(LRTStatistic(force_generic=True).pvalue(theta, data, model))
+            p_wald = float(WaldStatistic().pvalue(theta, data, model))
+            assert abs(p_lrt_cf - p_wald) < 1e-12
+            assert abs(p_lrt_g - p_wald) < 1e-10
+
+    @pytest.mark.parametrize("alpha", [0.05, 0.10])
+    def test_ci_uses_generic_on_nn(self, alpha):
+        model = NormalNormalModel(sigma=1.0)
+        data = np.asarray([0.5])
+        cf = LRTStatistic().confidence_interval(alpha, data, model)
+        gn = LRTStatistic(force_generic=True).confidence_interval(alpha, data, model)
+        assert abs(cf[0] - gn[0]) < 1e-6
+        assert abs(cf[1] - gn[1]) < 1e-6
+
+    def test_acceptance_region_raises_under_force_generic(self):
+        model = NormalNormalModel(sigma=1.0)
+        # Default (force_generic=False): closed-form path returns a region.
+        LRTStatistic().acceptance_region(0.05, 0.0, model)
+        # force_generic=True: no generic data-space inversion exists.
+        with pytest.raises(NotImplementedError, match="no generic path"):
+            LRTStatistic(force_generic=True).acceptance_region(0.05, 0.0, model)
+
+
+@pytest.mark.L2
 class TestWaldoForceGeneric:
     def test_cell_name(self):
         assert WaldoStatistic().cell_name == "waldo"
@@ -116,6 +181,251 @@ class TestWaldoForceGeneric:
         WaldoStatistic().acceptance_region(0.05, 0.0, model, prior)
         with pytest.raises(NotImplementedError, match="no generic path"):
             WaldoStatistic(force_generic=True).acceptance_region(0.05, 0.0, model, prior)
+
+
+@pytest.mark.L2
+class TestLRTOForceGeneric:
+    """LRTO closed-form NN+Normal == WALDO (Derivation Step 3); generic
+    path agrees within MC noise. Pins:
+      1. `cell_name` discriminates `"lrto"` vs `"lrto[generic]"`.
+      2. `force_generic=True` actually hits the generic helpers.
+      3. Closed-form and generic p-values / CIs agree on NN.
+      4. Closed-form lrto.pvalue == waldo.pvalue exactly.
+      5. `acceptance_region` raises under `force_generic=True`.
+    """
+
+    def test_cell_name(self):
+        assert LRTOStatistic().cell_name == "lrto"
+        assert LRTOStatistic(force_generic=True).cell_name == "lrto[generic]"
+
+    def test_pvalue_uses_generic_on_nn(self):
+        model = NormalNormalModel(sigma=1.0)
+        prior = NormalDistribution(loc=0.0, scale=1.0)
+        data = np.asarray([0.5])
+        theta = 0.2
+        stat_default = LRTOStatistic()
+        stat_generic = LRTOStatistic(force_generic=True, n_mc=2000)
+        p_default = float(stat_default.pvalue(theta, data, model, prior))
+        p_forced = float(stat_generic.pvalue(theta, data, model, prior))
+        # MC-vs-closed-form agreement: ~0.022 SE at p~0.5 with n_mc=2000.
+        assert abs(p_default - p_forced) < 0.05, (
+            f"closed-form={p_default}, generic-forced={p_forced}"
+        )
+
+    def test_pvalue_matches_waldo_on_nn_closed_form(self):
+        """tau_LRTO == tau_WALDO pointwise on NN+Normal (Derivation Step 3);
+        the closed-form p-values must coincide to floating-point precision."""
+        model = NormalNormalModel(sigma=1.0)
+        prior = NormalDistribution(loc=0.0, scale=1.0)
+        data = np.asarray([0.5])
+        for theta in (-1.0, 0.0, 0.5, 1.7):
+            p_lrto = float(LRTOStatistic().pvalue(theta, data, model, prior))
+            p_waldo = float(WaldoStatistic().pvalue(theta, data, model, prior))
+            assert abs(p_lrto - p_waldo) < 1e-12, (
+                f"theta={theta}: lrto={p_lrto}, waldo={p_waldo}"
+            )
+
+    @pytest.mark.parametrize("alpha", [0.05, 0.10])
+    def test_ci_uses_generic_on_nn(self, alpha):
+        model = NormalNormalModel(sigma=1.0)
+        prior = NormalDistribution(loc=0.0, scale=1.0)
+        data = np.asarray([0.5])
+        cf = LRTOStatistic().confidence_interval(alpha, data, model, prior)
+        gn = LRTOStatistic(force_generic=True, n_mc=2000).confidence_interval(
+            alpha, data, model, prior
+        )
+        # MC noise; same tolerances as WALDO's analogous test.
+        assert abs(cf[0] - gn[0]) < 0.25, f"lower: cf={cf[0]}, gn={gn[0]}"
+        assert abs(cf[1] - gn[1]) < 0.25, f"upper: cf={cf[1]}, gn={gn[1]}"
+
+    def test_acceptance_region_raises_under_force_generic(self):
+        model = NormalNormalModel(sigma=1.0)
+        prior = NormalDistribution(loc=0.0, scale=1.0)
+        # Default (force_generic=False): closed-form path returns a region.
+        LRTOStatistic().acceptance_region(0.05, 0.0, model, prior)
+        # force_generic=True: no generic data-space inversion exists.
+        with pytest.raises(NotImplementedError, match="no generic path"):
+            LRTOStatistic(force_generic=True).acceptance_region(
+                0.05, 0.0, model, prior
+            )
+
+
+@pytest.mark.L2
+class TestScoreForceGeneric:
+    """Score closed-form NN == Wald == LRT (Derivation Step 2); generic
+    path agrees within numerical tolerance. Pins:
+      1. `cell_name` discriminates `"score"` vs `"score[generic]"`.
+      2. `force_generic=True` actually hits the generic helpers.
+      3. Closed-form and generic p-values / CIs agree on NN.
+      4. Closed-form score.pvalue == wald.pvalue == lrt.pvalue exactly.
+      5. `acceptance_region` raises under `force_generic=True`.
+    """
+
+    def test_cell_name(self):
+        assert ScoreStatistic().cell_name == "score"
+        assert ScoreStatistic(force_generic=True).cell_name == "score[generic]"
+
+    def test_pvalue_uses_generic_on_nn(self):
+        model = NormalNormalModel(sigma=1.0)
+        data = np.asarray([0.5])
+        theta = 0.2
+        stat_default = ScoreStatistic()
+        stat_generic = ScoreStatistic(force_generic=True)
+        p_default = float(stat_default.pvalue(theta, data, model))
+        p_forced = float(stat_generic.pvalue(theta, data, model))
+        # JAX autograd on a Gaussian likelihood is exact (FP identity).
+        assert abs(p_default - p_forced) < 1e-12, (
+            f"closed-form={p_default}, generic-forced={p_forced}"
+        )
+
+    def test_pvalue_matches_wald_and_lrt_on_nn(self):
+        """tau_Score == tau_Wald == tau_LRT pointwise on NN
+        (Derivation Step 2); the closed-form p-values coincide to FP."""
+        model = NormalNormalModel(sigma=1.0)
+        data = np.asarray([0.5])
+        for theta in (-1.0, 0.0, 0.5, 1.7):
+            p_score = float(ScoreStatistic().pvalue(theta, data, model))
+            p_wald = float(WaldStatistic().pvalue(theta, data, model))
+            p_lrt = float(LRTStatistic().pvalue(theta, data, model))
+            assert abs(p_score - p_wald) < 1e-12, (
+                f"theta={theta}: score={p_score}, wald={p_wald}"
+            )
+            assert abs(p_score - p_lrt) < 1e-12, (
+                f"theta={theta}: score={p_score}, lrt={p_lrt}"
+            )
+
+    @pytest.mark.parametrize("alpha", [0.05, 0.10])
+    def test_ci_uses_generic_on_nn(self, alpha):
+        model = NormalNormalModel(sigma=1.0)
+        data = np.asarray([0.5])
+        cf = ScoreStatistic().confidence_interval(alpha, data, model)
+        gn = ScoreStatistic(force_generic=True).confidence_interval(
+            alpha, data, model
+        )
+        # Generic uses brentq; agreement to within brentq xtol.
+        assert abs(cf[0] - gn[0]) < 1e-6, f"lower: cf={cf[0]}, gn={gn[0]}"
+        assert abs(cf[1] - gn[1]) < 1e-6, f"upper: cf={cf[1]}, gn={gn[1]}"
+
+    def test_acceptance_region_raises_under_force_generic(self):
+        model = NormalNormalModel(sigma=1.0)
+        ScoreStatistic().acceptance_region(0.05, 0.0, model)
+        with pytest.raises(NotImplementedError, match="no generic path"):
+            ScoreStatistic(force_generic=True).acceptance_region(
+                0.05, 0.0, model
+            )
+
+    def test_force_generic_escape_hatch_for_subclassed_nn(self):
+        """Skeptic finding #9: subclassing `NormalNormalModel` to
+        override `likelihood` (but not `fingerprint`) silently
+        routes through the closed-form path. `force_generic=True`
+        is the documented escape hatch — pin its contract so a
+        future closed-form dispatch refactor cannot silently
+        break it.
+
+        We use a `_WeirdNN` subclass whose `likelihood(data)`
+        evaluates against `data + 1` rather than `data`. Then:
+          - closed-form path returns the formula with `data` (the
+            override is ignored)
+          - generic path with `force_generic=True` exercises the
+            overridden likelihood and gives a different answer
+        """
+
+        class _WeirdNN(NormalNormalModel):
+            def likelihood(self, data):
+                # Shift data by +1 before building the likelihood —
+                # an honest subclass override that the closed-form
+                # dispatch will ignore.
+                return super().likelihood(np.asarray(data) + 1.0)
+
+        model = _WeirdNN(sigma=1.0)
+        data = np.asarray([0.5])
+        theta = 0.2
+
+        # Closed-form ignores the override (uses bare D, theta, sigma).
+        p_closed = float(ScoreStatistic().pvalue(theta, data, model))
+        # Generic honours the override (uses the shifted likelihood).
+        p_generic = float(
+            ScoreStatistic(force_generic=True).pvalue(theta, data, model)
+        )
+        # These MUST differ — if they don't, force_generic isn't
+        # actually routing through the override.
+        assert abs(p_closed - p_generic) > 1e-3, (
+            f"closed-form path silently honoured the subclass override? "
+            f"p_closed={p_closed}, p_generic={p_generic}"
+        )
+
+
+@pytest.mark.L2
+class TestScoreoForceGeneric:
+    """Scoreo closed-form NN+Normal == WALDO == LRTO (Bayesian trinity
+    collapse, Derivation Step 3); generic path agrees within MC noise.
+    Pins:
+      1. `cell_name` discriminates `"scoreo"` vs `"scoreo[generic]"`.
+      2. `force_generic=True` actually hits the generic helpers.
+      3. Closed-form / generic agreement on NN.
+      4. Closed-form scoreo == waldo == lrto exactly.
+      5. `acceptance_region` raises under `force_generic=True`.
+    """
+
+    def test_cell_name(self):
+        assert ScoreoStatistic().cell_name == "scoreo"
+        assert ScoreoStatistic(force_generic=True).cell_name == "scoreo[generic]"
+
+    def test_pvalue_uses_generic_on_nn(self):
+        model = NormalNormalModel(sigma=1.0)
+        prior = NormalDistribution(loc=0.0, scale=1.0)
+        data = np.asarray([0.5])
+        theta = 0.2
+        stat_default = ScoreoStatistic()
+        stat_generic = ScoreoStatistic(force_generic=True, n_mc=2000)
+        p_default = float(stat_default.pvalue(theta, data, model, prior))
+        p_forced = float(stat_generic.pvalue(theta, data, model, prior))
+        # MC-vs-closed-form: ~0.022 SE at p~0.5 with n_mc=2000.
+        assert abs(p_default - p_forced) < 0.05, (
+            f"closed-form={p_default}, generic-forced={p_forced}"
+        )
+
+    def test_pvalue_matches_bayesian_trinity_on_nn(self):
+        """tau_Scoreo == tau_WALDO == tau_LRTO pointwise on NN+Normal
+        closed form (Derivation Step 3)."""
+        from frasian.statistics.lrto import LRTOStatistic
+        from frasian.statistics.waldo import WaldoStatistic
+
+        model = NormalNormalModel(sigma=1.0)
+        prior = NormalDistribution(loc=0.0, scale=1.0)
+        data = np.asarray([0.5])
+        for theta in (-1.0, 0.0, 0.5, 1.7):
+            p_scoreo = float(ScoreoStatistic().pvalue(theta, data, model, prior))
+            p_waldo = float(WaldoStatistic().pvalue(theta, data, model, prior))
+            p_lrto = float(LRTOStatistic().pvalue(theta, data, model, prior))
+            assert abs(p_scoreo - p_waldo) < 1e-12, (
+                f"theta={theta}: scoreo={p_scoreo}, waldo={p_waldo}"
+            )
+            assert abs(p_scoreo - p_lrto) < 1e-12, (
+                f"theta={theta}: scoreo={p_scoreo}, lrto={p_lrto}"
+            )
+
+    @pytest.mark.parametrize("alpha", [0.05, 0.10])
+    def test_ci_uses_generic_on_nn(self, alpha):
+        model = NormalNormalModel(sigma=1.0)
+        prior = NormalDistribution(loc=0.0, scale=1.0)
+        data = np.asarray([0.5])
+        cf = ScoreoStatistic().confidence_interval(alpha, data, model, prior)
+        gn = ScoreoStatistic(force_generic=True, n_mc=2000).confidence_interval(
+            alpha, data, model, prior
+        )
+        # MC noise; same tolerances as the parallel waldo/lrto tests.
+        assert abs(cf[0] - gn[0]) < 0.25, f"lower: cf={cf[0]}, gn={gn[0]}"
+        assert abs(cf[1] - gn[1]) < 0.25, f"upper: cf={cf[1]}, gn={gn[1]}"
+
+    def test_acceptance_region_raises_under_force_generic(self):
+        model = NormalNormalModel(sigma=1.0)
+        prior = NormalDistribution(loc=0.0, scale=1.0)
+        ScoreoStatistic().acceptance_region(0.05, 0.0, model, prior)
+        with pytest.raises(NotImplementedError, match="no generic path"):
+            ScoreoStatistic(force_generic=True).acceptance_region(
+                0.05, 0.0, model, prior
+            )
 
 
 @pytest.mark.L2

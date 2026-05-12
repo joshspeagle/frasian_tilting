@@ -1,72 +1,178 @@
-"""Property tests for LRTStatistic (stub).
+"""Property tests for the LRTStatistic.
 
-Audit P0-18: also pin that the stub *raises* NotImplementedError on
-every protocol method, rather than silently returning a wrong value.
+Invariants (from `docs/methods/lrt.md` Derivation):
+  1. p in [0, 1] for all inputs.
+  2. tau_LRT >= 0 (MLE maximises the loglikelihood).
+  3. p(theta_hat) == 1 (mode property).
+  4. NN equivalence: lrt.pvalue == wald.pvalue elementwise (atol 1e-12).
+  5. NN equivalence: lrt.CI == wald.CI elementwise (atol 1e-8).
+  6. Exact chi^2_1 calibration under H0 on NN (statistical L3).
+  7. Monotonicity: p(theta) strictly decreasing in |theta - D|.
+  8. accepts_tilting: only `identity` returns True.
 """
 
 from __future__ import annotations
 
 import numpy as np
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
+from scipy import stats
 
-from frasian.models.distributions import NormalDistribution
 from frasian.models.normal_normal import NormalNormalModel
 from frasian.statistics.lrt import LRTStatistic
+from frasian.statistics.wald import WaldStatistic
+from frasian.tilting.identity import IdentityTilting
 
-_STUB_REASON = "stub - see docs/methods/lrt.md"
+_THETA = st.floats(min_value=-5.0, max_value=5.0, allow_nan=False)
+_D = st.floats(min_value=-5.0, max_value=5.0, allow_nan=False)
+_SIGMA = st.floats(min_value=0.2, max_value=3.0, allow_nan=False)
+_ALPHA = st.floats(min_value=0.01, max_value=0.5, allow_nan=False)
 
 
 @pytest.mark.L1
 @pytest.mark.properties
 class TestLRTInvariants:
-    @pytest.mark.skip(reason=_STUB_REASON)
-    def test_pvalue_in_unit_interval(self):
-        """p-value in [0, 1] for all inputs."""
+    @given(theta=_THETA, D=_D, sigma=_SIGMA)
+    @settings(max_examples=100, deadline=None)
+    def test_pvalue_in_unit_interval(self, theta, D, sigma):
+        model = NormalNormalModel(sigma=sigma)
+        p = LRTStatistic().pvalue(theta, np.asarray([D]), model)
+        assert 0.0 <= float(p) <= 1.0
 
-    @pytest.mark.skip(reason=_STUB_REASON)
-    def test_pvalue_at_mle_equals_one(self):
-        """pvalue(theta=MLE) = 1 (mode property)."""
+    @given(theta=_THETA, D=_D, sigma=_SIGMA)
+    @settings(max_examples=100, deadline=None)
+    def test_tau_nonnegative(self, theta, D, sigma):
+        model = NormalNormalModel(sigma=sigma)
+        tau = LRTStatistic().evaluate(theta, np.asarray([D]), model)
+        assert float(tau) >= 0.0
 
-    @pytest.mark.skip(reason=_STUB_REASON)
-    def test_matches_wald_on_normal_location(self):
-        """On the Normal-location sandbox, lrt.pvalue == wald.pvalue."""
+    @pytest.mark.parametrize("force_generic", [False, True])
+    @given(D=_D, sigma=_SIGMA)
+    @settings(max_examples=50, deadline=None)
+    def test_pvalue_at_mle_equals_one(self, force_generic, D, sigma):
+        """For NN the MLE equals D, so p(D) == 1. Exercised on both
+        closed-form and generic paths so the non-negativity clamp in
+        `_generic_evaluate` can't mask a regression at the mode."""
+        model = NormalNormalModel(sigma=sigma)
+        p = float(LRTStatistic(force_generic=force_generic).pvalue(
+            D, np.asarray([D]), model
+        ))
+        assert p == pytest.approx(1.0, abs=1e-12)
 
-    @pytest.mark.skip(reason=_STUB_REASON)
-    def test_uniform_under_h0(self):
-        """Under H0, p-values are Uniform[0, 1] (KS test)."""
+    @given(theta=_THETA, D=_D, sigma=_SIGMA)
+    @settings(max_examples=100, deadline=None)
+    def test_matches_wald_pvalue_on_normal_normal(self, theta, D, sigma):
+        """Invariant 4: NN exact equivalence with Wald p-value (atol 1e-12)."""
+        model = NormalNormalModel(sigma=sigma)
+        data = np.asarray([D])
+        p_lrt = float(LRTStatistic().pvalue(theta, data, model))
+        p_wald = float(WaldStatistic().pvalue(theta, data, model))
+        assert p_lrt == pytest.approx(p_wald, abs=1e-12)
 
-    @pytest.mark.skip(reason=_STUB_REASON)
-    def test_ci_matches_wald_on_normal_location(self):
-        """On Normal-location, lrt.confidence_interval == wald.CI."""
+    @given(alpha=_ALPHA, D=_D, sigma=_SIGMA)
+    @settings(max_examples=50, deadline=None)
+    def test_matches_wald_ci_on_normal_normal(self, alpha, D, sigma):
+        """Invariant 5: NN exact equivalence with Wald CI (atol 1e-8)."""
+        model = NormalNormalModel(sigma=sigma)
+        data = np.asarray([D])
+        lo_lrt, hi_lrt = LRTStatistic().confidence_interval(alpha, data, model)
+        lo_wald, hi_wald = WaldStatistic().confidence_interval(alpha, data, model)
+        assert lo_lrt == pytest.approx(lo_wald, abs=1e-8)
+        assert hi_lrt == pytest.approx(hi_wald, abs=1e-8)
+
+    @given(D=_D, sigma=_SIGMA)
+    @settings(max_examples=50, deadline=None)
+    def test_pvalue_monotone_in_distance(self, D, sigma):
+        """Invariant 7: p(theta) strictly decreasing in |theta - D| on NN."""
+        model = NormalNormalModel(sigma=sigma)
+        data = np.asarray([D])
+        # Three points: theta1 closer to D than theta2.
+        theta1 = D + 0.3 * sigma
+        theta2 = D + 1.5 * sigma
+        p1 = float(LRTStatistic().pvalue(theta1, data, model))
+        p2 = float(LRTStatistic().pvalue(theta2, data, model))
+        assert p1 > p2
+
+    def test_wrong_mle_triggers_warning(self):
+        """Generic-path `_generic_evaluate` warns and clamps when
+        `model.mle` returns a non-maximiser (skeptic finding #3).
+
+        We wrap NormalNormalModel and override `mle` to return a fixed
+        non-MLE point (true MLE = D = 0.5; we return 5.0). Evaluating
+        `tau_LRT` at theta = D gives `tau = -2 [ll(D) - ll(5.0)] < 0`,
+        which should fire the RuntimeWarning and clamp to 0.
+        """
+        import warnings
+
+        class _WrongMLEModel(NormalNormalModel):
+            def mle(self, data):  # noqa: D401, override
+                # Return a non-MLE point on purpose.
+                return np.float64(5.0)
+
+        model = _WrongMLEModel(sigma=1.0)
+        data = np.asarray([0.5])  # true MLE = 0.5
+        stat = LRTStatistic(force_generic=True)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", RuntimeWarning)
+            tau = float(stat.evaluate(0.5, data, model))
+        assert tau == 0.0, f"clamp should drive tau to 0; got {tau}"
+        runtime_warnings = [w for w in caught if issubclass(w.category, RuntimeWarning)]
+        assert len(runtime_warnings) >= 1, "expected RuntimeWarning about wrong MLE"
+        assert "not returning the true MLE" in str(runtime_warnings[0].message)
+
+    def test_accepts_only_identity_tilting(self):
+        """Invariant 8: only `identity` tilting accepted (LRT ignores prior).
+
+        Mirrors `wald`'s contract. Hand-picks `identity`, `power_law`, `ot`
+        (the implemented non-identity schemes); stub tiltings are not
+        instantiable with default args.
+        """
+        from frasian.tilting.ot import OTTilting
+        from frasian.tilting.power_law import PowerLawTilting
+
+        stat = LRTStatistic()
+        assert stat.accepts_tilting(IdentityTilting()) is True
+        assert stat.accepts_tilting(PowerLawTilting()) is False
+        assert stat.accepts_tilting(OTTilting()) is False
+        # Anything without a `name` attribute is also rejected.
+        class _Dummy:
+            pass
+        assert stat.accepts_tilting(_Dummy()) is False
 
 
-@pytest.mark.L1
-@pytest.mark.properties
-class TestLRTStubActuallyRaises:
-    """Audit P0-18: pin that each stub method raises NotImplementedError."""
+@pytest.mark.L3
+class TestLRTUniformPvalueUnderH0:
+    """Statistical-tier: LRT p-values are Uniform[0,1] under H0 on NN.
 
-    @pytest.fixture
-    def fixtures(self):
-        model = NormalNormalModel(sigma=1.0)
-        prior = NormalDistribution(loc=0.0, scale=1.0)
-        return model, prior
+    By Derivation Step 4 (`docs/methods/lrt.md`) this is exact on NN, not
+    asymptotic. KS test threshold: 0.01 (matches Wald's analogous test).
+    """
 
-    def test_evaluate_raises(self, fixtures):
-        model, prior = fixtures
-        with pytest.raises(NotImplementedError, match=r"lrt"):
-            LRTStatistic().evaluate(0.5, np.asarray([1.0]), model, prior)
+    def test_ks_uniform(self):
+        rng = np.random.default_rng(42)
+        sigma = 1.0
+        theta_true = 0.7
+        n = 5000
+        Ds = rng.normal(loc=theta_true, scale=sigma, size=n)
+        model = NormalNormalModel(sigma=sigma)
+        ps = np.array(
+            [float(LRTStatistic().pvalue(theta_true, np.asarray([D]), model)) for D in Ds]
+        )
+        ks_stat, ks_p = stats.kstest(ps, "uniform")
+        assert ks_p > 0.01, f"KS p-value too low: {ks_p}, ks_stat={ks_stat}"
 
-    def test_pvalue_raises(self, fixtures):
-        model, prior = fixtures
-        with pytest.raises(NotImplementedError, match=r"lrt"):
-            LRTStatistic().pvalue(0.5, np.asarray([1.0]), model, prior)
-
-    def test_acceptance_region_raises(self, fixtures):
-        model, prior = fixtures
-        with pytest.raises(NotImplementedError, match=r"lrt"):
-            LRTStatistic().acceptance_region(0.05, 0.5, model, prior)
-
-    def test_confidence_interval_raises(self, fixtures):
-        model, prior = fixtures
-        with pytest.raises(NotImplementedError, match=r"lrt"):
-            LRTStatistic().confidence_interval(0.05, np.asarray([1.0]), model, prior)
+    def test_tau_chi2_one(self):
+        """tau_LRT ~ chi^2_1 exactly under H0 on NN (Derivation Step 4)."""
+        rng = np.random.default_rng(7)
+        sigma = 1.0
+        theta_true = -0.3
+        n = 5000
+        Ds = rng.normal(loc=theta_true, scale=sigma, size=n)
+        model = NormalNormalModel(sigma=sigma)
+        taus = np.array(
+            [float(LRTStatistic().evaluate(theta_true, np.asarray([D]), model)) for D in Ds]
+        )
+        ks_stat, ks_p = stats.kstest(taus, "chi2", args=(1,))
+        assert ks_p > 0.01, f"chi^2_1 KS p-value too low: {ks_p}, ks_stat={ks_stat}"
