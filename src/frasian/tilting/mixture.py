@@ -254,9 +254,13 @@ def _mixture_mode_2gauss_vec(
     For each replicate i, builds a shared grid over the joint support
     `[min(μ₁,μ₂) − 4σ_max, max(μ₁,μ₂) + 4σ_max]` and returns the grid
     argmax of `log q_η`. Skips the `minimize_scalar` polish — at
-    n_grid=257 the residual error in the mode is < grid spacing
-    (typically a few × 10⁻²σ), which propagates to a < 10⁻³ error in
-    `log q(θ_MAP)` — well below the MC noise floor of `(k+1)/(n+1)`.
+    n_grid=257 the half-spacing is ~0.015·σ_max (range ≈ 8σ_max + |μ₁−μ₂|;
+    257 points gives spacing ≈ range / 256 ≈ 0.031·σ_max minimum, half ≈
+    0.015·σ_max), propagating to a worst-case error δθ²·I(θ_MAP)/2 ≈ 1e-3
+    in `log q(θ_MAP)` in pathological narrow-σ regimes. This is below the
+    MC noise floor `1/n_mc ≈ 5e-3` at the default `n_mc=200` but a tighter
+    MC count would expose it — use the scalar `_mixture_mode_2gauss` (with
+    brent polish) for high-precision contexts.
     """
     if eta <= 0.0:
         return np.asarray(mu1_arr, dtype=np.float64)
@@ -311,7 +315,7 @@ def _mixture_tilted_pvalue_lrto_or_scoreo_scalar(
     sigma: float,
     statistic_name: str,
     *,
-    n_mc: int = 2000,
+    n_mc: int = _GENERIC_TILTED_PVALUE_N_MC,
     derived_seed: int = 0xC0FFEE,
 ) -> float:
     """MC tilted-LRTO / tilted-SCOREO p-value on NN+Normal (2-Gaussian mix).
