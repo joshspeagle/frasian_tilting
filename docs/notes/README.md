@@ -147,3 +147,15 @@ changed" section if they care to.
   admissibility); `fr[dyn_numerical]` reproduces bare WALDO at w=0.5.
   `fr_dyn_numerical_generic` deferred (~5h to run; math-validation
   infrastructure per the FR brief).
+- [2026-05-12-tilted-trinity-derivation.md](./2026-05-12-tilted-trinity-derivation.md) —
+  Math foundation for the tilted-lrt-score-pairs plan: on any
+  Gaussian q, `tau_WALDO == tau_LRTO == tau_SCOREO` exactly (closed
+  form). PL, OT, and FR all keep q_η Gaussian for every admissible η
+  on NN+Normal, so `lrto`/`scoreo` route to the existing
+  tilted-WALDO formula. MX is the only scheme where q_η is a
+  genuine 2-Gaussian mixture, so the trinity decouples and needs
+  mixture-aware mode-finding + responsibility-weighted score /
+  information. Includes the 2-Gaussian mixture analytic
+  derivatives (responsibilities + `U(θ)` + `I(θ)`) and the shared
+  H_0 reference (`D' ~ likelihood(·|θ_0)`) that the MC scaffold
+  reuses across all three statistics.
