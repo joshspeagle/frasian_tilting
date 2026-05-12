@@ -467,14 +467,16 @@ class DynamicNumericalEtaSelector:
     # not on the request grid — so the cache stores eta on a single dense
     # grid per such tuple, and `np.interp`s for any request resolution.
     cache_grid_n: int = 100
-    # Padding factor: when first computing the cached eta for a given
-    # (model, prior, scheme, statistic, alpha), build the grid over
-    # `(req_lo - pad·width, req_hi + pad·width)` where `width = req_hi -
-    # req_lo`. With pad=0.5 and a typical D-centered scan request of
-    # width 16σ, the cached extent is 32σ wide — covering D±8σ scans
-    # for any D within ±8σ of the original request, eliminating per-D
-    # recomputes for the dynamic-CI use case.
-    cache_pad_factor: float = 0.5
+    # Stored-grid extent in units of σ from μ₀. Deterministic given
+    # (model, prior) — does NOT depend on the first request's endpoints.
+    # The dynamic-CI scan uses request bounds D ± `search_mult`·σ
+    # (default 8σ); boundary-retry doubles to 16σ. With K=24, the cached
+    # range comfortably covers D values up to ±8σ from μ₀ + their
+    # 16σ-half-width retry boxes. Requests beyond ±K·σ trigger a
+    # one-time extension; in practice the framework never reaches them.
+    # The deterministic property is required for cache order-independence
+    # (`test_cache_order_independence`).
+    cache_grid_extent_sigmas: float = 24.0
     # Disk-backed L2 cache: persists across script runs at
     # `<repo_root>/artifacts/eta_lookups/dyn_numerical_<24-char-hash>.npz`
     # (gitignored, parallels the trained EtaArtifacts). Set False to
@@ -572,6 +574,7 @@ class DynamicNumericalEtaSelector:
             repr(model_fp),
             repr(prior_fp),
             str(self.cache_grid_n),
+            f"{self.cache_grid_extent_sigmas:.4g}",
         )
         s = "|".join(components)
         return hashlib.sha256(s.encode()).hexdigest()[:24]
@@ -641,6 +644,24 @@ class DynamicNumericalEtaSelector:
                 except Exception:
                     pass
 
+    @staticmethod
+    def _deterministic_extent(model, prior, K: float) -> tuple[float, float]:
+        """Compute the cached-grid extent from (model, prior). Independent
+        of the request's endpoints, so two selectors processing the same
+        (model, prior) under different request orderings end up with
+        bit-identical stored grids — required by
+        `test_cache_order_independence`.
+
+        For Normal-Normal: μ₀ = prior.loc, σ = model.sigma. Range:
+        `[μ₀ − K·σ, μ₀ + K·σ]`. For non-NN priors / models without these
+        attributes, fall back to (0, 1)-centred σ=1 — works for any
+        dimensionless / unit-scale parameter space.
+        """
+        sigma = float(getattr(model, "sigma", 1.0))
+        mu0 = float(getattr(prior, "loc", 0.0))
+        half = K * sigma
+        return (mu0 - half, mu0 + half)
+
     def select_grid(
         self,
         grid,
@@ -655,9 +676,12 @@ class DynamicNumericalEtaSelector:
 
         η(θ) depends only on `(model, prior, scheme, statistic, alpha)` —
         not on the request grid endpoints. The cache stores a single
-        dense `(theta, eta)` pair per such tuple; in-extent requests are
-        served via `np.interp`. Out-of-extent requests trigger a
-        recompute on the union of the cached and requested ranges.
+        dense `(theta, eta)` pair per such tuple, computed on a
+        deterministic `μ₀ ± cache_grid_extent_sigmas · σ` range that
+        does not depend on which request hits first. In-extent requests
+        are served via `np.interp`. Out-of-extent requests (rare;
+        beyond ±24σ from μ₀ in the default config) extend the range
+        and overwrite the cache entry.
         """
         scheme_name = getattr(scheme, "name", type(scheme).__name__)
         theta_arr = np.asarray(grid, dtype=np.float64)
@@ -676,40 +700,41 @@ class DynamicNumericalEtaSelector:
             if cached is not None:
                 self._cache[key] = cached
 
-        need_compute = True
         if cached is not None:
             cached_grid, cached_eta = cached
             if float(cached_grid[0]) <= req_lo and float(cached_grid[-1]) >= req_hi:
                 # Cached extent covers request — interp and return.
                 return np.interp(theta_arr, cached_grid, cached_eta)
-            # Otherwise: extend the range to cover both cached and request.
-            req_lo = min(req_lo, float(cached_grid[0]))
-            req_hi = max(req_hi, float(cached_grid[-1]))
-
-        if need_compute:
-            # Build a wide grid: (req_lo - pad·W, req_hi + pad·W) with
-            # W = req_hi - req_lo, then `cache_grid_n` linspace points.
-            width = req_hi - req_lo
-            if width <= 0:
-                width = 1.0  # degenerate single-point request; pick a reasonable scale
-            pad = self.cache_pad_factor * width
-            wide_lo = req_lo - pad
-            wide_hi = req_hi + pad
-            wide_grid = np.linspace(wide_lo, wide_hi, self.cache_grid_n)
-            wide_eta = self._inner().select_grid(
-                wide_grid,
-                scheme,
-                model=model,
-                prior=prior,
-                alpha=alpha,
-                statistic=statistic,
+            # Out-of-extent request: extend to cover both cached and request.
+            # This is order-independent only insofar as such requests are
+            # rare (beyond ±24σ from μ₀); typical dynamic-CI scans stay
+            # well within the deterministic extent.
+            wide_lo = min(float(cached_grid[0]), req_lo)
+            wide_hi = max(float(cached_grid[-1]), req_hi)
+        else:
+            # Cache miss: use the deterministic (model, prior)-derived
+            # extent so the stored grid is order-independent.
+            wide_lo, wide_hi = self._deterministic_extent(
+                model, prior, self.cache_grid_extent_sigmas
             )
-            self._cache[key] = (wide_grid, wide_eta)
-            if self.use_disk_cache:
-                self._save_to_disk(key, wide_grid, wide_eta)
-            cached_grid, cached_eta = wide_grid, wide_eta
+            # Edge case: if the request happens to exceed the deterministic
+            # extent on first call (unusual), widen to cover it.
+            wide_lo = min(wide_lo, req_lo)
+            wide_hi = max(wide_hi, req_hi)
 
-        return np.interp(theta_arr, cached_grid, cached_eta)
+        wide_grid = np.linspace(wide_lo, wide_hi, self.cache_grid_n)
+        wide_eta = self._inner().select_grid(
+            wide_grid,
+            scheme,
+            model=model,
+            prior=prior,
+            alpha=alpha,
+            statistic=statistic,
+        )
+        self._cache[key] = (wide_grid, wide_eta)
+        if self.use_disk_cache:
+            self._save_to_disk(key, wide_grid, wide_eta)
+        return np.interp(theta_arr, wide_grid, wide_eta)
 
 
 # Threshold for the runtime safety clamp in `LearnedDynamicEtaSelector`.

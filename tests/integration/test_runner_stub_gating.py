@@ -41,14 +41,15 @@ from frasian.tilting.mixture import MixtureTilting
 class TestIsStubHelper:
     """Pin `_is_stub` against the registry's declared status."""
 
-    def test_stub_tiltings_recognised(self):
-        # MixtureTilting promoted stub -> implemented in 2026-05-09 (Stage A
-        # of mixture-tilting plan). Only FisherRaoTilting remains a stub.
-        assert _is_stub(FisherRaoTilting(), "tilting") is True
-
     def test_implemented_tiltings_not_stub(self):
+        # MixtureTilting promoted stub -> implemented in 2026-05-09 (Stage A
+        # of mixture-tilting plan). FisherRaoTilting promoted in 2026-05-11
+        # (Stage A of fisher-rao-tilting PR; row 14 in CLAUDE.md migration
+        # status). All four tilting schemes are now implemented; the stub
+        # tilting test bucket is empty until a new tilting is registered.
         assert _is_stub(IdentityTilting(), "tilting") is False
         assert _is_stub(MixtureTilting(), "tilting") is False
+        assert _is_stub(FisherRaoTilting(), "tilting") is False
 
     def test_stub_statistics_recognised(self):
         assert _is_stub(LRTStatistic(), "statistic") is True
@@ -59,9 +60,11 @@ class TestIsStubHelper:
         assert _is_stub(WaldoStatistic(), "statistic") is False
 
     def test_class_input_also_works(self):
-        """Helper accepts both classes and instances (cell-runner symmetry)."""
-        assert _is_stub(FisherRaoTilting, "tilting") is True
+        """Helper accepts both classes and instances (cell-runner symmetry).
+        Use a still-stub statistic since no tilting stubs remain."""
+        assert _is_stub(LRTStatistic, "statistic") is True
         assert _is_stub(WaldoStatistic, "statistic") is False
+        assert _is_stub(FisherRaoTilting, "tilting") is False
 
 
 @pytest.mark.L0
@@ -81,9 +84,14 @@ class TestStubsRaiseCleanlyAtProtocolSurface:
         post = model.posterior(np.asarray([1.0]), prior)
         return model, prior, lik, post
 
-    def test_fisher_rao_pvalue_raises_notimplemented(self):
+    def test_fisher_rao_pvalue_returns_finite(self):
+        # FisherRaoTilting.pvalue was a stub raising NotImplementedError
+        # until Stage A of the FR PR (2026-05-11). It now returns a
+        # finite float per the closed-form half-plane geodesic + adaptive
+        # quadrature path. Pin the no-longer-raising contract.
         model, prior, _, _ = self._fixtures()
-        with pytest.raises(NotImplementedError):
-            FisherRaoTilting().pvalue(
-                np.asarray([0.5]), np.asarray([1.0]), model, prior, WaldoStatistic()
-            )
+        p = FisherRaoTilting().pvalue(
+            np.asarray([0.5]), np.asarray([1.0]), model, prior, WaldoStatistic()
+        )
+        assert np.isfinite(p), f"FR pvalue returned non-finite: {p!r}"
+        assert 0.0 <= p <= 1.0, f"FR pvalue out of [0, 1]: {p!r}"
