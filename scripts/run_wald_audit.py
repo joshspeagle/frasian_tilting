@@ -1,6 +1,6 @@
 """Drive the NN x (tilting × statistic) audit.
 
-Flavor families (see ``_FLAVORS`` below for the canonical list; 63
+Flavor families (see ``_FLAVORS`` below for the canonical list; 79
 flavors at commit time):
 
   * Statistic-only flavors (paired with IdentityTilting):
@@ -54,6 +54,25 @@ flavors at commit time):
     smoothness sweeps eta internally, so the cell's selector is
     irrelevant; passing the bare instance avoids duplicate output across
     the numerical / dyn_numerical variants.
+
+  * ``<scheme>_numerical_intp_{lrto, scoreo}`` (added 2026-05-12 for the
+    (scheme × {lrto, scoreo}) audit grid): static integrated_p
+    selector paired with the LRTO/Scoreo statistic. Mirrors the
+    existing ``<scheme>_numerical_intp`` (WALDO) pattern for each of
+    PL/OT/MX/FR. 8 flavors total.
+
+  * ``<scheme>_learned_intp_{lrto, scoreo}`` (added 2026-05-12):
+    Phase G v4 learned dynamic selector paired with LRTO/Scoreo.
+    PL/OT/FR point at new per-statistic checkpoints
+    (``..._phaseC_integrated_p_lrto_v4.eqx`` /
+    ``..._phaseC_integrated_p_scoreo_v4.eqx``) trained against the
+    matching loss objective — byte-identical to the waldo-trained
+    fixtures by trinity collapse but explicitly archived per the
+    audit-grid design. MX reuses the waldo-trained mixture checkpoint
+    because the JAX training kernel can't autodiff through
+    scipy.optimize on mixture+lrto/scoreo; the CIs still differ from
+    ``mx_learned_intp`` (waldo) because the closed-form mixture
+    lrto/scoreo p-value diverges from mixture waldo. 8 flavors total.
 
 Each invocation runs the four experiments at Config.fast() with
 ``n_jobs`` parallelism. Results land at
@@ -265,26 +284,29 @@ def _build_cell(flavor: str):
         return (MixtureTilting(selector=NumericalEtaSelector()),
                 WaldoStatistic(force_generic=True), mx_bare)
     if flavor == "mx_dyn_numerical":
-        return (MixtureTilting(selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)),
+        return (MixtureTilting(selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25, cache_grid_n=25)),
                 WaldoStatistic(force_generic=False), mx_bare)
     if flavor == "mx_dyn_numerical_generic":
-        return (MixtureTilting(selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)),
+        return (MixtureTilting(selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25, cache_grid_n=25)),
                 WaldoStatistic(force_generic=True), mx_bare)
     # Mixture × {lrto, scoreo} with dynamic-numerical η. Unlike PL/OT/FR
     # the closed-form on a 2-Gaussian mixture is genuinely different from
     # WALDO (no trinity collapse), so these cells produce widths that
-    # diverge from `mx_dyn_numerical`.
+    # diverge from `mx_dyn_numerical`. `cache_grid_n=25` keeps the cache-
+    # warming pass tractable — each inner static select costs ~5s on MX
+    # × LRTO/SCOREO, so the default 100-point cache grid would be ~9 min
+    # per first call.
     if flavor == "mx_dyn_numerical_lrto":
-        return (MixtureTilting(selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)),
+        return (MixtureTilting(selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25, cache_grid_n=25)),
                 LRTOStatistic(force_generic=False), mx_bare)
     if flavor == "mx_dyn_numerical_lrto_generic":
-        return (MixtureTilting(selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)),
+        return (MixtureTilting(selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25, cache_grid_n=25)),
                 LRTOStatistic(force_generic=True), mx_bare)
     if flavor == "mx_dyn_numerical_scoreo":
-        return (MixtureTilting(selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)),
+        return (MixtureTilting(selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25, cache_grid_n=25)),
                 ScoreoStatistic(force_generic=False), mx_bare)
     if flavor == "mx_dyn_numerical_scoreo_generic":
-        return (MixtureTilting(selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25)),
+        return (MixtureTilting(selector=DynamicNumericalEtaSelector(n_grid=401, coarse_n=25, cache_grid_n=25)),
                 ScoreoStatistic(force_generic=True), mx_bare)
     # Mixture learned-η variants (added 2026-05-10).
     if flavor == "mx_learned_intp":
@@ -327,6 +349,70 @@ def _build_cell(flavor: str):
     if flavor == "fr_learned_static_w":
         return (FisherRaoTilting(selector=_learned_selector("static_width", scheme="fisher_rao")),
                 WaldoStatistic(force_generic=False), fr_bare)
+    # Static `numerical_intp` × {lrto, scoreo} for each scheme (PL/OT/MX/FR).
+    # Mirrors the existing `pl_numerical_intp` (WALDO) pattern; the static
+    # selector minimises integrated_p once and is then re-used at every
+    # θ for the new statistic.
+    if flavor == "pl_numerical_intp_lrto":
+        return (PowerLawTilting(selector=NumericalEtaSelector(objective="integrated_p")),
+                LRTOStatistic(force_generic=False), pl_bare)
+    if flavor == "pl_numerical_intp_scoreo":
+        return (PowerLawTilting(selector=NumericalEtaSelector(objective="integrated_p")),
+                ScoreoStatistic(force_generic=False), pl_bare)
+    if flavor == "ot_numerical_intp_lrto":
+        return (OTTilting(selector=NumericalEtaSelector(objective="integrated_p")),
+                LRTOStatistic(force_generic=False), ot_bare)
+    if flavor == "ot_numerical_intp_scoreo":
+        return (OTTilting(selector=NumericalEtaSelector(objective="integrated_p")),
+                ScoreoStatistic(force_generic=False), ot_bare)
+    if flavor == "mx_numerical_intp_lrto":
+        return (MixtureTilting(selector=NumericalEtaSelector(objective="integrated_p")),
+                LRTOStatistic(force_generic=False), mx_bare)
+    if flavor == "mx_numerical_intp_scoreo":
+        return (MixtureTilting(selector=NumericalEtaSelector(objective="integrated_p")),
+                ScoreoStatistic(force_generic=False), mx_bare)
+    if flavor == "fr_numerical_intp_lrto":
+        return (FisherRaoTilting(selector=NumericalEtaSelector(objective="integrated_p")),
+                LRTOStatistic(force_generic=False), fr_bare)
+    if flavor == "fr_numerical_intp_scoreo":
+        return (FisherRaoTilting(selector=NumericalEtaSelector(objective="integrated_p")),
+                ScoreoStatistic(force_generic=False), fr_bare)
+    # Learned `learned_intp` × {lrto, scoreo} for each scheme. PL/OT/FR
+    # point at new per-statistic checkpoints (`..._phaseC_integrated_p_lrto_v4.eqx`
+    # / `..._phaseC_integrated_p_scoreo_v4.eqx`) trained against the
+    # lrto/scoreo objective. By the trinity collapse these end up
+    # byte-identical to the waldo-trained ones on PL/OT/FR but are
+    # explicitly archived per the 2026-05-12 audit-grid design.
+    if flavor == "pl_learned_intp_lrto":
+        return (PowerLawTilting(selector=_learned_selector("integrated_p_lrto", scheme="powerlaw")),
+                LRTOStatistic(force_generic=False), pl_bare)
+    if flavor == "pl_learned_intp_scoreo":
+        return (PowerLawTilting(selector=_learned_selector("integrated_p_scoreo", scheme="powerlaw")),
+                ScoreoStatistic(force_generic=False), pl_bare)
+    if flavor == "ot_learned_intp_lrto":
+        return (OTTilting(selector=_learned_selector("integrated_p_lrto", scheme="ot")),
+                LRTOStatistic(force_generic=False), ot_bare)
+    if flavor == "ot_learned_intp_scoreo":
+        return (OTTilting(selector=_learned_selector("integrated_p_scoreo", scheme="ot")),
+                ScoreoStatistic(force_generic=False), ot_bare)
+    if flavor == "fr_learned_intp_lrto":
+        return (FisherRaoTilting(selector=_learned_selector("integrated_p_lrto", scheme="fisher_rao")),
+                LRTOStatistic(force_generic=False), fr_bare)
+    if flavor == "fr_learned_intp_scoreo":
+        return (FisherRaoTilting(selector=_learned_selector("integrated_p_scoreo", scheme="fisher_rao")),
+                ScoreoStatistic(force_generic=False), fr_bare)
+    # MX learned cells reuse the waldo-trained checkpoint at inference
+    # (JAX training kernel can't autodiff through scipy.optimize for
+    # mixture+lrto/scoreo, so no MX-specific lrto/scoreo checkpoint
+    # exists). The CI is genuinely different from `mx_learned_intp`
+    # (waldo) because the closed-form MX-LRTO p-value differs from
+    # MX-WALDO per docs/methods/mixture.md.
+    if flavor == "mx_learned_intp_lrto":
+        return (MixtureTilting(selector=_learned_selector("integrated_p", scheme="mixture")),
+                LRTOStatistic(force_generic=False), mx_bare)
+    if flavor == "mx_learned_intp_scoreo":
+        return (MixtureTilting(selector=_learned_selector("integrated_p", scheme="mixture")),
+                ScoreoStatistic(force_generic=False), mx_bare)
     raise ValueError(f"unknown flavor {flavor!r}")
 
 
@@ -379,6 +465,20 @@ _FLAVORS = [
     "mx_dyn_numerical_scoreo", "mx_dyn_numerical_scoreo_generic",
     "fr_dyn_numerical_lrto", "fr_dyn_numerical_lrto_generic",
     "fr_dyn_numerical_scoreo", "fr_dyn_numerical_scoreo_generic",
+    # numerical_intp × lrto/scoreo: static integrated_p selector with LR/score statistics.
+    "pl_numerical_intp_lrto", "pl_numerical_intp_scoreo",
+    "ot_numerical_intp_lrto", "ot_numerical_intp_scoreo",
+    "mx_numerical_intp_lrto", "mx_numerical_intp_scoreo",
+    "fr_numerical_intp_lrto", "fr_numerical_intp_scoreo",
+    # learned_intp × lrto/scoreo: learned dynamic selector with LR/score statistics.
+    # PL/OT/FR: new checkpoints trained against the lrto/scoreo loss (byte-identical
+    # to the waldo-trained ones by trinity collapse, but explicitly archived per the
+    # 2026-05-12 audit-grid design). MX: reuses the waldo-trained checkpoint at
+    # inference (the JAX training kernel can't trace mixture-lrto/scoreo).
+    "pl_learned_intp_lrto", "pl_learned_intp_scoreo",
+    "ot_learned_intp_lrto", "ot_learned_intp_scoreo",
+    "mx_learned_intp_lrto", "mx_learned_intp_scoreo",
+    "fr_learned_intp_lrto", "fr_learned_intp_scoreo",
 ]
 
 
