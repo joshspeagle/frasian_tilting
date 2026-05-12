@@ -289,9 +289,26 @@ def _mixture_mode_2gauss_vec(
 def _mixture_tau_lrto_2gauss(
     theta: float, eta: float, mu1: float, s1_sq: float, mu2: float, s2_sq: float
 ) -> float:
-    """τ_LRTO = -2 [log q(θ) - log q(θ_MAP)]."""
+    """τ_LRTO = -2 [log q(θ) - log q(θ_MAP)].
+
+    Uses `_mixture_mode_2gauss_vec` (grid-only) for the τ_obs mode-find;
+    the scalar brent-polished `_mixture_mode_2gauss` is kept available
+    for high-precision callers but is ~5× slower per call. At the
+    n_grid=257 default, mode-location error ~0.015·σ_max propagates to
+    log_q error ~1e-3, well below the MC noise floor 1/n_mc ≈ 5e-3 at
+    n_mc=200. See profile notes in commit message (Tier-1 optimization
+    2026-05-12).
+    """
     ll_theta = _mixture_logpdf_2gauss(theta, eta, mu1, s1_sq, mu2, s2_sq)
-    theta_map = _mixture_mode_2gauss(eta, mu1, s1_sq, mu2, s2_sq)
+    # Wrap scalar (mu1, mu2) as 1-element arrays for the vec mode-finder.
+    theta_map_arr = _mixture_mode_2gauss_vec(
+        eta,
+        np.asarray([mu1], dtype=np.float64),
+        s1_sq,
+        np.asarray([mu2], dtype=np.float64),
+        s2_sq,
+    )
+    theta_map = float(theta_map_arr[0])
     ll_map = _mixture_logpdf_2gauss(theta_map, eta, mu1, s1_sq, mu2, s2_sq)
     return max(-2.0 * (ll_theta - ll_map), 0.0)
 
