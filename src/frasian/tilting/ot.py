@@ -543,6 +543,9 @@ def _generic_tilted_mc_reference_batch_ot(
 
         # Build the u-grid (mid-resolution; we don't need the τ helper's
         # full n_grid here because we interpolate back to theta_grid).
+        # Higher than `_GENERIC_TILTED_PVALUE_N_GRID_MC=256` so central-
+        # difference du/dθ has low tail bias; integrate-to-1 quality
+        # validated at ~0.998 in the Task 6 review.
         n_u = 1024
         eps_u = 1.0 / (n_u + 1)
         u_grid = np.linspace(eps_u, 1.0 - eps_u, n_u)
@@ -692,8 +695,10 @@ def _generic_tilted_pvalue_ot(
       `_generic_tilted_t_statistic_ot`. Conservative `(k+1)/(n+1)`
       smoothing. CRN-seeded via blake2b stable hash.
     - statistic_name="lrto" / "scoreo": materialise the q_η log-pdf on a
-      θ-grid (via QuantileMixturePath.logpdf) and dispatch through the
-      shared grid-distribution τ helpers (`_grid_tau_lrto` /
+      θ-grid (via `QuantileMixturePath.logpdf` for the observed τ;
+      vectorised u-space change-of-variables for the MC replicates —
+      see `_generic_tilted_mc_reference_batch_ot`) and dispatch through
+      the shared grid-distribution τ helpers (`_grid_tau_lrto` /
       `_grid_tau_scoreo` from power_law.py). On NN+Normal the
       Gaussian q_η yields trinity-collapse τ_LRTO=τ_SCOREO=τ_WALDO.
     """
@@ -805,8 +810,8 @@ def _generic_tilted_pvalue_ot(
     # GridDistribution construction) + `QuantileMixturePath` (Gauss-
     # Legendre on inverse-CDF) loop with batched cumulative-trapezoid
     # CDF + vectorised inverse-CDF lookup. ~500x speedup at n_mc=200.
-    # For lrto/scoreo, the batch falls back to a per-row QuantileMixturePath
-    # construction (the τ helpers need the full log-pdf row, not just moments).
+    # For lrto/scoreo, the batch uses a vectorised u-space change-of-variables
+    # construction; the observed τ uses a single-row `QuantileMixturePath.logpdf`.
     rng = np.random.default_rng(derived_seed)
     n_obs = int(data_arr.size)
     t_samples, n_collapsed = _generic_tilted_mc_reference_batch_ot(
