@@ -190,7 +190,9 @@ sigma^2`, so
     sigma0=100    tau=0.09003    gap=3.30e-5   gap*sigma0^2 = 0.330
     sigma0=1000   tau=0.0900003  gap=3.30e-7   gap*sigma0^2 = 0.330
 
-Convergence rate is `O(1/sigma_0^2)`; constant matches `lrto` Step 6.
+Convergence rate is `O(1/sigma_0^2)`, the same rate as `lrto`
+Step 6 (the absolute constant is configuration-specific and not
+comparable across briefs).
 
 **Step 7 (H_0 calibration on NN closed form is exact U[0,1]).**
 Since `tau_Scoreo(theta_0; D, prior) == tau_WALDO(theta_0; D,
@@ -199,19 +201,24 @@ prior)` pointwise in `D`, the induced tail probabilities under
 `p = Phi(b - a) + Phi(-a - b)` with `a = |mu_n -
 theta_0|/(w*sigma)`, `b = (1-w)(mu0 - theta_0)/(w*sigma)` is
 therefore exact for Scoreo too — despite the chi^2_1 statement
-failing asymptotically. *KS uniformity (n=50_000):*
+failing asymptotically. *KS uniformity (n=50_000 during
+derivation; the property test runs at n=2000 with a 1e-3
+threshold to flag only true miscalibration):*
 - `(mu0=0, sigma0=1.5, theta0=0.3)`:  KS = 4.16e-3, p = 0.35.
 - `(mu0=1, sigma0=0.5, theta0=-0.2)`: KS = 5.85e-3, p = 0.06.
 - `(mu0=-0.5, sigma0=2.0, theta0=1.0)`: KS = 3.19e-3, p = 0.69.
 
 **Step 8 (generic-path implementation).** For arbitrary smooth
 posterior, `U_post = jax.grad(posterior.logpdf)(theta_0)` and
-`I_post = -jax.hessian(posterior.logpdf)(theta_0)`. No
-optimisation required (cf. lrto's MAP-finding scan). The generic
-Monte-Carlo p-value plumbing is identical to `lrto`: shared
-`_stable_seed`, `obs_state`, `n_mc`, `seed`, `force_generic`.
-Refuses / returns NaN if `I_post(theta_0) <= 0` (local minimum /
-inflection — the statistic is undefined there).
+`I_post = -jax.grad(jax.grad(posterior.logpdf))(theta_0)`
+(equivalent to `jax.hessian` on scalar inputs). No optimisation
+required (cf. lrto's MAP-finding scan). The generic Monte-Carlo
+p-value plumbing is identical to `lrto`: shared `_stable_seed`,
+`obs_state`, `n_mc`, `seed`, `force_generic`. Returns NaN with a
+`RuntimeWarning` if `I_post(theta_0) <= 0` (local minimum /
+inflection — the statistic is undefined there); downstream
+brentq propagates the NaN via its non-finite-midpoint guard and
+the CI falls back to `model.support()` with a `UserWarning`.
 
 **Invariants checked numerically (atol <= 1e-12):**
 - Setting (sigma=1, sigma0=1, mu0=0, D=0.4, theta=0.7): Scoreo =
@@ -235,7 +242,14 @@ inflection — the statistic is undefined there).
 - **Generic path**: any `(Model, Prior)` exposing
   `posterior(data, prior).logpdf` that is JAX-differentiable
   yields a valid CI. Uses `jax.grad` for `U_post`,
-  `jax.hessian` for `I_post`. Cost `O(n_mc)` per brentq probe.
+  `jax.grad(jax.grad)` for `I_post` (equivalent to `jax.hessian`
+  on scalar inputs). Cost `O(n_mc)` per brentq probe **on the
+  Gaussian-posterior fast path** (vectorised via
+  `posterior_moments_batch`); off the fast path the per-row
+  Python loop over `jax.grad(jax.grad)` calls is `O(n_mc)`
+  iterations with a JAX retrace each, which is dramatically
+  slower. Non-conjugate models should override
+  `posterior_moments_batch` for production use.
 
 ## Failure modes
 

@@ -236,7 +236,11 @@ class ScoreoStatistic:
         if prior is None:
             raise ValueError("ScoreoStatistic.evaluate requires a prior (got None).")
         posterior = model.posterior(data, prior)
-        theta_arr = np.atleast_1d(np.asarray(theta0, dtype=np.float64))
+        # Skeptic finding #6: detect scalar input BEFORE atleast_1d so
+        # the shape-restoration check matches `_generic_pvalue`'s pattern.
+        theta_arr_input = np.asarray(theta0, dtype=np.float64)
+        scalar_input = (theta_arr_input.ndim == 0)
+        theta_arr = np.atleast_1d(theta_arr_input)
         tau = np.empty_like(theta_arr)
         worst_nonpos_I = float("inf")
         for i, t in enumerate(theta_arr):
@@ -261,7 +265,7 @@ class ScoreoStatistic:
                 RuntimeWarning,
                 stacklevel=2,
             )
-        if theta_arr.ndim == 0 or (theta_arr.size == 1 and np.ndim(theta0) == 0):
+        if scalar_input:
             return jnp.asarray(float(tau[0]))
         return jnp.asarray(tau)
 
@@ -399,21 +403,43 @@ class ScoreoStatistic:
         # tau_obs(theta) = U_post(theta)^2 / I_post(theta) at each
         # test theta — uses the (theta-dependent) JAX-grad/hessian of
         # the OBSERVED posterior.
+        #
+        # Skeptic findings #1, #2, #3: previously this branch raised
+        # ValueError on I_post(theta) <= 0, which leaked past the brentq
+        # closure (only catches BracketingFailed) and crashed CI
+        # inversion. Unified policy now matches `_generic_evaluate`'s
+        # contract: set NaN + RuntimeWarning; downstream brentq's non-
+        # finite-midpoint guard converts cleanly to BracketingFailed and
+        # the CI-level UserWarning surfaces the failure.
         tau_obs = np.empty(theta_arr.shape, dtype=np.float64)
+        obs_nonpos = False
         for i, t in enumerate(theta_arr):
             U_i, I_i = self._posterior_score_and_info(posterior, float(t))
             if not np.isfinite(I_i) or I_i <= 0.0:
-                raise ValueError(
-                    f"ScoreoStatistic._generic_pvalue: observed posterior has "
-                    f"I_post(theta) <= 0 at theta={float(t)!r} (non-concave); "
-                    f"tau_Scoreo is undefined there."
-                )
-            tau_obs[i] = (U_i * U_i) / I_i
+                tau_obs[i] = np.nan
+                obs_nonpos = True
+            else:
+                tau_obs[i] = (U_i * U_i) / I_i
+        if obs_nonpos:
+            warnings.warn(
+                "ScoreoStatistic._generic_pvalue: observed posterior has "
+                "I_post(theta) <= 0 at one or more test thetas (non-"
+                "concave). Returning NaN for those entries; downstream "
+                "CI inversion will fall back to model.support() with a "
+                "secondary UserWarning.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
         # Per-theta MC reference (each theta gets its own H_0
         # reference; CRN seed shared so brentq probes nest cleanly).
         p_out = np.empty(theta_arr.shape, dtype=np.float64)
+        any_mc_collapse = False
         for i, theta_f in enumerate(theta_arr):
+            if not np.isfinite(tau_obs[i]):
+                # Already flagged; propagate NaN p.
+                p_out[i] = np.nan
+                continue
             tau_ref = self._generic_mc_reference(
                 float(theta_f), n_obs, model, prior, self.n_mc, derived_seed,
                 is_gaussian=is_gaussian,
@@ -421,13 +447,22 @@ class ScoreoStatistic:
             finite = np.isfinite(tau_ref)
             n_eff = int(finite.sum())
             if n_eff == 0:
-                raise ValueError(
-                    f"ScoreoStatistic._generic_pvalue: every MC reference "
-                    f"draw produced a non-finite tau at theta0="
-                    f"{float(theta_f)!r}."
-                )
+                # All MC draws produced I_post <= 0 — degenerate region.
+                # Skeptic finding #3: previously raised, crashing CI.
+                p_out[i] = np.nan
+                any_mc_collapse = True
+                continue
             n_more_extreme = float(np.sum(tau_ref[finite] >= tau_obs[i]))
             p_out[i] = (n_more_extreme + 1.0) / (float(n_eff) + 1.0)
+        if any_mc_collapse:
+            warnings.warn(
+                "ScoreoStatistic._generic_pvalue: every MC reference draw "
+                "produced a non-finite tau at one or more test thetas. "
+                "Returning NaN; downstream CI inversion will fall back to "
+                "model.support() with a secondary UserWarning.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
         if scalar_input:
             return jnp.asarray(float(p_out[0]))

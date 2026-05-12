@@ -126,6 +126,75 @@ class TestScoreoInvariants:
         )
 
 
+    def test_nonconcave_posterior_degrades_gracefully(self):
+        """Skeptic findings #1, #2, #3: when I_post(theta) <= 0 at the
+        observed posterior, `_generic_pvalue` previously raised
+        `ValueError`, which leaked past the brentq closure (only
+        catches BracketingFailed) and crashed `confidence_interval`.
+
+        We construct a synthetic posterior whose `logpdf` has a
+        positive second derivative everywhere (the negative log of a
+        sub-Gaussian; deliberately non-concave). Then:
+          - evaluate(theta, ...) should return NaN with RuntimeWarning
+          - pvalue(theta, ...) should return NaN with RuntimeWarning
+          - confidence_interval(...) should NOT raise — falls back to
+            model.support() with a UserWarning
+        """
+        import jax.numpy as jnp_
+
+        from frasian.statistics.scoreo import ScoreoStatistic
+
+        class _NonConcaveLogPdfPosterior:
+            """Posterior whose log-density is θ² (positive curvature
+            ⇒ I_post = -2 < 0)."""
+
+            def logpdf(self, theta):
+                # Convex up, so -d²log/dθ² = -2.
+                return jnp_.asarray(theta) ** 2
+
+            def mean(self):
+                return 0.0
+
+            def var(self):
+                return 1.0
+
+            def sample(self, rng, n):
+                return rng.normal(size=n)
+
+        class _ConvexModel(NormalNormalModel):
+            def posterior(self, data, prior):
+                return _NonConcaveLogPdfPosterior()
+
+        model = _ConvexModel(sigma=1.0)
+        prior = NormalDistribution(loc=0.0, scale=1.0)
+        data = np.asarray([0.5])
+        stat = ScoreoStatistic(force_generic=True, n_mc=200)
+
+        import warnings as _w
+
+        # evaluate: NaN + RuntimeWarning, no exception.
+        with _w.catch_warnings(record=True) as caught:
+            _w.simplefilter("always")
+            tau = float(stat.evaluate(0.3, data, model, prior))
+        assert np.isnan(tau)
+        assert any(issubclass(x.category, RuntimeWarning) for x in caught)
+
+        # pvalue: NaN, no exception.
+        with _w.catch_warnings():
+            _w.simplefilter("ignore")
+            p = float(stat.pvalue(0.3, data, model, prior))
+        assert np.isnan(p)
+
+        # confidence_interval: should not raise. Brentq falls back to
+        # the model.support() boundary with a UserWarning.
+        with _w.catch_warnings(record=True) as caught:
+            _w.simplefilter("always")
+            ci = stat.confidence_interval(0.05, data, model, prior)
+        assert len(ci) == 2
+        # support() on NN is (-inf, inf); the fallback returns those.
+        assert ci[0] == -np.inf and ci[1] == np.inf
+
+
 @pytest.mark.L3
 class TestScoreoUniformPvalueUnderH0:
     """Statistical-tier: NN closed-form p-values are exactly
