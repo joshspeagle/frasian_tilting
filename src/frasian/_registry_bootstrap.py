@@ -24,6 +24,7 @@ def bootstrap() -> None:
     from .statistics import lrt as _stat_lrt  # noqa: F401
     from .statistics import lrto as _stat_lrto  # noqa: F401
     from .statistics import score as _stat_score  # noqa: F401
+    from .statistics import scoreo as _stat_scoreo  # noqa: F401
     from .statistics import signed_root as _stat_sr  # noqa: F401
     from .statistics import wald as _stat_wald  # noqa: F401
     from .statistics import waldo as _stat_waldo  # noqa: F401
