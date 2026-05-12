@@ -26,10 +26,10 @@ truth: `tilting/power_law.py` lines ~91-94 (`eta_default=0.0`,
 | Scheme        | `eta=0`              | `eta=1` (or other distinguished) | Notes |
 |---------------|----------------------|----------------------------------|-------|
 | `identity`    | posterior            | (no other endpoint)              | No-op; the matrix's identity element. |
-| `power_law`   | posterior            | `eta=1` → Wald (likelihood-only) | e-geodesic; admissible η ∈ (-w/(1-w), 1/(1-w)) (open). |
+| `power_law`   | posterior            | `eta=1` → Wald (likelihood-only) | e-geodesic; admissible η < 1/(1-w) (upper-only; no finite lower per PL brief §A2). |
 | `ot`          | posterior            | `eta=1` → likelihood-as-Gaussian | W2 displacement line; the *segment* is [0,1]. Extrapolation along the line is admissible whenever the result is well-defined: Gaussian path requires σ_t > 0, closed-form pvalue requires η > -w/(1-w). |
-| `mixture`     | posterior            | `eta=1` → likelihood-as-Gaussian | m-geodesic, dual partner of `power_law`; planned. |
-| `fisher_rao`  | posterior            | `eta=1` → likelihood-as-Gaussian | Levi-Civita / Fisher-Rao geodesic; planned. |
+| `mixture`     | posterior            | `eta=1` → likelihood-as-Gaussian | m-geodesic, dual partner of `power_law`; implemented (Stage A+B with closed-form NN tilt + WALDO p-value, structural sigmoid (0,1) bound on EtaNet output per row 13c). |
+| `fisher_rao`  | posterior            | `eta=1` → likelihood-as-Gaussian | Levi-Civita / Fisher-Rao geodesic; implemented (Stages A-D — closed-form half-plane geodesic, diffrax shooting BVP, Phase G v4 learned-η, smoothness comparison). |
 
 All implemented schemes set `param_space.eta_identity = 0.0`; tests in
 `tests/properties/` enforce `tilt(posterior, prior, lik, eta=0) ==
@@ -285,8 +285,17 @@ evaluated numerically on a quantile grid.
 - `tilt(...).scale > 0` for every `eta in [0, 1]`.
 - `tilt` is continuous in `eta` (Lipschitz constant ≤ 10 on the
   Hypothesis test range).
-- `admissible_range(...) == (0.0, 1.0)`.
-- `eta < 0` or `eta > 1` raises `TiltingDomainError` (never NaN).
+- McCann segment `eta ∈ [0, 1]` is always admissible (verified per
+  §B1). Extrapolation outside is admissible whenever the Gaussian-path
+  `tilt()` yields `σ_t > 0` (the half-plane bound is `η > -√w/(1-√w)`,
+  upper unbounded — see §B2). The closed-form WALDO `tilted_pvalue`
+  has a tighter lower-only condition `η > -w/(1-w)` documented in the
+  code path (lines 833/980-988); the runtime selectors
+  (`LearnedDynamicEtaSelector._maybe_clamp_eta`) enforce these.
+- `tilt(eta)` raises `TiltingDomainError` when `σ_t = (1-t)σ_p + tσ_q
+  ≤ 0` (i.e. η below the path's half-plane bound) — never NaN.
+  The earlier `[0, 1]` hard-raise was reverted in commit `f12466d` /
+  `ef5c93b` per the deriver-corrected admissibility.
 - **Quantile-mixture identity**: `QuantileMixturePath.quantile(u) =
   (1-t)·F_p^{-1}(u) + t·F_q^{-1}(u)` to atol 1e-12.
 - **Endpoint p-value recoveries**: `tilted_pvalue(eta=0, ..., 'waldo')`

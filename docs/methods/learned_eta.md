@@ -3,6 +3,42 @@
 > Status: `implemented` (post-Phase-F JAX/Equinox/Optax port; see CLAUDE.md
 > Phase 10 / Migration Status).
 
+> ⚠️ **Phase G v4 update (2026-05-09 → 2026-05-12)**: this brief was
+> originally written for **Phase E** (per-experiment, checkpoint
+> format v3, EtaNet input = θ only). The current production
+> implementation is **Phase G v4** with a **conditional** architecture
+> trained over a *range* of hyperparameters:
+>
+> - `EtaNet : (θ, prior_hp, lik_hp) → η` — three inputs, not just θ.
+> - `ValidityNet : (θ, prior_hp, lik_hp, η) → logit`.
+> - Checkpoint format version is **v4** (`CHECKPOINT_FORMAT_VERSION = 4`
+>   in `src/frasian/learned/training/_checkpoint.py`). v3 fixtures
+>   were deleted in CLAUDE.md migration row 11.
+> - Training uses `Sigma0AnchoredUniformThetaDistribution` (σ₀-anchored
+>   θ sampling — the prior's σ₀, NOT the likelihood's σ) and
+>   per-channel input z-score normalization, both default ON. Without
+>   them, training collapses to η ≈ 1 (= Wald) per CLAUDE.md row 12 /
+>   `docs/notes/2026-05-09-phase-g-v4-fix.md`.
+> - Runtime clamps η to admissible range when EtaNet extrapolates
+>   out-of-bounds (with a warning), instead of refusing (per CLAUDE.md
+>   row 12).
+> - Empirical headline numbers in this brief cite v0_smoke fixtures
+>   and are no longer canonical. Current numbers regenerated via
+>   `PYTHONHASHSEED=0 python -m scripts.regen_headline`. Post-FR-merge
+>   audit headline:
+>   [`docs/notes/2026-05-12-cross-scheme-wald-audit.md`](../notes/2026-05-12-cross-scheme-wald-audit.md).
+>
+> ⚠️ **η convention (Easily-Conflated)**: on `power_law`,
+> **η = 0 is bare WALDO** (full prior in) and **η = 1 is Wald**
+> (prior cancels). The naming feels backwards; verify which η you
+> mean. See CLAUDE.md "Easily-Conflated Distinctions" §1 and
+> `docs/notes/2026-05-10-eta-conventions-and-loss-derivation.md`.
+>
+> ⚠️ **FR cd_variance hyperparam regime**: trained with default
+> hyperparams diverges; requires `--lr-a 1e-4 --grad-clip-max-norm
+> 0.5`. See `docs/notes/2026-05-11-fisher-rao-cd-var-hyperparams.md`.
+> Open follow-up: rewrite this brief end-to-end for Phase G v4 (TODO).
+
 ## Summary
 
 `LearnedDynamicEtaSelector` is a calibrated dynamic-η-per-θ

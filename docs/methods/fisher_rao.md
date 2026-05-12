@@ -477,14 +477,33 @@ Implemented 2026-05-11 (feat/fisher-rao-tilting). Stage breakdown:
   `_generic_tilted_pvalue_fr`) against the Stage A closed-form
   path to validate correctness. NN-validated only (no non-
   Gaussian endpoint paths).
-- **Stage C (pending).** NN learned-η v4 fixture + training +
-  input-insensitivity diagnostic. The `fr_learned_*` audit
-  flavors (`fr_learned_intp`, `fr_learned_cd_var`,
-  `fr_learned_static_w`) are commented out of `_FLAVORS` in
-  `scripts/run_wald_audit.py` until the v4 artifacts are
-  trained; the `_build_cell` branches stay so they're easy to
-  re-enable.
-- **Stage D (pending).** Smoothness comparison + headline note.
+- **Stage C (implemented, commits 35b4bcb–566be79).** Phase G v4
+  conditional learned-η training across all 3 loss heads
+  (`integrated_p`, `cd_variance`, `static_width`). The
+  `fr_learned_*` audit flavors are uncommented and active in
+  `scripts/run_wald_audit.py:_FLAVORS`. The JAX kernel uses a
+  **straight-through estimator** (`_FR_INDICATOR_SHARPNESS = 0.05`;
+  forward = hard indicator, backward = sigmoid surrogate) — pinned
+  by `test_jax_kernel_grad_is_non_zero_and_matches_fd` with a
+  magnitude bound `0.25 < |g_auto|/|g_fd| < 4.0`. The cd_variance
+  head requires `--lr-a 1e-4 --grad-clip-max-norm 0.5` overrides
+  (defaults diverge for FR; see
+  [`docs/notes/2026-05-11-fisher-rao-cd-var-hyperparams.md`](../notes/2026-05-11-fisher-rao-cd-var-hyperparams.md)).
+  Cross-scheme input-sensitivity diagnostic in
+  [`docs/notes/2026-05-11-row-13b-loss-specificity-cross-scheme.md`](../notes/2026-05-11-row-13b-loss-specificity-cross-scheme.md).
+- **Stage D (implemented, commit af7dc48).** 16-cell smoothness
+  comparison via `scripts/compare_geodesic_smoothness.py` + 4
+  regression tests pinning qualitative orderings + Stage D
+  headline note. **Honest finding**: at the canonical NN sandbox
+  (w=0.5), FR `dyn_numerical` collapses to bare WALDO — the per-θ
+  static optimum on FR is η = 0 (no tilt), so FR's apparent win on
+  Lipschitz/TV is degenerate at this slice. Honest ordering on
+  CI-width tightness: MX > OT > PL ≥ FR. The cd_variance head on
+  FR is pathological (+135% width vs Wald; negative-η on FR's
+  unbounded admissibility produces wide CIs). See
+  [`docs/notes/2026-05-11-fisher-rao-vs-others-smoothness.md`](../notes/2026-05-11-fisher-rao-vs-others-smoothness.md)
+  and the post-merge audit numbers in
+  [`docs/notes/2026-05-12-cross-scheme-wald-audit.md`](../notes/2026-05-12-cross-scheme-wald-audit.md).
 
 A general `ParametricFamily` interface — required for Fisher-Rao on
 non-Gaussian families like Beta / Bernoulli — is deferred to a

@@ -195,8 +195,11 @@ sides*, unlike the NN case.
 - `eta < 0` *oversharpens*: `mu_eta` is pushed past `mu_n` toward the
   prior, with `sigma_eta < sigma_n`. Empirically yields narrower CIs than
   Wald at low `|Delta|` — this is the discovery of the legacy framework.
-- `eta` outside `(-w/(1-w), 1/(1-w))` produces a non-positive variance and
-  raises `TiltingDomainError`.
+- `eta ≥ 1/(1-w)` produces a non-positive variance and raises
+  `TiltingDomainError` (per §A2's upper-only admissibility — the
+  earlier two-sided `(-w/(1-w), 1/(1-w))` window was a spurious legacy
+  heuristic; PL admits any `eta < 1/(1-w)`, including arbitrary
+  negative η). The lower side is unbounded.
 - The optimal `eta*(|Delta|)` curve is monotone non-decreasing in `|Delta|`
   but has a sharp inflection — the `smoothness` diagnostic measures this.
 
@@ -213,9 +216,13 @@ sides*, unlike the NN case.
 
 - `tilt(eta=0)` returns the input posterior exactly.
 - `tilt(...).pdf` integrates to 1 (numerical, atol≈5e-4 on a 12-sigma grid).
-- `tilt` is continuous in `eta` on the admissible range.
+- `tilt` is continuous in `eta` on the admissible range `(-∞, 1/(1-w))`.
 - `tilt(eta=1)` produces `N(D, sigma^2)` for any `(mu0, sigma0)`.
-- `admissible_range` returns a non-empty open interval containing `eta = 0`.
+- `tilt(eta)` raises `TiltingDomainError` when `eta ≥ 1/(1-w)`
+  (admissibility is enforced internally by each scheme;
+  `admissible_range` is no longer a public method on the scheme —
+  selectors that need bounds compute them per-call via
+  `NumericalEtaSelector._eta_bounds`).
 
 ## Literature
 
