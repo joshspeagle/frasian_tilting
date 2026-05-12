@@ -855,9 +855,15 @@ def _fr_tilted_pvalue_numpy_scalar(
     if statistic_name == "wald":
         z = abs(D_f - theta_f) / sigma
         return float(2.0 * _scalar_scipy_stats.norm.sf(z))
-    if statistic_name != "waldo":
+    # Trinity collapse on NN+Normal: FR's tilted posterior is the half-plane
+    # Levi-Civita geodesic from N(μ_n, σ_n²) to N(D, σ²), a single Gaussian,
+    # so τ_LRTO,η = τ_SCOREO,η = τ_WALDO,η identically and the H₀ reference
+    # under D'~N(θ,σ²) gives the same p-value. See
+    # docs/notes/2026-05-12-tilted-trinity-derivation.md.
+    if statistic_name not in ("waldo", "lrto", "scoreo"):
         raise NotImplementedError(
-            f"FisherRaoTilting tilted p-value: unknown statistic_name={statistic_name!r}."
+            f"FisherRaoTilting tilted p-value: unknown statistic_name={statistic_name!r}; "
+            f"supported: 'wald', 'waldo', 'lrto', 'scoreo'."
         )
     sigma_n = math.sqrt(w) * sigma
     mu_n = w * D_f + (1.0 - w) * mu0
@@ -1047,9 +1053,11 @@ def _fr_tilted_pvalue_kernel(
     if statistic_name == "wald":
         z = jnp.abs(D - theta) / sigma
         return 2.0 * jsp_stats.norm.sf(z)
-    if statistic_name != "waldo":
+    # Trinity collapse — see _fr_tilted_pvalue_numpy_scalar above.
+    if statistic_name not in ("waldo", "lrto", "scoreo"):
         raise NotImplementedError(
-            f"FisherRaoTilting JAX kernel: unknown statistic_name={statistic_name!r}."
+            f"FisherRaoTilting JAX kernel: unknown statistic_name={statistic_name!r}; "
+            f"supported: 'wald', 'waldo', 'lrto', 'scoreo'."
         )
     sigma_n = jnp.sqrt(w) * sigma
     mu_n = w * D + (1.0 - w) * mu0
