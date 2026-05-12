@@ -65,6 +65,21 @@ def main() -> None:
         "--loss", default="integrated_p", choices=["integrated_p", "cd_variance", "static_width"]
     )
     parser.add_argument(
+        "--statistic-name",
+        type=str,
+        default=None,
+        choices=["waldo", "lrto", "scoreo", None],
+        help=(
+            "Override the statistic_name from the YAML config. Use this to train "
+            "the same (scheme, prior, model) checkpoint against the lrto or scoreo "
+            "loss. On PL/OT/FR (single-Gaussian tilt), the trinity collapse makes "
+            "this byte-identical to training against waldo; the override is for "
+            "explicit archival per the 2026-05-12 audit-grid design. The mixture "
+            "JAX training kernel does NOT support lrto/scoreo — passing this "
+            "with a mixture YAML will raise NotImplementedError."
+        ),
+    )
+    parser.add_argument(
         "--alpha", type=float, default=None, help="required iff --loss=static_width"
     )
     parser.add_argument("--n-epochs", type=int, default=30)
@@ -229,16 +244,26 @@ def main() -> None:
 
     config = ExperimentConfig.from_yaml(args.config)
 
-    # Apply CLI overrides on n_lhs / n_grid if provided.
+    statistic_name = (
+        args.statistic_name if args.statistic_name is not None else config.statistic_name
+    )
+    print(
+        f"[train] statistic_name = {statistic_name!r} "
+        f"({'CLI override' if args.statistic_name else 'from YAML'})"
+    )
+
+    # Apply CLI overrides on n_lhs / n_grid / statistic_name if provided.
     overrides = {}
     if args.n_lhs is not None:
         overrides["n_lhs"] = int(args.n_lhs)
     if args.n_grid is not None:
         overrides["n_grid"] = int(args.n_grid)
+    if args.statistic_name is not None and statistic_name != config.statistic_name:
+        overrides["statistic_name"] = statistic_name
     if overrides:
         config = ExperimentConfig(
             scheme_name=config.scheme_name,
-            statistic_name=config.statistic_name,
+            statistic_name=statistic_name,
             prior_cls=config.prior_cls,
             model_cls=config.model_cls,
             hyperparam_distribution=config.hyperparam_distribution,
@@ -257,7 +282,7 @@ def main() -> None:
     if args.fast:
         config = ExperimentConfig(
             scheme_name=config.scheme_name,
-            statistic_name=config.statistic_name,
+            statistic_name=statistic_name,
             prior_cls=config.prior_cls,
             model_cls=config.model_cls,
             hyperparam_distribution=config.hyperparam_distribution,
