@@ -129,6 +129,10 @@ artifacts/probe_pl_*.eqx
 # v4_hyperparam_audit, single_slice_*, two_slice_discrim, continuous_kd,
 # etc.
 artifacts/*.npz
+# DynamicNumericalEtaSelector disk-backed cache (per-`(model, prior, scheme,
+# statistic, alpha)` precomputed η(θ) lookups; regenerable by any caller
+# that triggers the corresponding `select_grid` invocation).
+artifacts/eta_lookups/
 
 # Temporary files
 *.tmp
