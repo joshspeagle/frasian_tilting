@@ -503,7 +503,7 @@ from ._generic_pvalue import _GENERIC_TILTED_PVALUE_BASE_SEED  # noqa: F401
 # Reuse grid-distribution τ helpers from PL (matches OT/MX cross-module
 # precedent — `power_law._grid_tau_lrto` / `_grid_tau_scoreo` operate on a
 # (log_pdf_row, theta_grid, theta_test) triple and are scheme-agnostic).
-from .power_law import _grid_tau_lrto, _grid_tau_scoreo  # noqa: F401
+from .power_law import _grid_tau_lrto, _grid_tau_scoreo
 
 _GENERIC_TILTED_PVALUE_N_MC: int = 200
 
@@ -709,9 +709,13 @@ def _generic_tilted_pvalue_fr(
     # only τ_obs derivation differs by statistic_name.
     if obs_moments is not None:
         mu_obs, var_obs = obs_moments
-        # Need the observed posterior for the lrto/scoreo grid window —
-        # rebuild it cheaply (constant-time relative to diffrax).
-        posterior_obs = model.posterior(data_arr, prior)
+        # lrto/scoreo need the observed posterior for the grid window;
+        # waldo does not, so only rebuild when actually needed (cheap
+        # relative to diffrax, but the brentq caller probes this per θ).
+        if statistic_name in ("lrto", "scoreo"):
+            posterior_obs = model.posterior(data_arr, prior)
+        else:
+            posterior_obs = None
     else:
         posterior_obs = model.posterior(data_arr, prior)
         likelihood_obs = model.likelihood(data_arr)

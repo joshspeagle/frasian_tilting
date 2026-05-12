@@ -120,9 +120,9 @@ def test_fr_generic_path_trinity_collapse(stat_name, eta, theta):
     Gaussian). MC noise tolerance ~0.15 at n_mc=200.
 
     Note: FR's generic path uses diffrax shooting BVP per MC replicate
-    (~100-500 ms each), so this sweep is slow (~3-5 min per param combo,
-    ~25-40 min total for the 8 parametrizations). Kept the same coverage
-    as PL/OT for trinity-collapse parity.
+    (~100-500 ms each); sweep runtime ~1-2 min for the 8 cases (η=0
+    short-circuits diffrax; η=0.3 runs full shooting BVP). Kept the
+    same coverage as PL/OT for trinity-collapse parity.
     """
     model = NormalNormalModel(sigma=1.0)
     prior = NormalDistribution(loc=0.0, scale=2.0)
