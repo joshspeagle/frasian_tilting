@@ -123,8 +123,11 @@ class TestSelectorValueEquality:
         )
         # Equality is unaffected.
         assert sel_a == sel_b
-        # repr stays clean.
-        assert "_cache" not in repr(sel_a)
+        # The `_cache` dict field is `repr=False`, so its dict contents
+        # ({...}) shouldn't appear in repr. Other field names like
+        # `use_disk_cache=True` legitimately contain `_cache` as a
+        # substring; check for the dict-literal form to disambiguate.
+        assert "_cache={" not in repr(sel_a)
         # Cache populated.
         assert sel_a._cache, "cache should have been populated by select_grid"
 
