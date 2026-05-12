@@ -231,6 +231,57 @@ the CI falls back to `model.support()` with a `UserWarning`.
   as `sigma_0 -> infty` (constant rate).
 - KS uniformity on three NN settings: all p > 0.05 at n = 50_000.
 
+## Tilted variant
+
+When `scoreo` is paired with a non-identity `TiltingScheme` in the
+`(TiltingScheme x TestStatistic)` cross-product, the statistic is
+evaluated against the **tilted posterior** `q_eta = tilt(post, prior,
+lik, eta)` rather than the bare posterior. The wiring divides into
+two regimes depending on whether `q_eta` stays Gaussian. Full
+math foundation: [`docs/notes/2026-05-12-tilted-trinity-derivation.md`](../notes/2026-05-12-tilted-trinity-derivation.md).
+
+- **PL/OT/FR closed-form (NN+Normal).** Power-law (Theorem 6),
+  W2-geodesic between Gaussians (OT), and the half-plane Levi-Civita
+  geodesic (FR) all keep `q_eta` Gaussian for every admissible `eta`.
+  On a Gaussian q the score is linear and the observed information
+  is the constant `1 / sigma_eta^2`, so
+  `tau_Scoreo,eta = U_q(theta)^2 / I_q(theta) =
+  (theta - mu_eta)^2 / sigma_eta^2 = tau_WALDO,eta` identically
+  (trinity collapse — see (G5) in the trinity-derivation note).
+  Each tilting's `_tilted_pvalue_numpy_scalar` /
+  `_tilted_pvalue_kernel` routes `scoreo` through the existing waldo
+  arithmetic (`Phi(b - a) + Phi(-a - b)` with tilted
+  `(mu_eta, sigma_eta)`).
+- **MX closed-form.** The mixture-tilted posterior
+  `q_eta,mix = (1 - eta) * N(mu_n, sigma_n^2) + eta * N(D, sigma^2)`
+  has a non-constant Hessian, so `tau_Scoreo,eta != tau_WALDO,eta`
+  in general. The implementation computes the closed-form
+  2-Gaussian-mixture score and observed information analytically
+  per replicate (companion to `_mixture_tau_lrto_2gauss`) and
+  integrates the H_0 reference by MC over `D' ~ N(theta_0,
+  sigma^2)`, plumbed through
+  `_mixture_tilted_pvalue_lrto_or_scoreo_scalar`.
+- **Generic-MC path (model-agnostic).** All four tiltings build
+  `q_eta` on a `_GridDistribution` (`tilting/_grid_distribution.py`)
+  and dispatch to `_grid_tau_scoreo` (PL/OT/FR — finite-difference
+  `U_q^2 / I_q` on the θ-grid) or to the analytic mixture path with
+  grid fallback (MX — analytic when both components are Gaussian,
+  else the grid τ). Per-replicate τ feeds the empirical tail with
+  `(k+1)/(n+1)` continuity correction; CRN seed is shared across
+  brentq probes so the inversion converges instead of locking onto
+  a re-randomised staircase.
+- **JAX training kernels.** PL/OT/FR's `<scheme>_tilted_pvalue_jax`
+  route `scoreo` through the waldo arithmetic (trinity collapse
+  stays JAX-traceable; `jax.grad` is unnecessary because the
+  identity is exact). The mixture training kernel raises an explicit
+  `NotImplementedError` for `scoreo` because the 2-Gaussian-mixture
+  Hessian is not JAX-traceable in current diffrax/optax flows.
+
+Audit flavors `<scheme>_dyn_numerical_scoreo[_generic]` (and the
+`_static_*` / `_learned_*` selector variants) exist for all four
+schemes via `scripts/run_wald_audit.py` — 24 new cross-product
+flavors total for `(lrto, scoreo)`.
+
 ## Predicted behavior
 
 - **On NN+Normal sandbox**: `scoreo.pvalue == waldo.pvalue ==

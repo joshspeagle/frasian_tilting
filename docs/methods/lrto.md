@@ -239,6 +239,54 @@ mu_0=0.5, theta_true=1.2)`, `n=2000` draws:
 - H_0 uniformity: `KS p = 0.522` on 2000 draws at
   `(sigma=1.5, sigma_0=0.7, theta_true=1.2)`.
 
+## Tilted variant
+
+When `lrto` is paired with a non-identity `TiltingScheme` in the
+`(TiltingScheme x TestStatistic)` cross-product, the statistic is
+evaluated against the **tilted posterior** `q_eta = tilt(post, prior,
+lik, eta)` rather than the bare posterior. The wiring divides into
+two regimes depending on whether `q_eta` stays Gaussian. Full
+math foundation: [`docs/notes/2026-05-12-tilted-trinity-derivation.md`](../notes/2026-05-12-tilted-trinity-derivation.md).
+
+- **PL/OT/FR closed-form (NN+Normal).** Power-law (Theorem 6),
+  W2-geodesic between Gaussians (OT), and the half-plane Levi-Civita
+  geodesic (FR) all keep `q_eta` Gaussian for every admissible `eta`.
+  The trinity collapse on a Gaussian q (`tau_LRTO == tau_WALDO`,
+  identically — see (G4) in the trinity-derivation note) means
+  `p_LRTO,eta == p_WALDO,eta` for every replicate, so each tilting's
+  `_tilted_pvalue_numpy_scalar` / `_tilted_pvalue_kernel` routes
+  `lrto` through the existing waldo arithmetic (`Phi(b - a) +
+  Phi(-a - b)` with tilted `(mu_eta, sigma_eta)`).
+- **MX closed-form.** The mixture-tilted posterior
+  `q_eta,mix = (1 - eta) * N(mu_n, sigma_n^2) + eta * N(D, sigma^2)`
+  is a genuine 2-Gaussian mixture, so `theta_MAP,q_eta` no longer
+  equals a single Gaussian's mean and `tau_LRTO,eta != tau_WALDO,eta`
+  in general. The implementation computes `tau_LRTO` analytically
+  per replicate via `_mixture_tau_lrto_2gauss` (mode-finder over the
+  two-Gaussian-mixture log-density on `[min(mu_n, D), max(mu_n, D)]`)
+  and integrates the H_0 reference by MC over `D' ~ N(theta_0,
+  sigma^2)`, plumbed through
+  `_mixture_tilted_pvalue_lrto_or_scoreo_scalar`.
+- **Generic-MC path (model-agnostic).** All four tiltings build
+  `q_eta` on a `_GridDistribution` (`tilting/_grid_distribution.py`)
+  and dispatch to `_grid_tau_lrto` (PL/OT/FR — discrete argmax over
+  the θ-grid + log-density gap) or to the analytic mixture path
+  with grid fallback (MX — analytic when both components are
+  Gaussian, else the grid τ). Per-replicate τ feeds the empirical
+  tail with `(k+1)/(n+1)` continuity correction; CRN seed is shared
+  across brentq probes so the inversion converges instead of locking
+  onto a re-randomised staircase.
+- **JAX training kernels.** PL/OT/FR's `<scheme>_tilted_pvalue_jax`
+  route `lrto` through the waldo arithmetic (trinity collapse stays
+  JAX-traceable). The mixture training kernel raises an explicit
+  `NotImplementedError` for `lrto` because the 2-Gaussian-mixture
+  mode-finder is not JAX-traceable in current diffrax/optax flows.
+
+Audit flavors `<scheme>_dyn_numerical_lrto[_generic]` (and the
+`_static_*` / `_learned_*` selector variants) exist for all four
+schemes via `scripts/run_wald_audit.py` — 24 new cross-product
+flavors total for `(lrto, scoreo)`.
+
 ## Predicted behavior
 
 - **On NN+Normal sandbox**: `lrto.pvalue == waldo.pvalue` and
