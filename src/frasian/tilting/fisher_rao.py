@@ -500,7 +500,25 @@ def _fr_geodesic_numerical(
 # CRN seeds align across schemes at fixed (data, prior, eta, alpha).
 from ._generic_pvalue import _GENERIC_TILTED_PVALUE_BASE_SEED  # noqa: F401
 
+# Reuse grid-distribution τ helpers from PL (matches OT/MX cross-module
+# precedent — `power_law._grid_tau_lrto` / `_grid_tau_scoreo` operate on a
+# (log_pdf_row, theta_grid, theta_test) triple and are scheme-agnostic).
+from .power_law import _grid_tau_lrto, _grid_tau_scoreo  # noqa: F401
+
 _GENERIC_TILTED_PVALUE_N_MC: int = 200
+
+# Grid resolution for lrto/scoreo log-pdf materialisation. PL/OT use 256;
+# FR's q_η is Gaussian (closed-form log-pdf evaluation), so the grid cost
+# is negligible — match PL's choice for τ_obs/τ_rep grid parity.
+_GENERIC_TILTED_PVALUE_N_GRID_MC_FR: int = 256
+
+# Window for the lrto/scoreo log-pdf grid: posterior mean ± k * σ_post,
+# clipped to model support. Matches the heuristic in OT's lrto/scoreo
+# branch (lo_obs / hi_obs construction); 8σ around the posterior captures
+# the relevant tail mass for τ_LRTO's argmax and τ_SCOREO's central
+# differences without putting most of the grid in the deep tails where
+# the Gaussian log-pdf goes to −∞.
+_FR_LRTO_SCOREO_GRID_HALF_K: float = 8.0
 
 
 def _generic_tilt_fr(
@@ -553,6 +571,60 @@ def _generic_tilt_fr(
     return NormalDistribution(loc=mu_t, scale=sigma_t)
 
 
+def _fr_grid_tau_from_gaussian(
+    mu_t: float,
+    sigma_t: float,
+    theta_test: float,
+    theta_grid: NDArray[np.float64],
+    statistic_name: str,
+) -> float:
+    """Compute τ_LRTO or τ_SCOREO at θ_test from a Gaussian q_η = N(μ_t, σ_t²).
+
+    Since `_generic_tilt_fr` returns a `NormalDistribution` directly
+    (FR geodesic between two Gaussians is closed-form Gaussian), the
+    log-pdf row is the analytic Gaussian log-density on `theta_grid`:
+
+        log q(θ) = −½ log(2π) − log σ_t − ½ ((θ − μ_t)/σ_t)².
+
+    We then dispatch to the shared grid-distribution τ helpers from
+    `power_law.py`. On NN+Normal this collapses to the same τ_WALDO
+    value (trinity-collapse fingerprint) modulo grid-finite-resolution
+    error.
+    """
+    if not (sigma_t > 0.0) or not np.isfinite(sigma_t) or not np.isfinite(mu_t):
+        return float("nan")
+    log_norm = -0.5 * math.log(2.0 * math.pi) - math.log(sigma_t)
+    z = (theta_grid - mu_t) / sigma_t
+    log_pdf_row = log_norm - 0.5 * z * z
+    log_pdf_row = np.where(np.isfinite(log_pdf_row), log_pdf_row, -1e300)
+    tau_fn = _grid_tau_lrto if statistic_name == "lrto" else _grid_tau_scoreo
+    return tau_fn(log_pdf_row, theta_grid, float(theta_test))
+
+
+def _fr_lrto_scoreo_grid_window(
+    posterior_obs,
+    *,
+    support: tuple[float, float],
+) -> tuple[float, float] | None:
+    """Pick the θ-grid window for FR's lrto/scoreo log-pdf materialisation.
+
+    Returns ``None`` if the window is degenerate (posterior moments
+    non-finite, or window collapses to a point after support clipping).
+    """
+    try:
+        mu_post = float(np.asarray(posterior_obs.mean()))
+        var_post = float(np.asarray(posterior_obs.var()))
+    except (TypeError, ValueError, AttributeError):
+        return None
+    sigma_post = float(np.sqrt(max(var_post, 1e-300)))
+    half = _FR_LRTO_SCOREO_GRID_HALF_K * sigma_post
+    lo = max(mu_post - half, float(support[0]))
+    hi = min(mu_post + half, float(support[1]))
+    if not (lo < hi) or not (np.isfinite(lo) and np.isfinite(hi)):
+        return None
+    return (lo, hi)
+
+
 def _generic_tilted_pvalue_fr(
     theta: float,
     data: NDArray[np.float64],
@@ -575,6 +647,12 @@ def _generic_tilted_pvalue_fr(
       ``model.sample_data_batch(theta, ...)``, recompute t per draw using
       ``_generic_tilt_fr``. Conservative ``(k+1)/(n+1)`` smoothing.
       CRN-seeded via blake2b stable hash.
+    - ``statistic_name="lrto" / "scoreo"``: materialise the Gaussian
+      log-pdf of q_η on a θ-grid (analytic — q_η is N(μ_t, σ_t²) from
+      the half-plane geodesic) and dispatch through the shared grid-
+      distribution τ helpers (`_grid_tau_lrto` / `_grid_tau_scoreo` from
+      power_law.py). On NN+Normal this collapses to τ_WALDO modulo MC
+      noise (trinity collapse).
 
     Implementation differences vs OT:
     - ``_generic_tilt_fr`` returns a ``NormalDistribution`` directly
@@ -583,6 +661,8 @@ def _generic_tilted_pvalue_fr(
       on a quantile-mixture path. Simpler, no ``n_grid`` knob.
     - No ``_resolve_support`` window or ``likelihood_as_distribution``
       construction — FR operates on parameter points, not densities.
+    - For lrto/scoreo the log-pdf grid is built analytically from
+      (μ_t, σ_t) — no `qmp.logpdf(theta_grid)` call needed.
     - Per-replicate Python loop over n_mc rather than a batched XLA
       kernel: each replicate requires a diffrax BVP solve (~100-500 ms),
       so n_mc * solve cost dominates and a batched kernel is a follow-up
@@ -597,10 +677,10 @@ def _generic_tilted_pvalue_fr(
 
     if statistic_name == "wald":
         return float(np.asarray(WaldStatistic()._generic_pvalue(theta, data, model)))
-    if statistic_name != "waldo":
+    if statistic_name not in ("waldo", "lrto", "scoreo"):
         raise NotImplementedError(
             f"FisherRaoTilting generic tilted_pvalue not implemented for "
-            f"statistic={statistic_name!r}; supported: 'wald', 'waldo'."
+            f"statistic={statistic_name!r}; supported: 'wald', 'waldo', 'lrto', 'scoreo'."
         )
 
     data_arr = np.atleast_1d(np.asarray(data, dtype=np.float64))
@@ -623,9 +703,15 @@ def _generic_tilted_pvalue_fr(
         )
 
     # Observed tilted moments (theta-independent given the data) —
-    # hoist for the brentq caller, same pattern as PL/OT.
+    # hoist for the brentq caller, same pattern as PL/OT. We compute
+    # (mu_obs, var_obs) for all four statistics so the `obs_moments`
+    # interop with `_generic_tilted_confidence_interval_fr` is uniform;
+    # only τ_obs derivation differs by statistic_name.
     if obs_moments is not None:
         mu_obs, var_obs = obs_moments
+        # Need the observed posterior for the lrto/scoreo grid window —
+        # rebuild it cheaply (constant-time relative to diffrax).
+        posterior_obs = model.posterior(data_arr, prior)
     else:
         posterior_obs = model.posterior(data_arr, prior)
         likelihood_obs = model.likelihood(data_arr)
@@ -635,8 +721,36 @@ def _generic_tilted_pvalue_fr(
         mu_obs = float(tilted_obs.loc)
         var_obs = float(tilted_obs.scale) ** 2
     var_obs_safe = max(var_obs, 1e-300)
-    diff_obs = mu_obs - theta_f
-    t_obs = diff_obs * diff_obs / var_obs_safe
+    sigma_obs = float(np.sqrt(var_obs_safe))
+
+    if statistic_name == "waldo":
+        diff_obs = mu_obs - theta_f
+        t_obs = diff_obs * diff_obs / var_obs_safe
+        theta_grid_lrto: NDArray[np.float64] | None = None
+    else:
+        # lrto / scoreo: materialise the Gaussian log-pdf grid for q_η
+        # (which is N(mu_obs, var_obs) on FR's half-plane geodesic) and
+        # compute τ via the shared helpers from power_law.py. The same
+        # θ-grid is reused for every MC replicate so τ_obs and τ_rep
+        # share grid resolution (critical for trinity collapse).
+        from ._generic_pvalue import _resolve_support
+        support = _resolve_support(model, data_arr)
+        window = _fr_lrto_scoreo_grid_window(posterior_obs, support=support)
+        if window is None:
+            # Degenerate window: conservative p=1 (no replicates more extreme).
+            return 1.0
+        lo_g, hi_g = window
+        theta_grid_lrto = np.linspace(
+            lo_g, hi_g, _GENERIC_TILTED_PVALUE_N_GRID_MC_FR
+        )
+        t_obs = _fr_grid_tau_from_gaussian(
+            mu_obs, sigma_obs, theta_f, theta_grid_lrto, statistic_name
+        )
+        if not np.isfinite(t_obs):
+            # τ_obs is non-finite (θ_test outside grid window, or SCOREO's
+            # I≤0): observed sits in the implausible tail → conservative
+            # smoothed minimum.
+            return 1.0 / (float(n_mc) + 1.0)
 
     # MC reference under H_0: theta_f. Per-replicate loop because each
     # iteration requires a diffrax shooting solve (no batched diffrax
@@ -674,8 +788,21 @@ def _generic_tilted_pvalue_fr(
             n_collapsed += 1
             t_samples[i] = 0.0
             continue
-        diff = mu_i - theta_f
-        t_samples[i] = diff * diff / var_i
+        if statistic_name == "waldo":
+            diff = mu_i - theta_f
+            t_samples[i] = diff * diff / var_i
+        else:
+            # lrto / scoreo: Gaussian q_η,i = N(mu_i, var_i) → analytic
+            # log-pdf on the shared θ-grid → τ via grid helpers.
+            sigma_i = float(np.sqrt(var_i))
+            tau_i = _fr_grid_tau_from_gaussian(
+                mu_i, sigma_i, theta_f, theta_grid_lrto, statistic_name
+            )
+            if not np.isfinite(tau_i):
+                n_collapsed += 1
+                t_samples[i] = 0.0
+            else:
+                t_samples[i] = float(tau_i)
 
     if n_collapsed > n_mc_int // 2:
         import warnings

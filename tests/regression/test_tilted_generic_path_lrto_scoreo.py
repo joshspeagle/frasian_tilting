@@ -32,6 +32,10 @@ from frasian.tilting.mixture import (
     MixtureTilting,
     _generic_tilted_pvalue_mixture,
 )
+from frasian.tilting.fisher_rao import (
+    FisherRaoTilting,
+    _generic_tilted_pvalue_fr,
+)
 from frasian.tilting.eta_selectors import FixedEtaSelector
 
 
@@ -103,4 +107,30 @@ def test_mx_generic_path_pvalue_is_valid(stat_name, eta, theta):
     )
     assert 0.0 <= float(p) <= 1.0, (
         f"mx {stat_name} eta={eta} theta={theta}: p={p}"
+    )
+
+
+@pytest.mark.L2
+@pytest.mark.parametrize("stat_name", ["lrto", "scoreo"])
+@pytest.mark.parametrize("eta", [0.0, 0.3])
+@pytest.mark.parametrize("theta", [0.0, 0.5])
+def test_fr_generic_path_trinity_collapse(stat_name, eta, theta):
+    """FR's generic-MC path agrees with waldo on NN+Normal (trinity collapse:
+    half-plane Levi-Civita geodesic passes through Gaussians, so q_η stays
+    Gaussian). MC noise tolerance ~0.15 at n_mc=200.
+
+    Note: FR's generic path uses diffrax shooting BVP per MC replicate
+    (~100-500 ms each), so this sweep is slow (~3-5 min per param combo,
+    ~25-40 min total for the 8 parametrizations). Kept the same coverage
+    as PL/OT for trinity-collapse parity.
+    """
+    model = NormalNormalModel(sigma=1.0)
+    prior = NormalDistribution(loc=0.0, scale=2.0)
+    data = np.array([0.7])
+    p_waldo = _generic_tilted_pvalue_fr(theta, data, model, prior, eta, "waldo")
+    p_stat = _generic_tilted_pvalue_fr(theta, data, model, prior, eta, stat_name)
+    assert 0.0 <= float(p_waldo) <= 1.0
+    assert 0.0 <= float(p_stat) <= 1.0
+    assert abs(float(p_stat) - float(p_waldo)) < 0.15, (
+        f"fr {stat_name} eta={eta} theta={theta}: p_stat={p_stat} p_waldo={p_waldo}"
     )
