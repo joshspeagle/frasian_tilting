@@ -27,6 +27,7 @@ See `docs/methods/score.md` for the derivation.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import ClassVar
 
@@ -159,6 +160,22 @@ class ScoreStatistic:
         # exactly. No FP cancellation guard needed (unlike lrt where
         # tau = -2[ll(theta) - ll(mle)] can produce tiny negatives near
         # the mode).
+        #
+        # I-degeneracy guard (skeptic finding #5): `model.fisher_information`
+        # is contractually `> 0` and finite. A non-positive or non-finite
+        # value would make `U^2/I` `inf`/`nan`/negative; surface that as a
+        # warning rather than letting a chi^2 survival of `nan` produce a
+        # silent `p = 0` (or worse, NaN that propagates through brentq).
+        I_np = np.asarray(I, dtype=np.float64)
+        if I_np.size and (np.any(~np.isfinite(I_np)) or np.any(I_np <= 0.0)):
+            warnings.warn(
+                f"ScoreStatistic._generic_evaluate: model.fisher_information "
+                f"returned a non-positive or non-finite value (min={float(np.min(I_np)):.3e}). "
+                f"This violates the regularity-condition contract; tau and "
+                f"the downstream p-value/CI will be incorrect.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
         return (U * U) / I
 
     def _generic_pvalue(
@@ -200,18 +217,38 @@ class ScoreStatistic:
         else:
             half_from_fisher = 1.0
         half = min(max(half_from_fisher, 1e-3), width_cap)
+        boundary_hit_lo = False
+        boundary_hit_hi = False
         try:
             lower = brentq_with_doubling(
                 f, midpoint=mle, initial_half_width=half, direction=-1
             )
         except BracketingFailed:
+            # Skeptic finding #4: previously a silent fallback to
+            # `support_lo`; now warn so callers can annotate metadata
+            # with the boundary-hit (mirrors waldo's behaviour).
             lower = float(support_lo)
+            boundary_hit_lo = True
         try:
             upper = brentq_with_doubling(
                 f, midpoint=mle, initial_half_width=half, direction=+1
             )
         except BracketingFailed:
             upper = float(support_hi)
+            boundary_hit_hi = True
+        if boundary_hit_lo or boundary_hit_hi:
+            sides = [s for s, hit in (("lower", boundary_hit_lo),
+                                       ("upper", boundary_hit_hi)) if hit]
+            warnings.warn(
+                f"ScoreStatistic._generic_confidence_interval: bracket "
+                f"exhausted on the {' and '.join(sides)} side(s); "
+                f"returning model.support() boundary at alpha={alpha!r}. "
+                f"This may be a true open CI or a numerical pathology "
+                f"(e.g. flat score over a wide region, or score CI off-"
+                f"centre from the MLE on a non-NN model).",
+                UserWarning,
+                stacklevel=2,
+            )
         return (
             max(lower, float(support_lo)),
             min(upper, float(support_hi)),

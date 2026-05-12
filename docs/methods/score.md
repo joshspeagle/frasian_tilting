@@ -258,6 +258,31 @@ and dispatches `model.fisher_information(theta_0)` for `I`.
   assumes a single scalar `D`. For `n > 1` we route through the
   generic path (`jax.grad` on `loglik`), which uses
   `data.size` correctly.
+- **Generic-path small-sigma intermediate overflow**: the closed-
+  form `((D - theta)/sigma)^2` cancels nicely for any sigma, but
+  the generic JAX-grad path computes `U = (D - theta)/sigma^2`
+  then `U^2 = (D - theta)^2 / sigma^4` and divides by
+  `I = 1/sigma^2`. At `sigma ~ 1e-150` the intermediate
+  `sigma^4 ~ 1e-600` underflows; at `sigma ~ 1e150` it overflows.
+  The closed-form path is FP-stable across the full float64
+  range; the generic path is stable only for `sigma >>
+  1e-150`. Prefer `force_generic=False` on NN when `sigma` is
+  far from `1`. Skeptic finding #7.
+- **`I(theta) <= 0` or non-finite**: the generic-path
+  implementation now emits a `RuntimeWarning` when
+  `model.fisher_information(theta)` returns a non-positive or
+  non-finite value (violating regularity). Downstream `tau` is
+  still computed as `U^2 / I` and may be `inf` / `nan` /
+  negative — callers should inspect the warning rather than
+  trust the returned p-value. Skeptic finding #5.
+- **Generic-path bracket-exhaustion**: brentq's bracket
+  doubling starts at `4 / sqrt(I(mle))` (the Wald half-width).
+  If the score CI is highly off-centre from the MLE (possible
+  on non-NN models with skewed log-likelihoods), brentq may
+  exhaust its bracket and the implementation falls back to
+  `model.support()` boundary with a `UserWarning`. Skeptic
+  finding #4. On NN the score CI is symmetric about the MLE
+  so this never triggers.
 
 ## Invariants
 

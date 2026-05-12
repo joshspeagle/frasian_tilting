@@ -313,6 +313,46 @@ class TestScoreForceGeneric:
                 0.05, 0.0, model
             )
 
+    def test_force_generic_escape_hatch_for_subclassed_nn(self):
+        """Skeptic finding #9: subclassing `NormalNormalModel` to
+        override `likelihood` (but not `fingerprint`) silently
+        routes through the closed-form path. `force_generic=True`
+        is the documented escape hatch — pin its contract so a
+        future closed-form dispatch refactor cannot silently
+        break it.
+
+        We use a `_WeirdNN` subclass whose `likelihood(data)`
+        evaluates against `data + 1` rather than `data`. Then:
+          - closed-form path returns the formula with `data` (the
+            override is ignored)
+          - generic path with `force_generic=True` exercises the
+            overridden likelihood and gives a different answer
+        """
+
+        class _WeirdNN(NormalNormalModel):
+            def likelihood(self, data):
+                # Shift data by +1 before building the likelihood —
+                # an honest subclass override that the closed-form
+                # dispatch will ignore.
+                return super().likelihood(np.asarray(data) + 1.0)
+
+        model = _WeirdNN(sigma=1.0)
+        data = np.asarray([0.5])
+        theta = 0.2
+
+        # Closed-form ignores the override (uses bare D, theta, sigma).
+        p_closed = float(ScoreStatistic().pvalue(theta, data, model))
+        # Generic honours the override (uses the shifted likelihood).
+        p_generic = float(
+            ScoreStatistic(force_generic=True).pvalue(theta, data, model)
+        )
+        # These MUST differ — if they don't, force_generic isn't
+        # actually routing through the override.
+        assert abs(p_closed - p_generic) > 1e-3, (
+            f"closed-form path silently honoured the subclass override? "
+            f"p_closed={p_closed}, p_generic={p_generic}"
+        )
+
 
 @pytest.mark.L2
 class TestForceGenericThroughTilting:
