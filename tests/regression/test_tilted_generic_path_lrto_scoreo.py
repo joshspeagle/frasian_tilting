@@ -111,6 +111,7 @@ def test_mx_generic_path_pvalue_is_valid(stat_name, eta, theta):
 
 
 @pytest.mark.L2
+@pytest.mark.slow
 @pytest.mark.parametrize("stat_name", ["lrto", "scoreo"])
 @pytest.mark.parametrize("eta", [0.0, 0.3])
 @pytest.mark.parametrize("theta", [0.0, 0.5])
@@ -121,8 +122,12 @@ def test_fr_generic_path_trinity_collapse(stat_name, eta, theta):
 
     Note: FR's generic path uses diffrax shooting BVP per MC replicate
     (~100-500 ms each); sweep runtime ~1-2 min for the 8 cases (η=0
-    short-circuits diffrax; η=0.3 runs full shooting BVP). Kept the
-    same coverage as PL/OT for trinity-collapse parity.
+    short-circuits diffrax; η=0.3 runs full shooting BVP). Marked `slow`
+    so default CI (which excludes `-m slow`) skips it; the trinity-
+    collapse property is also covered by the closed-form test sweep
+    in `test_tilted_trinity_collapse.py` and by the JAX-kernel sweep
+    in `test_pvalue_jax_trinity_collapse.py`. Run explicitly via
+    `pytest -m slow` to re-verify the generic-path coverage.
     """
     model = NormalNormalModel(sigma=1.0)
     prior = NormalDistribution(loc=0.0, scale=2.0)

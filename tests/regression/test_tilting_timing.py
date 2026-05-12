@@ -49,9 +49,10 @@ def test_dynamic_ci_inversion_wall_time_budget():
     Dev baseline ~5-6 s for 5 D values via the dynamic-eta selector
     + WALDO (the dynamic-eta selector itself is the dominant cost — it
     pre-fits eta(|Delta|) on a coarse grid via scipy.optimize.minimize
-    per CI call). Budget 20 s gives 3.3x headroom on dev so a CI
-    runner running at 2-3x dev speed still has slack; comfortably
-    below the 30+ s timeout the prior JAX-everywhere attempt hit.
+    per CI call). Budget 30 s gives ~5x headroom on dev — bumped from
+    20 s after 2026-05-12 CI flaked at 20.47 s on a slow shared runner.
+    The 100x JAX-everywhere regression class lands at >100 s regardless,
+    so the wider budget still catches it cleanly.
     """
     model = NormalNormalModel(sigma=1.0)
     prior = NormalDistribution(loc=0.0, scale=1.0)
@@ -62,7 +63,7 @@ def test_dynamic_ci_inversion_wall_time_budget():
     for D in Ds:
         scheme.confidence_interval(0.05, np.asarray([D]), model, prior, statistic)
     elapsed = time.perf_counter() - t0
-    assert elapsed < 20.0, f"dynamic CI inversion took {elapsed:.2f}s (budget 20.0s)"
+    assert elapsed < 30.0, f"dynamic CI inversion took {elapsed:.2f}s (budget 30.0s)"
 
 
 @pytest.mark.L0

@@ -3,11 +3,16 @@
 Pre-fix: stub tilting schemes (`MixtureTilting`, `FisherRaoTilting`)
 declared only `tilt`, `path`, `is_identity` — calling
 `confidence_interval` raised AttributeError. Stub statistics
-(`LRTStatistic`, `SignedRootStatistic`, `BartlettCorrectedLRT`) raised
+(`SignedRootStatistic`, `BartlettCorrectedLRT`) raised
 NotImplementedError. Both were caught by the runner's per-cell
 exception handler and recorded as `status="error"` with a noisy
 traceback — even though their stub status was statically declared at
 registration.
+
+(`LRTStatistic` was on this list until commit `1fca71d` promoted it to
+`implemented`; the cross-product wiring in row 15 of CLAUDE.md migrated
+`LRTOStatistic`, `ScoreStatistic`, and `ScoreoStatistic` to implemented
+as well. Only `signed_root` and `bartlett` remain as registered stubs.)
 
 Cluster D (audit fix):
 1. Added explicit NotImplementedError stubs to MixtureTilting and
@@ -29,6 +34,9 @@ import pytest
 from frasian._runner import _is_stub
 from frasian.statistics.bartlett import BartlettCorrectedLRT
 from frasian.statistics.lrt import LRTStatistic
+from frasian.statistics.lrto import LRTOStatistic
+from frasian.statistics.score import ScoreStatistic
+from frasian.statistics.scoreo import ScoreoStatistic
 from frasian.statistics.signed_root import SignedRootStatistic
 from frasian.statistics.waldo import WaldoStatistic
 from frasian.tilting.fisher_rao import FisherRaoTilting
@@ -52,18 +60,26 @@ class TestIsStubHelper:
         assert _is_stub(FisherRaoTilting(), "tilting") is False
 
     def test_stub_statistics_recognised(self):
-        assert _is_stub(LRTStatistic(), "statistic") is True
+        # Only signed_root and bartlett remain registered with status="stub".
+        # LRT/LRTO/score/scoreo were all promoted in 2026-05-12 (row 15 of
+        # CLAUDE.md migration status).
         assert _is_stub(SignedRootStatistic(), "statistic") is True
         assert _is_stub(BartlettCorrectedLRT(), "statistic") is True
 
     def test_implemented_statistics_not_stub(self):
         assert _is_stub(WaldoStatistic(), "statistic") is False
+        # LRT, LRTO, score, scoreo promoted to implemented in this session
+        # (row 15, CLAUDE.md migration status).
+        assert _is_stub(LRTStatistic(), "statistic") is False
+        assert _is_stub(LRTOStatistic(), "statistic") is False
+        assert _is_stub(ScoreStatistic(), "statistic") is False
+        assert _is_stub(ScoreoStatistic(), "statistic") is False
 
     def test_class_input_also_works(self):
-        """Helper accepts both classes and instances (cell-runner symmetry).
-        Use a still-stub statistic since no tilting stubs remain."""
-        assert _is_stub(LRTStatistic, "statistic") is True
+        """Helper accepts both classes and instances (cell-runner symmetry)."""
+        assert _is_stub(SignedRootStatistic, "statistic") is True
         assert _is_stub(WaldoStatistic, "statistic") is False
+        assert _is_stub(LRTStatistic, "statistic") is False
         assert _is_stub(FisherRaoTilting, "tilting") is False
 
 
