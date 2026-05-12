@@ -27,6 +27,7 @@ from frasian.models.distributions import NormalDistribution
 from frasian.models.normal_normal import NormalNormalModel
 from frasian.statistics.lrt import LRTStatistic
 from frasian.statistics.lrto import LRTOStatistic
+from frasian.statistics.score import ScoreStatistic
 from frasian.statistics.wald import WaldStatistic
 from frasian.statistics.waldo import WaldoStatistic
 
@@ -245,6 +246,71 @@ class TestLRTOForceGeneric:
         with pytest.raises(NotImplementedError, match="no generic path"):
             LRTOStatistic(force_generic=True).acceptance_region(
                 0.05, 0.0, model, prior
+            )
+
+
+@pytest.mark.L2
+class TestScoreForceGeneric:
+    """Score closed-form NN == Wald == LRT (Derivation Step 2); generic
+    path agrees within numerical tolerance. Pins:
+      1. `cell_name` discriminates `"score"` vs `"score[generic]"`.
+      2. `force_generic=True` actually hits the generic helpers.
+      3. Closed-form and generic p-values / CIs agree on NN.
+      4. Closed-form score.pvalue == wald.pvalue == lrt.pvalue exactly.
+      5. `acceptance_region` raises under `force_generic=True`.
+    """
+
+    def test_cell_name(self):
+        assert ScoreStatistic().cell_name == "score"
+        assert ScoreStatistic(force_generic=True).cell_name == "score[generic]"
+
+    def test_pvalue_uses_generic_on_nn(self):
+        model = NormalNormalModel(sigma=1.0)
+        data = np.asarray([0.5])
+        theta = 0.2
+        stat_default = ScoreStatistic()
+        stat_generic = ScoreStatistic(force_generic=True)
+        p_default = float(stat_default.pvalue(theta, data, model))
+        p_forced = float(stat_generic.pvalue(theta, data, model))
+        # JAX autograd on a Gaussian likelihood is exact (FP identity).
+        assert abs(p_default - p_forced) < 1e-12, (
+            f"closed-form={p_default}, generic-forced={p_forced}"
+        )
+
+    def test_pvalue_matches_wald_and_lrt_on_nn(self):
+        """tau_Score == tau_Wald == tau_LRT pointwise on NN
+        (Derivation Step 2); the closed-form p-values coincide to FP."""
+        model = NormalNormalModel(sigma=1.0)
+        data = np.asarray([0.5])
+        for theta in (-1.0, 0.0, 0.5, 1.7):
+            p_score = float(ScoreStatistic().pvalue(theta, data, model))
+            p_wald = float(WaldStatistic().pvalue(theta, data, model))
+            p_lrt = float(LRTStatistic().pvalue(theta, data, model))
+            assert abs(p_score - p_wald) < 1e-12, (
+                f"theta={theta}: score={p_score}, wald={p_wald}"
+            )
+            assert abs(p_score - p_lrt) < 1e-12, (
+                f"theta={theta}: score={p_score}, lrt={p_lrt}"
+            )
+
+    @pytest.mark.parametrize("alpha", [0.05, 0.10])
+    def test_ci_uses_generic_on_nn(self, alpha):
+        model = NormalNormalModel(sigma=1.0)
+        data = np.asarray([0.5])
+        cf = ScoreStatistic().confidence_interval(alpha, data, model)
+        gn = ScoreStatistic(force_generic=True).confidence_interval(
+            alpha, data, model
+        )
+        # Generic uses brentq; agreement to within brentq xtol.
+        assert abs(cf[0] - gn[0]) < 1e-6, f"lower: cf={cf[0]}, gn={gn[0]}"
+        assert abs(cf[1] - gn[1]) < 1e-6, f"upper: cf={cf[1]}, gn={gn[1]}"
+
+    def test_acceptance_region_raises_under_force_generic(self):
+        model = NormalNormalModel(sigma=1.0)
+        ScoreStatistic().acceptance_region(0.05, 0.0, model)
+        with pytest.raises(NotImplementedError, match="no generic path"):
+            ScoreStatistic(force_generic=True).acceptance_region(
+                0.05, 0.0, model
             )
 
 
