@@ -354,6 +354,11 @@ docs/
     README.md                # convention: when to add a note, naming, format
     YYYY-MM-DD-<slug>.md     # one per finding
   audit/                     # multi-agent audit outputs
+  paper/                     # STAMPS@CMU workshop paper writeup — see "Workshop paper writeup" section below
+    paper-draft.md           # markdown source (§§1–8 + References, ~450 lines)
+    paper.pdf                # pandoc → xelatex compiled output (~31 pages)
+    figures/                 # 19 PNGs embedded in the paper
+      scripts/               # one matplotlib script per figure (re-runnable)
   superpowers/               # implementation plans (gitignored except plans/)
   workflows.md               # /propose-method lifecycle + cookbook
   jax_style.md               # coding convention for the JAX/Equinox layer
@@ -479,6 +484,58 @@ CLAUDE.md is the orientation document — it documents what exists
 and where to look. Findings (numbers, narratives, dated context)
 go in `docs/notes/`. Per-method theory + derivations go in
 `docs/methods/<name>.md`.
+
+## Workshop paper writeup
+
+A reference document for STAMPS@CMU workshop collaborators lives in
+`docs/paper/`. The deliverables are the markdown source
+`paper-draft.md` (~450 lines, §§1–8 + References) and the compiled
+`paper.pdf` (~31 pages, ~65 references, ~6 MB total tree).
+
+**Sections.** §1 motivation (Prospector-β rare-galaxy shrinkage);
+§2 Frasian inference (test inversion + posterior-based statistic →
+confidence distributions); §3 the conflict tax (WALDO is calibrated
+but inflates under conflict); §4 η-tilting + post-selection +
+dynamic tilting; §5 four geodesic schemes (PL/MX/FR/OT); §6 cross-θ
+objective + learned dual-head selector; §7 experimental matrix
+(audit slices on `run_wald_audit`); §8 discussion (back to
+Prospector-β, beyond NN, open questions).
+
+**Three-stage construction.**
+
+- **Stage 1** (outline + narrative spine): `docs/superpowers/specs/2026-05-12-adaptive-frasian-paper-outline-design.md`. Gitignored (per `docs/superpowers/` convention).
+- **Stage 2** (derivations + literature, ~30 pages, ~60 references, deriver/litreview-verified): `docs/superpowers/specs/2026-05-12-adaptive-frasian-paper-stage2-details.md`. Gitignored.
+- **Stage 3** (figures, tables, polished prose): `docs/paper/` (tracked).
+
+**Figures.** 19 figures at `docs/paper/figures/`, each with a
+re-runnable script at `docs/paper/figures/scripts/fig_<sec>_<n>_<slug>.py`.
+Experimental-data figures (F3.1, F3.2, F4.2, F7.1–F7.3) read CSVs
+from `results/wald_audit/*/{coverage,width,smoothness}/*.csv`.
+Learned-η figures (F6.2, F6.4) load v4 fixtures from `artifacts/`.
+Pedagogical figures (F1.1, F2.1–F2.4, F4.1, F4.3, F4.4, F5.1, F5.2)
+generate from closed-form NN+Normal math.
+
+**PDF compilation.** From repo root:
+
+```bash
+cd docs/paper && python3 -c "
+import pypandoc
+pypandoc.convert_file('paper-draft.md', 'pdf', outputfile='paper.pdf',
+    extra_args=['--pdf-engine=xelatex',
+                '-V', 'geometry:margin=1in',
+                '-V', 'mainfont=DejaVu Serif'])"
+```
+
+`DejaVu Serif` (Unicode-capable) is required for the Greek letters in
+the prose (η, θ, σ, μ); Computer Modern would print missing-glyph
+boxes outside math mode. Pandoc itself is not installed; `pypandoc_binary`
+bundles its own.
+
+**Conventions in the paper.** η-convention follows the codebase
+(η=0 ⇔ WALDO, η=1 ⇔ Wald). Inline citations use informal
+`[Author Year]` style; full bibliographic detail is in the
+References section at the end of the document, aggregated
+alphabetically from Stage 2.
 
 ## Cache Discipline
 
